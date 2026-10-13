@@ -3,10 +3,15 @@
 an argument, and only for the loaded Config of the project (a look-alike object is refused). The state dir may
 not be a symlink and the log is opened with O_NOFOLLOW. This is the second and last zouinify module the panel
 package may import (with zouinify.readonly; scripts/check_panel_ast.py). It writes nothing else: not a ticket,
-not a session, not the registry, not the user-level projects list (that one is zouinify.panelctl's)."""
+not a session, not the registry, not the user-level projects list (that one is zouinify.panelctl's).
+
+panel.json also keeps the browser token's sha256 hash and a 4-hex token id (T-0165): the panel package may only
+ask `token_matches()` / `token_id()`; it never sees the hash, and `set_token()` is the process side's (panelctl)."""
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -17,6 +22,7 @@ from zouinify.config import Config
 
 STATE_REL = (".ops", "state")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+TOKEN_FIELDS = ("token_hash", "token_id", "token_rotated_at")
 
 
 def version() -> str:
@@ -93,8 +99,14 @@ def _write_json(path: str, obj) -> None:
 
 
 def write_panel_json(cfg, port: int, pid_: int, started_at: str) -> None:
-    _write_json(panel_json_path(cfg), {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": "loopback",
-                                       "url": url(cfg, port), "started_at": started_at, "version": __version__})
+    """The runtime fields of a running server; the token fields already there are kept."""
+    cur = read_panel_json(cfg) or {}
+    d = {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": cfg.panel.get("bind", "loopback"),
+         "url": url(cfg, port), "started_at": started_at, "version": __version__}
+    for k in TOKEN_FIELDS:
+        if cur.get(k):
+            d[k] = cur[k]
+    _write_json(panel_json_path(cfg), d)
 
 
 def read_panel_json(cfg):
@@ -106,14 +118,56 @@ def read_panel_json(cfg):
 
 
 def remove_panel_json(cfg, pid_: int | None = None) -> None:
+    """Drop the runtime fields (pid, port, started_at) of a stopped server; the token hash survives restarts.
+    The file itself goes only when it holds no token."""
     d = read_panel_json(cfg)
     if d is None:
         return
-    if pid_ is None or d.get("pid") == pid_:
-        try:
+    if pid_ is not None and d.get("pid") != pid_:
+        return
+    keep = {k: d[k] for k in TOKEN_FIELDS if d.get(k)}
+    try:
+        if keep:
+            keep.update({"root": cfg.root, "project": cfg.name})
+            _write_json(panel_json_path(cfg), keep)
+        else:
             os.remove(panel_json_path(cfg))
-        except OSError:
-            pass
+    except OSError:
+        pass
+
+
+# -- the browser token (T-0165): hash on disk, compared in constant time; the panel never sees the hash ----------
+
+def set_token(cfg, token: str) -> str:
+    """Record sha256(token) and a 4-hex id in panel.json (0600). Called by zouinify.panelctl on a real TTY only;
+    the plain token is printed there once and never stored. Returns the token id."""
+    _check(cfg)
+    if not isinstance(token, str) or len(token) < 32:
+        raise ValueError("a token is at least 32 characters")
+    h = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    cur = read_panel_json(cfg) or {}
+    cur.update({"token_hash": h, "token_id": h[-4:], "token_rotated_at": now_iso(), "root": cfg.root, "project": cfg.name})
+    _write_json(panel_json_path(cfg), cur)
+    return h[-4:]
+
+
+def token_configured(cfg) -> bool:
+    d = read_panel_json(cfg) or {}
+    return bool(d.get("token_hash"))
+
+
+def token_id(cfg):
+    d = read_panel_json(cfg) or {}
+    return d.get("token_id") or None
+
+
+def token_matches(cfg, presented) -> bool:
+    """Constant-time comparison of sha256(presented) with the stored hash; False when no token is set."""
+    d = read_panel_json(cfg) or {}
+    h = d.get("token_hash")
+    if not h or not isinstance(presented, str) or not presented:
+        return False
+    return hmac.compare_digest(hashlib.sha256(presented.encode("utf-8")).hexdigest(), str(h))
 
 
 def hook_installed() -> tuple:

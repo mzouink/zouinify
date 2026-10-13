@@ -51,8 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", metavar="DIR", help="output directory (default .ops/briefs)")
     s.add_argument("--force", action="store_true", help="overwrite briefs that were edited")
 
-    s = sub.add_parser("panel", help="the read-only control panel of this project: start | stop | status | url")
-    s.add_argument("action", choices=["start", "stop", "status", "url"])
+    s = sub.add_parser("panel", help="the read-only control panel of this project: start | stop | status | url | token rotate")
+    s.add_argument("action", choices=["start", "stop", "status", "url", "token"])
+    s.add_argument("what", nargs="?", help="with `token`: rotate (prints the new browser token once, on your own terminal)")
     s.add_argument("--foreground", action="store_true", help="serve in this process (the detached start uses it)")
 
     sub.add_parser("board", help="scripts/ticket.sh board, verbatim (extra arguments pass through)")
@@ -116,6 +117,10 @@ def main(argv=None) -> int:
                 return panelctl.cmd_stop(cfg)
             if args.action == "status":
                 return panelctl.cmd_status(cfg)
+            if args.action == "token":
+                if args.what != "rotate":
+                    p.error("usage: zouinify panel token rotate")
+                return panelctl.cmd_token_rotate(cfg)
             return panelctl.cmd_url(cfg)
         if args.cmd in ("board", "human"):
             from zouinify import tickets

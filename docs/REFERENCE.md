@@ -31,7 +31,7 @@ week 3.)
 | `zouinify status [--line\|--json] [--no-cache]` | `inbox N \| P0 n \| creds <left> \| sitting HH:MM in Xh \| d dev r rev m rtd k dep` from `ticket.sh human --count`, the ticket front matter, the credential files' metadata (SSO cache `expiresAt`, else credentials-file mtime + `aws.assumed_token_hours`, marked `est`) and the config's sittings. Cached 30 s: made for `tmux set -g status-right '#(zouinify --project /path/to/repo status --line)'` (the tmux server's cwd is not the project, so name it). `P0` counts the inbox's P0 items, what the human acts on, not every open P0 ticket. |
 | `zouinify down [name...] [--dry-run]` | Kill launcher-registered **worker** sessions whose ticket is `done` or `dropped`; prints the reason for every refusal (a role session, a session zouinify did not launch, a ticket still open). Run `--dry-run` first; a named target that is refused exits 1. |
 | `zouinify briefs render [--out DIR] [--force]`, `briefs list` | Render `templates/briefs/*.md.tmpl` (desk, manager, debug, chrome_debug, worker) with the config: `{{desk.name}}`, `{{trunk}}`, `{{prod}}`, `{{human_only}}`, `{{budget}}`, `{{sittings}}`, `{{ask_verbs}}`, ... Refuses to overwrite an edited brief without `--force`. |
-| `zouinify panel start\|stop\|status\|url` | This project's read-only panel on `http://127.0.0.1:<panel.port>/`, one detached process per project (pid file and log under `.ops/state/`, an entry in `~/.zouinify/projects.json`). `start` probes the port first: this project's panel is reused, another project's or a foreign process is refused, never taken over; `stop` stops only this project's and only a process whose command line is this project's panel. `up` starts it unless `panel.autostart: false` or `--no-panel`. `panel.bind: intranet` is refused until the token exists (T-0162). |
+| `zouinify panel start\|stop\|status\|url` | This project's read-only panel on `http://127.0.0.1:<panel.port>/`, one detached process per project (pid file and log under `.ops/state/`, an entry in `~/.zouinify/projects.json`). `start` probes the port first: this project's panel is reused, another project's or a foreign process is refused, never taken over; `stop` stops only this project's and only a process whose command line is this project's panel. `up` starts it unless `panel.autostart: false` or `--no-panel`. `panel.bind: intranet` listens on 0.0.0.0 and requires the browser token on every LAN request (see LAN access). |
 | `zouinify board`, `zouinify human [--count\|--json]` | `scripts/ticket.sh board` / `human`, verbatim. The lifecycle stays in `ticket.sh`; the skill never re-implements it. |
 
 Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (a relative path inside the project;
@@ -80,6 +80,30 @@ dynamically or write, a click cannot become a launch, a kill, a keystroke, a tic
 The panel's look, screen anatomy, tiers of clickable actions and acceptance criteria are in
 [`docs/UX_SPEC.md`](UX_SPEC.md). It is the UI contract for the panel tickets; the design document in the first
 consumer's repo wins over it for behaviour.
+
+## LAN access: `panel.bind: intranet` and the browser token
+
+The default is loopback: the panel listens on 127.0.0.1 and asks nothing of a loopback client (every process on the
+workstation runs as the same user and can read the same data directly). `panel.bind: intranet` in `.ops/config.yaml` makes it
+listen on 0.0.0.0 for the lab network (a phone, a laptop), and then **every request from a non-loopback address needs the
+browser token**, the page and its static files included:
+
+1. In your own terminal, never inside a Claude session (the command refuses when `CLAUDECODE` is set or stdin is not a TTY):
+   `zouinify panel token rotate`. It generates 32 random bytes, keeps only `sha256(token)` and a 4-hex token id in
+   `.ops/state/panel.json` (mode 0600), prints `http://<link_host>:<port>/#t=<token>` once and clears the screen after Enter.
+2. Open that address on the device. The `#t=` fragment never reaches the server; a token-less navigation gets a 401 unlock
+   page whose only script (pinned by a CSP hash) stores the token as a `SameSite=Strict` cookie and reloads. From then on every
+   request carries it (the cookie, or `Authorization: Bearer <token>`); the server compares it in constant time.
+3. Wrong or missing token: 401 and an `AUDIT` line in `server.log` with the source address (never the token). More than 10
+   refusals in a minute from one address: 429 for the rest of the minute. A `Host` other than 127.0.0.1, localhost, the
+   configured `link_host`, the machine's names or its IPv4 addresses, or a foreign `Origin`: 403 (DNS rebinding). Rotate any
+   time with the same command; running servers pick the new hash up without a restart, old tokens stop at once.
+
+`zouinify panel start` and `zouinify up` refuse to start an intranet panel without a token and point at the command; neither
+ever prints a token. `zouinify panel url` prints the address without it. Writes stay 405 in both modes; tier-2 items never get
+a button. **HTTP on the LAN is clear text**: use it on the lab network only; from anywhere else, `ssh -L 4790:127.0.0.1:4790
+<workstation>` to the loopback panel. Worst case of a stolen token: reading the board, the inbox and the redacted pane
+captures; never a launch, a kill, a keystroke, a ticket move or a deploy, because no endpoint does those.
 
 ## Layout
 

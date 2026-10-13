@@ -10,7 +10,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import secrets
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -22,8 +24,81 @@ from zouinify import ZouinifyError
 from zouinify import panelstate as state
 
 PROJECTS_JSON = os.path.join("~", ".zouinify", "projects.json")
-INTRANET_MSG = ("panel.bind: intranet needs the browser token and the hardening of T-0162; v1 binds to loopback only "
-                "(set panel.bind: loopback in .ops/config.yaml, or reach it with ssh -L)")
+NO_TOKEN_MSG = ("panel.bind is intranet and no browser token is set: run `zouinify panel token rotate` in your OWN terminal "
+                "first (it prints the token once; a Claude session never does), then start the panel")
+
+
+def in_claude_session() -> bool:
+    return bool(os.environ.get("CLAUDECODE")) or any(k.startswith("CLAUDE_CODE_") for k in os.environ)
+
+
+def link_host(cfg) -> str:
+    """The name the printed URL uses: panel.link_host, or this machine's FQDN when `auto`."""
+    lh = str(cfg.panel.get("link_host") or "auto").strip()
+    if lh and lh != "auto":
+        return lh
+    try:
+        return socket.getfqdn().lower()
+    except OSError:
+        return socket.gethostname().lower()
+
+
+def lan_hosts(cfg) -> set:
+    """Every name and IPv4 address this machine may be reached by on the LAN (the Host check accepts these)."""
+    names = {link_host(cfg)}
+    try:
+        hn = socket.gethostname().lower()
+        names |= {hn, hn.split(".")[0], socket.getfqdn().lower()}
+    except OSError:
+        pass
+    for name in list(names):
+        try:
+            for info in socket.getaddrinfo(name, None, socket.AF_INET):
+                names.add(info[4][0])
+        except OSError:
+            pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))          # no packet is sent: this only selects the outbound interface
+        names.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    return {n for n in names if n and not n.startswith("127.")}
+
+
+def public_url(cfg) -> str:
+    host = link_host(cfg) if cfg.panel.get("bind") == "intranet" else "127.0.0.1"
+    return f"http://{host}:{cfg.panel['port']}/"
+
+
+def cmd_token_rotate(cfg, out=None) -> int:
+    """Generate the browser token, keep only its hash, print the URL once: real TTY only, never in a Claude session."""
+    out = out or sys.stdout
+    if in_claude_session():
+        raise ZouinifyError("the browser token is printed only in your own terminal, never inside a Claude session "
+                            "(CLAUDECODE is set here): open a plain shell and run `zouinify panel token rotate` there")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ZouinifyError("the browser token is printed once, on a real terminal: run `zouinify panel token rotate` interactively")
+    token = secrets.token_urlsafe(32)
+    tid = state.set_token(cfg, token)
+    url = f"{public_url(cfg)}#t={token}"
+    print("", file=out)
+    print(f"zouinify panel token (id {tid}) -- shown ONCE, only its hash is kept in {state.panel_json_path(cfg)}:", file=out)
+    print("", file=out)
+    print(f"    {url}", file=out)
+    print("", file=out)
+    print("Open that address in the browser you will use (phone or laptop on the lab network); the page stores the token "
+          "and strips it from the address. The old token, if any, stops working now; running sessions need no restart.", file=out)
+    if cfg.panel.get("bind") != "loopback":
+        print("The LAN carries it in clear text: use it on the lab network only; from elsewhere, ssh -L.", file=out)
+    try:
+        input("Press Enter to clear the screen... ")
+    except EOFError:
+        pass
+    print("\033[2J\033[H", end="", file=out)
+    print(f"token id {tid} recorded; the address is no longer on screen. Panel: {public_url(cfg)} (rotate again any time).", file=out)
+    return 0
 
 
 def probe(port: int, timeout: float = 1.5):
@@ -106,7 +181,10 @@ def start_detached(cfg, out) -> int:
     while time.time() < deadline:
         h = probe(cfg.panel["port"], timeout=0.5)
         if isinstance(h, dict) and h.get("root") and state.same_root(h["root"], cfg.root):
-            print(f"panel started: {state.url(cfg)}  (pid {h.get('pid')}, read-only, loopback; log {state.server_log_path(cfg)})", file=out)
+            mode = "intranet, token required on every request from the LAN" if cfg.panel.get("bind") == "intranet" else "loopback"
+            print(f"panel started: {public_url(cfg)}  (pid {h.get('pid')}, read-only, {mode}; log {state.server_log_path(cfg)})", file=out)
+            if cfg.panel.get("bind") == "intranet":
+                print("the token is not shown here: `zouinify panel token rotate` prints it once in your own terminal", file=out)
             return 0
         if proc.poll() is not None:
             break
@@ -122,10 +200,11 @@ def start_detached(cfg, out) -> int:
 
 def run_foreground(cfg) -> int:
     """Serve in this process until SIGTERM/SIGINT. The signal handling and the projects-list entry live
-    here, outside the panel package, which may import neither signal nor write anything but its two files."""
+    here, outside the panel package, which may import neither signal nor socket."""
     import threading
     from zouinify.panel import server
-    srv = server.make_server(cfg)
+    hosts = lan_hosts(cfg) if cfg.panel.get("bind") == "intranet" else set()
+    srv = server.make_server(cfg, allowed_hosts=hosts)
 
     def _term(signum, frame):  # noqa: ARG001
         threading.Thread(target=srv.shutdown, daemon=True).start()
@@ -142,8 +221,8 @@ def run_foreground(cfg) -> int:
 def cmd_start(cfg, foreground: bool = False, out=None) -> int:
     out = out or sys.stdout
     port = cfg.panel["port"]
-    if cfg.panel.get("bind", "loopback") != "loopback":
-        raise ZouinifyError(INTRANET_MSG)
+    if cfg.panel.get("bind", "loopback") == "intranet" and not state.token_configured(cfg):
+        raise ZouinifyError(NO_TOKEN_MSG)
     h = probe(port)
     if isinstance(h, dict) and h.get("root"):
         if state.same_root(h["root"], cfg.root):
@@ -224,7 +303,11 @@ def cmd_status(cfg, out=None) -> int:
 
 
 def cmd_url(cfg, out=None) -> int:
-    print(state.url(cfg), file=out or sys.stdout)
+    out = out or sys.stdout
+    print(public_url(cfg), file=out)
+    if cfg.panel.get("bind") == "intranet":
+        print(f"(token required from the LAN; it is {'set' if state.token_configured(cfg) else 'NOT set'} and never shown here: "
+              "`zouinify panel token rotate` prints it once in your own terminal)", file=out)
     return 0
 
 
@@ -232,13 +315,13 @@ def ensure_started(cfg, dry_run: bool = False, out=None) -> bool:
     """Called by `up`: report a running panel, start a missing one, refuse a held port; never kill."""
     out = out or sys.stdout
     port = cfg.panel["port"]
-    if cfg.panel.get("bind", "loopback") != "loopback":
-        print(f"panel         not started: panel.bind is {cfg.panel['bind']}, which needs T-0162 (set loopback for now)", file=out)
+    if cfg.panel.get("bind", "loopback") == "intranet" and not state.token_configured(cfg):
+        print(f"panel         not started: {NO_TOKEN_MSG}", file=out)
         return False
     h = probe(port)
     if isinstance(h, dict) and h.get("root"):
         if state.same_root(h["root"], cfg.root):
-            print(f"panel         running  {state.url(cfg)}  (pid {h.get('pid')})", file=out)
+            print(f"panel         running  {public_url(cfg)}  (pid {h.get('pid')})", file=out)
             return True
         print(f"panel         REFUSED: port {port} serves another project's panel ({h['root']}); change panel.port", file=out)
         return False
@@ -246,7 +329,7 @@ def ensure_started(cfg, dry_run: bool = False, out=None) -> bool:
         print(f"panel         REFUSED: port {port} is held by a foreign process ({h.get('detail')}); change panel.port", file=out)
         return False
     if dry_run:
-        print(f"panel         would start on {state.url(cfg)} (read-only, loopback)", file=out)
+        print(f"panel         would start on {public_url(cfg)} (read-only, {cfg.panel.get('bind', 'loopback')})", file=out)
         return True
     try:
         start_detached(cfg, out)

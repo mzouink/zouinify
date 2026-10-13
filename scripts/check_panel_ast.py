@@ -38,7 +38,8 @@ READONLY_API = {
     "read_human_json", "read_board_json", "fail", "version", "TERMINAL", "ROLE_SESSIONS", "READ_ONLY_TICKET_SH",
 }
 PANELSTATE_API = {"version", "pid", "now_iso", "url", "state_dir", "panel_json_path", "server_log_path", "same_root", "log",
-                  "write_panel_json", "read_panel_json", "remove_panel_json", "hook_installed"}
+                  "write_panel_json", "read_panel_json", "remove_panel_json", "hook_installed",
+                  "token_matches", "token_id", "token_configured"}   # never set_token: rotation is the process side's
 MODULES = {
     "__future__": {"annotations"},
     "http": {"HTTPStatus", "server"},
@@ -53,6 +54,7 @@ MODULES = {
            "IGNORECASE", "MULTILINE", "DOTALL", "VERBOSE", "error", "Pattern"},
     "html": {"escape", "unescape"},
     "hashlib": {"sha1", "sha256", "sha512", "md5", "blake2b"},
+    "base64": {"b64encode"},
     "threading": {"Thread", "Lock", "RLock", "Event", "current_thread", "Timer"},
     "urllib": {"parse"},
     "urllib.parse": {"urlsplit", "urlparse", "unquote", "unquote_plus", "quote", "parse_qs", "parse_qsl", "urlencode", "urljoin"},
