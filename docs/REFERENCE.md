@@ -142,7 +142,10 @@ Two facts to know before you rely on it. **Loopback is token-free for the panel'
 ::1) connection is resolved to the uid that owns the peer socket (`/proc/net/tcp`, `/proc/net/tcp6`; Linux only) and only
 the panel's uid is trusted without a token: another local account of the workstation, or anyone with an `ssh -L` to it as
 another user, is treated like a LAN peer (token required on an intranet bind, 403 on a loopback bind, audited as
-`other-local-user`); when the lookup fails, the panel fails closed the same way. And **cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
+`other-local-user`); when the lookup fails, the panel fails closed the same way. The check sees the socket's owner, not where
+the bytes came from: a proxy or an `ssh -L` that the panel's OWN user runs and that forwards traffic from elsewhere to
+127.0.0.1 is trusted without a token, so do not run one (other local users also share the loopback address's refusal
+budget, so a noisy neighbour can make your own token-less requests wait a minute). And **cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
 panel's host name, on any port, RECEIVES the `zouinify_token` cookie with every request that browser makes to it. `HttpOnly`
 only keeps their page scripts from reading it; a server process under that name that logs its request headers has the
 token. Such a server can also set a junk `zouinify_token`, which the panel then refuses on every request (weighed like a
