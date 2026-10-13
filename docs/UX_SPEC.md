@@ -80,7 +80,7 @@ framework, no CDN** (the page must work on a LAN with no internet and must not l
 │              │ │ 3 APPLY T-0145 P1 … [copy cmd] expect … [OK]        │ │ t0117-worker   2d      │ │ freezes 09:20││
 │              │ └─────────────────────────────────────────────────────┘ └────────────────────────┘ └──────────────┘│
 │              │ ┌ Sessions ─────────────────────────────────────────────┐ ┌ Desk chat ─────────────────────────┐ │
-│              │ │ desk  mp-desk                 tickets  Opus  working  │ │ you: is T-0145 safe to apply?       │ │
+│              │ │ desk  mp-desk                 mp-desk  Opus  working  │ │ you: is T-0145 safe to apply?       │ │
 │              │ │ worker t0119-worker    Fable  WAITING  T-0119  14:40  │ │ desk (a1b2c3): yes, plan is newest…│ │
 │              │ │ debug mp-debug         Fable  idle  T-0011            │ │ [ ask the desk … ]          [send]  │ │
 │              │ └───────────────────────────────────────────────────────┘ └────────────────────────────────────┘ │
