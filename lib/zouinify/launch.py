@@ -168,6 +168,13 @@ def cmd_up(cfg, roles=(), dry_run: bool = False, wait_s: float = 30.0, out=None,
     if panel and cfg.panel.get("autostart", True):
         from zouinify import panelctl
         ok = panelctl.ensure_started(cfg, dry_run=dry_run, out=L.out) and ok
+    if panel:
+        from zouinify import panelstate
+        installed, path = panelstate.hook_installed()
+        if not installed:
+            L.say(f"hook          not in {path}: add this yourself (a session must not edit your settings); it tells the panel "
+                  "when a session answers or waits (T-0163):")
+            L.say(panelstate.hook_snippet())
     return 0 if ok or dry_run else 1
 
 

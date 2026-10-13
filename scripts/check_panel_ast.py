@@ -44,7 +44,8 @@ READONLY_API = {
 }
 PANELSTATE_API = {"version", "pid", "now_iso", "url", "state_dir", "panel_json_path", "server_log_path", "same_root", "log",
                   "write_panel_json", "remove_panel_json", "hook_installed",
-                  "token_matches", "token_id", "token_configured"}   # never set_token (rotation is the process side's)
+                  "token_matches", "token_id", "token_configured",
+                  "append_event", "hook_snippet"}                     # never set_token (rotation is the process side's)
                                                                     # nor read_panel_json (it returns the token hash)
 WEBAUTH_API = {"LOOPBACK_PEERS", "TOKEN_RE", "PANEL_COOKIE", "RATE_LIMIT", "RATE_WINDOW_S", "NO_TOKEN_WEIGHT", "CSP",
                "unlock_csp", "host_allowed", "bearer_token", "presented_token", "RateLimiter", "authorize"}   # == webauth.__all__ (T-0174)
@@ -64,7 +65,7 @@ MODULES = {
     "html": {"escape", "unescape"},
     "hashlib": {"sha1", "sha256", "sha512", "md5", "blake2b"},
     "base64": {"b64encode"},
-    "threading": {"Thread", "Lock", "RLock", "Event", "current_thread", "Timer"},
+    "threading": {"Thread", "Lock", "RLock", "Event", "Condition", "current_thread", "Timer"},
     "urllib": {"parse"},
     "urllib.parse": {"urlsplit", "urlparse", "unquote", "unquote_plus", "quote", "parse_qs", "parse_qsl", "urlencode", "urljoin"},
     "unicodedata": {"normalize"},          # T-0175: NFKC before the foreign-dialog allowlist

@@ -134,12 +134,12 @@ class PanelWorld(World):
         self.agents = os.path.join(self.tmp, "agents.json")
         with open(self.agents, "w") as fh:
             json.dump([
-                {"name": "tp-desk", "cwd": self.root, "status": "busy", "pid": os.getpid(), "kind": "interactive"},
-                {"name": "t0001-first-ready-ticket", "cwd": os.path.join(self.root, ".claude", "worktrees", "t0001-first-ready-ticket"), "status": "waiting", "pid": 1, "kind": "interactive"},
-                {"name": "tp-debug", "cwd": self.root, "status": "idle", "pid": 2, "kind": "interactive"},
-                {"name": "other-project", "cwd": self.tmp, "status": "idle", "pid": 3, "kind": "interactive"},
+                {"name": "tp-desk", "cwd": self.root, "status": "busy", "pid": os.getpid(), "kind": "interactive", "sessionId": "sid-desk"},
+                {"name": "t0001-first-ready-ticket", "cwd": os.path.join(self.root, ".claude", "worktrees", "t0001-first-ready-ticket"), "status": "waiting", "pid": 1, "kind": "interactive", "sessionId": "sid-worker"},
+                {"name": "tp-debug", "cwd": self.root, "status": "idle", "pid": 2, "kind": "interactive", "sessionId": "sid-debug"},
+                {"name": "other-project", "cwd": self.tmp, "status": "idle", "pid": 3, "kind": "interactive", "sessionId": "sid-other"},
                 {"name": "elsewhere-bf", "cwd": self.foreign_cwd, "status": "waiting", "pid": foreign_pid, "kind": "interactive"},
-                {"name": "lonely-xy", "cwd": os.path.join(self.tmp, "other3"), "status": "waiting", "pid": 7, "kind": "interactive"},
+                {"name": "lonely-xy", "cwd": os.path.join(self.tmp, "other3"), "status": "waiting", "pid": 7, "kind": "interactive", "sessionId": "sid-lonely"},
                 {"name": "home-session", "cwd": self.home, "status": "waiting", "pid": 8, "kind": "interactive"},
                 {"name": "withheld-zz", "cwd": self.foreign_cwd, "status": "waiting", "pid": fake_pids["withheld-zz"], "kind": "interactive"},
                 {"name": "nodialog-qq", "cwd": self.foreign_cwd, "status": "waiting", "pid": fake_pids["nodialog-qq"], "kind": "interactive"},

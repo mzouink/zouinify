@@ -298,6 +298,11 @@ def load(root: str | None = None) -> Config:
     if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
         errs.append("panel.port: an integer between 1024 and 65535")
         port = 0
+    hook_port = pn.get("hook_port", (port + 2) if port else 0)      # T-0163: the loopback-only hook listener; +1 is the terminal page
+    if isinstance(hook_port, bool) or not isinstance(hook_port, int) or not 1024 <= hook_port <= 65535 or hook_port == port:
+        if port:
+            errs.append("panel.hook_port: an integer between 1024 and 65535, not panel.port (default panel.port + 2)")
+        hook_port = 0
     bind = BIND_ALIASES.get(str(pn.get("bind", "loopback")))
     if bind is None:
         errs.append("panel.bind: loopback (the default) or intranet")
@@ -331,7 +336,7 @@ def load(root: str | None = None) -> Config:
     sd = pn.get("state_dir", ".ops/state")
     if str(sd).strip().rstrip("/") != ".ops/state":
         errs.append(f"panel.state_dir: fixed at .ops/state (the panel's pid file and log live there; not configurable), not {sd!r}")
-    panel = {"port": port, "bind": bind or "loopback", "link_host": str(pn.get("link_host", "auto")),
+    panel = {"port": port, "hook_port": hook_port, "bind": bind or "loopback", "link_host": str(pn.get("link_host", "auto")),
              "state_dir": ".ops/state", "refresh_s": refresh_s,
              "redact": str(pn.get("redact", "default")), "autostart": bool(pn.get("autostart", True)),
              "logs": logs, "plans_glob": str(plans_glob) if plans_glob else None}

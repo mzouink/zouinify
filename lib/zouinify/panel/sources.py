@@ -547,7 +547,7 @@ def foreign_dialog(screen: str) -> tuple:
     return "\n".join(t if len(t) <= FOREIGN_LINE_SHOWN else t[:FOREIGN_LINE_SHOWN - 1] + "\u2026" for t in picked), ""
 
 
-def foreign_waiting_source(cfg) -> dict:
+def foreign_waiting_source(cfg, events=None) -> dict:
     """The user's Claude sessions OUTSIDE this project that `claude agents --json` reports as waiting (T-0175, "Waiting for
     me"): name, tmux window (pane list + /proc walk), project label, the prompt's first line from a redacted capture. Only
     these few panes are captured (a capture costs real time with dozens of sessions), so a foreign dialog that `claude
@@ -574,8 +574,10 @@ def foreign_waiting_source(cfg) -> dict:
         screen = redact(readonly.capture_pane(tmux_name)) if tmux_name else ""
         portion, why = foreign_dialog(screen) if screen else ("", "")
         label, registered = project_label(str(a.get("cwd") or ""), projects)
+        ev = events.state(a.get("sessionId")) if events is not None else None      # a foreign event: time only, never text
         rows.append({"name": name, "tmux": tmux_name, "project": label, "registered": registered, "in_project": False,
-                     "role": "", "ticket": "", "since": "", "started_at": a.get("startedAt"), "withheld": why,
+                     "role": "", "ticket": "", "since": "", "since_exact": ev["since"] if ev and ev["waiting"] else "",
+                     "started_at": a.get("startedAt"), "withheld": why,
                      "waiting_for": "waiting (screen withheld)" if why else (waiting_line(portion) or last_body_line(portion))})
     rows.sort(key=lambda r: (r["project"], r["name"]))
     return {"rows": rows}
@@ -585,10 +587,32 @@ def waiting_row(cfg, r: dict) -> dict:
     """A row of this project's waiting list in the shape of the "Waiting for me" page."""
     return {"name": r["name"], "tmux": r.get("tmux"), "project": cfg.name, "registered": True, "in_project": True,
             "role": r.get("role", ""), "ticket": r.get("ticket", ""), "waiting_for": r.get("waiting_for", ""),
-            "since": r.get("since", ""), "started_at": r.get("started_at")}
+            "since": r.get("since", ""), "started_at": r.get("started_at"), "last_reply": r.get("last_reply", ""),
+            "last_event": r.get("last_event", "")}
 
 
-def sessions_source(cfg) -> dict:
+def apply_events(row: dict, events, session_id) -> dict:
+    """The hook events of this session (T-0163) decide its waiting state and carry its last reply: exact and instant.
+    Without any event for the session the screen heuristic stands. `claude agents` saying waiting still wins."""
+    ev = events.state(session_id) if events is not None else None
+    row["last_event"], row["last_event_at"], row["last_reply"], row["last_reply_at"] = "", "", "", ""
+    if not ev:
+        return row
+    row["last_event"], row["last_event_at"] = ev["last_event"], ev["last_at"]
+    row["last_reply"], row["last_reply_at"] = ev["last_reply"], ev["last_reply_at"]
+    if row.get("status") == "busy":
+        return row
+    if ev["waiting"]:
+        row["state"] = "waiting"
+        row["waiting_for"] = ev["waiting_for"] or row.get("waiting_for") or row.get("last_line", "")
+        row["since_exact"] = ev["since"]
+    elif row.get("status") != "waiting":
+        row["state"] = "idle" if row["state"] == "waiting" else row["state"]
+        row["waiting_for"] = ""
+    return row
+
+
+def sessions_source(cfg, events=None) -> dict:
     agents = readonly.list_agents()
     panes = readonly.list_panes()
     pane_by_pid = pane_index(panes)
@@ -648,6 +672,7 @@ def sessions_source(cfg) -> dict:
                      "last_line": last_body_line(screen), "waiting_for": waiting_for if state == "waiting" else "", "since": "",
                      "started_at": a.get("startedAt"), "pid": a.get("pid"), "cwd": a.get("cwd"), "session_id": a.get("sessionId"),
                      "launched_at": e.get("launched_at"), "by": e.get("by"), "registered": bool(e)})
+        apply_events(rows[-1], events, a.get("sessionId"))
     for e in reg:
         if e["name"] not in seen:
             seen[e["name"]] = True
@@ -702,12 +727,12 @@ def freeze_source(cfg) -> dict:
     return readonly.freeze(cfg)
 
 
-def hook_status() -> dict:
+def hook_status(events=None, hook_port: int = 0) -> dict:
     installed, path = panelstate.hook_installed()
-    snippet = json.dumps({"hooks": {ev: [{"hooks": [{"type": "command", "command": "~/.claude/skills/zouinify/templates/hooks/zouinify-hook.sh",
-                                                     "timeout": 5}]}] for ev in ("Stop", "Notification", "SessionStart", "SessionEnd")}}, indent=1)
-    return {"installed": installed, "path": path, "snippet": snippet,
-            "note": "the hook script arrives with T-0163; add the snippet yourself: a session must not edit your settings"}
+    return {"installed": installed, "path": path, "snippet": panelstate.hook_snippet(), "hook_port": hook_port,
+            "events_seen": events.count() if events is not None else 0,
+            "note": "add the snippet yourself: a session must not edit your settings. The listener is 127.0.0.1 only; "
+                    "events are data (a session's last reply, what it waits for, since when), the panel never acts on one"}
 
 
 def ticket_sections(path: str) -> dict:
@@ -754,9 +779,12 @@ class Snapshot:
     def __init__(self, cfg, port: int, bind: str, started_at: str):
         self.cfg, self.port, self.bind, self.started_at = cfg, port, bind, started_at
         r = int(cfg.panel.get("refresh_s") or 30)
+        self.events = None                         # the hook EventStore, attached by the server (T-0163)
+        self.hook_port = 0
         self.src = {
-            "inbox": {"fn": inbox_source, "ttl": r}, "board": {"fn": board_source, "ttl": r}, "sessions": {"fn": sessions_source, "ttl": r},
-            "foreign_waiting": {"fn": foreign_waiting_source, "ttl": r},
+            "inbox": {"fn": inbox_source, "ttl": r}, "board": {"fn": board_source, "ttl": r},
+            "sessions": {"fn": lambda c: sessions_source(c, self.events), "ttl": r},
+            "foreign_waiting": {"fn": lambda c: foreign_waiting_source(c, self.events), "ttl": r},
             "creds": {"fn": creds_source, "ttl": 60}, "logs": {"fn": logs_source, "ttl": 20}, "releases": {"fn": releases_source, "ttl": 60},
             "freeze": {"fn": freeze_source, "ttl": r}, "trunk": {"fn": trunk_sha, "ttl": 60},
         }
@@ -767,6 +795,15 @@ class Snapshot:
         # when each session was first seen waiting, per source (derived from the refreshes; forgotten when it stops waiting)
         self.waiting_since: dict = {"sessions": {}, "foreign_waiting": {}}
 
+    def attach_events(self, store, hook_port: int) -> None:
+        """The hook listener's store: an event invalidates the session sources so the next tick re-reads them."""
+        self.events, self.hook_port = store, hook_port
+        store.listeners.append(self.invalidate_sessions)
+
+    def invalidate_sessions(self) -> None:
+        for name in ("sessions", "foreign_waiting"):
+            self.src[name]["at"] = 0.0
+
     def mark_waiting(self, data: dict, source: str = "sessions") -> dict:
         now = panelstate.now_iso()
         seen_since = self.waiting_since[source]
@@ -774,8 +811,12 @@ class Snapshot:
         for r in (data or {}).get("rows", []):
             if r.get("state", "waiting") == "waiting":
                 names.add(r["name"])
-                r["since"] = seen_since.setdefault(r["name"], now)
+                exact = r.pop("since_exact", "")
+                r["since"] = exact or seen_since.setdefault(r["name"], now)      # a hook event's time is exact (T-0163)
+                if exact:
+                    seen_since[r["name"]] = exact
             else:
+                r.pop("since_exact", None)
                 r["since"] = ""
         for n in [n for n in seen_since if n not in names]:
             seen_since.pop(n, None)
@@ -901,7 +942,7 @@ class Snapshot:
             "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
             "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},
             "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": live_checks(cfg, board),
-            "config": {k: v for k, v in cfg.to_dict().items() if k != "warnings"}, "hook": hook_status(),
+            "config": {k: v for k, v in cfg.to_dict().items() if k != "warnings"}, "hook": hook_status(self.events, self.hook_port),
             "sources": self.sources_meta(), "errors": {"inbox": inbox_err, "board": board_err, "sessions": sess_err, "foreign_waiting": foreign_err},
         }
 

@@ -30,6 +30,7 @@ sessions:
                  prompt: "Read tickets/WORKER_BRIEF.md, then claim {id}."}
 panel:
   port: 4790                            # `init` proposes 4700 + (crc32(root) % 90); `up` refuses a port held by anything else
+  hook_port: 4792                       # the Claude Code hook listener, 127.0.0.1 only (default port + 2; port + 1 is the terminal page)
   bind: loopback                        # loopback | intranet  (intranet = 0.0.0.0, token mandatory on every request, link_host below)
   link_host: auto
   state_dir: .ops/state                 # gitignored: panel.json (port, pid, token hash), sessions.json, events.jsonl, audit.jsonl

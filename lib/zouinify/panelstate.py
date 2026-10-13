@@ -114,12 +114,15 @@ def _write_json(path: str, obj) -> None:
     os.replace(tmp, path)
 
 
-def write_panel_json(cfg, port: int, pid_: int, started_at: str) -> None:
-    """The runtime fields of a running server; the token fields already there are kept."""
+def write_panel_json(cfg, port: int, pid_: int, started_at: str, hook_port: int | None = None) -> None:
+    """The runtime fields of a running server; the token fields already there are kept. `hook_port` is what the hook
+    script reads to find the loopback listener (T-0163)."""
     with _locked(cfg):
         cur = read_panel_json(cfg) or {}
         d = {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": cfg.panel.get("bind", "loopback"),
              "url": url(cfg, port), "started_at": started_at, "version": __version__}
+        if hook_port:
+            d["hook_port"] = int(hook_port)
         for k in TOKEN_FIELDS:
             if cur.get(k):
                 d[k] = cur[k]
@@ -197,3 +200,58 @@ def hook_installed() -> tuple:
             return "zouinify-hook" in fh.read(), path
     except OSError:
         return False, path
+
+
+HOOK_SCRIPT = "~/.claude/skills/zouinify/templates/hooks/zouinify-hook.sh"
+HOOK_EVENTS = ("Stop", "Notification", "SessionStart", "SessionEnd")
+
+
+def hook_snippet() -> str:
+    """The ~/.claude/settings.json block the HUMAN adds (a session never edits that file): the four events, the
+    Notification matcher for the two prompt kinds, a 5 s timeout."""
+    def entry(ev):
+        h = {"hooks": [{"type": "command", "command": HOOK_SCRIPT, "timeout": 5}]}
+        if ev == "Notification":
+            h = {"matcher": "permission_prompt|idle_prompt", **h}
+        return [h]
+    return json.dumps({"hooks": {ev: entry(ev) for ev in HOOK_EVENTS}}, indent=1)
+
+
+EVENTS_KEEP_DAYS = 14
+
+
+def events_path(cfg) -> str:
+    return os.path.join(state_dir(cfg), "events.jsonl")
+
+
+def append_event(cfg, event: dict) -> None:
+    """Append one hook event (already allowlisted by the listener) to <state_dir>/events.jsonl: 0600, O_NOFOLLOW,
+    under the state lock; the file rotates to events.<date>.jsonl when the day changes and files older than
+    EVENTS_KEEP_DAYS go. Never raises: a logging failure must not fail a hook."""
+    try:
+        with _locked(cfg):
+            path = events_path(cfg)
+            today = dt.date.today()
+            try:
+                st = os.lstat(path)
+                if not os.path.islink(path):
+                    day = dt.date.fromtimestamp(st.st_mtime)
+                    if day != today:
+                        os.replace(path, os.path.join(state_dir(cfg), f"events.{day.isoformat()}.jsonl"))
+                else:
+                    os.remove(path)        # never write through a planted symlink
+            except FileNotFoundError:
+                pass
+            for name in os.listdir(state_dir(cfg)):
+                if name.startswith("events.") and name.endswith(".jsonl") and name != "events.jsonl":
+                    try:
+                        day = dt.date.fromisoformat(name[len("events."):-len(".jsonl")])
+                    except ValueError:
+                        continue
+                    if (today - day).days > EVENTS_KEEP_DAYS:
+                        os.remove(os.path.join(state_dir(cfg), name))
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass

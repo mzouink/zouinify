@@ -19,12 +19,14 @@ import hashlib
 import json
 import os
 import re
+import threading
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import MappingProxyType
 
 from zouinify import panelstate, readonly, webauth
+from zouinify.panel import hooks
 from zouinify.panel.sources import Snapshot
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -214,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_static(path[len("/static/"):], head)
             if path == "/api/unlock":
                 return self.unlock(head)
+            if path == "/api/events":
+                return self.serve_events(head)
             if path == "/health":
                 return self.send_json(HTTPStatus.OK, {"ok": True, "service": "zouinify-panel", "version": panelstate.version(),
                                                       "root": snap.cfg.root, "project": snap.cfg.name, "bind": snap.bind, "port": snap.port,
@@ -251,6 +255,29 @@ class Handler(BaseHTTPRequestHandler):
             self.log_message("error on %s: %r", path, e)
             return self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(e).__name__}: {e}"[:300]}, head)
 
+    def serve_events(self, head: bool) -> None:
+        """GET /api/events: the SSE feed of hook events (T-0163), under the same Host/token rules as everything else.
+        A foreign event carries no text; the stream ends after hooks.MAX_STREAM_S or when the server stops."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        if head or self.server.events is None:
+            return
+
+        def write(chunk: bytes) -> None:
+            self.wfile.write(chunk)
+            self.wfile.flush()
+        try:
+            hooks.stream(self, self.server.events, self.server.snap.stop_event, write)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def serve_static(self, rel: str, head: bool) -> None:
         full = os.path.normpath(os.path.join(STATIC_DIR, rel))
         if not full.startswith(STATIC_DIR + os.sep) or not os.path.isfile(full):
@@ -265,7 +292,7 @@ class PanelServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, cfg, bind: str, allowed_hosts, token_required: bool):
+    def __init__(self, address, handler, cfg, bind: str, allowed_hosts, token_required: bool, hook_port: int = 0):
         super().__init__(address, handler)
         self.cfg = cfg
         self.bind = bind
@@ -274,6 +301,22 @@ class PanelServer(ThreadingHTTPServer):
         self.started_at = panelstate.now_iso()
         self.snap = Snapshot(cfg, self.server_address[1], bind, self.started_at)
         self.limiter = webauth.RateLimiter()      # the panel's weights: wrong Bearer 1, missing token or wrong cookie 0.2
+        # the hook listener (T-0163): 127.0.0.1 only, whatever `bind` is; events are data the sessions rows show
+        self.events = hooks.EventStore(cfg)
+        self.hooks = hooks.make_hook_server(cfg, self.events, hook_port)
+        self.snap.attach_events(self.events, self.hooks.server_address[1])
+        self.hook_thread = None
+
+    def serve_hooks(self) -> None:
+        self.hook_thread = threading.Thread(target=self.hooks.serve_forever, kwargs={"poll_interval": 0.5}, name="zouinify-hooks", daemon=True)
+        self.hook_thread.start()
+
+    def close_hooks(self) -> None:
+        try:
+            self.hooks.shutdown()
+            self.hooks.server_close()
+        except OSError:
+            pass
 
     def token_matches(self, presented: str) -> bool:
         """The matcher authorize() is given: constant time, against the hash in panel.json (re-read per request, so a
@@ -291,16 +334,20 @@ def bind_address(bind: str) -> str:
     return "127.0.0.1"
 
 
-def make_server(cfg, port: int | None = None, bind: str | None = None, allowed_hosts=None, address: str | None = None) -> PanelServer:
+def make_server(cfg, port: int | None = None, bind: str | None = None, allowed_hosts=None, address: str | None = None,
+                hook_port: int | None = None) -> PanelServer:
     """loopback -> 127.0.0.1, no token; intranet -> 0.0.0.0, token required on every non-loopback request (the
     token must already be set: the process side prints it on a real TTY). `address` narrows the bind for tests,
-    which must never expose even a test token on the LAN; production never passes it."""
+    which must never expose even a test token on the LAN; production never passes it. The hook listener binds
+    127.0.0.1:panel.hook_port; an ephemeral main port (tests) gets an ephemeral hook port too."""
     bind = bind or cfg.panel.get("bind", "loopback")
     port = cfg.panel["port"] if port is None else port
+    if hook_port is None:
+        hook_port = 0 if port == 0 else int(cfg.panel.get("hook_port") or 0)
     if bind == "intranet" and not panelstate.token_configured(cfg):
         readonly.fail("panel.bind: intranet needs the browser token first: run `zouinify panel token rotate` in your own "
                       "terminal (never inside a Claude session), then start the panel")
-    return PanelServer((address or bind_address(bind), port), Handler, cfg, bind, allowed_hosts, bind == "intranet")
+    return PanelServer((address or bind_address(bind), port), Handler, cfg, bind, allowed_hosts, bind == "intranet", hook_port)
 
 
 def run(srv: PanelServer) -> int:
@@ -308,14 +355,18 @@ def run(srv: PanelServer) -> int:
     user-level projects list); the pid file's runtime fields exist exactly while the server runs."""
     cfg = srv.cfg
     actual = srv.server_address[1]
-    panelstate.write_panel_json(cfg, actual, panelstate.pid(), srv.started_at)
+    hook_port = srv.hooks.server_address[1]
+    panelstate.write_panel_json(cfg, actual, panelstate.pid(), srv.started_at, hook_port=hook_port)
     srv.snap.start_refresher()
+    srv.serve_hooks()
     panelstate.log(cfg, f"zouinify panel {panelstate.version()} serving {cfg.name} on {srv.server_address[0]}:{actual} "
-                        f"(read-only, {srv.bind}{', token required beyond loopback' if srv.token_required else ''}) pid {panelstate.pid()}")
+                        f"(read-only, {srv.bind}{', token required beyond loopback' if srv.token_required else ''}) pid {panelstate.pid()}; "
+                        f"hook listener on 127.0.0.1:{hook_port}")
     try:
         srv.serve_forever(poll_interval=0.5)
     finally:
         srv.snap.stop()
+        srv.close_hooks()
         srv.server_close()
         panelstate.remove_panel_json(cfg, panelstate.pid())
         panelstate.log(cfg, "zouinify panel stopped")

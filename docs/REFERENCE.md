@@ -87,6 +87,30 @@ number, cookie text, credential/login/flag word); otherwise the row says "waitin
 to the window to read it. The capture is
 the last visible screen only, never scrollback.
 
+## The hook: how the panel learns that a session answered or waits
+
+Claude Code hooks (user-level, `~/.claude/settings.json`) run `templates/hooks/zouinify-hook.sh` on `Stop`,
+`Notification` (`permission_prompt|idle_prompt`), `SessionStart` and `SessionEnd`. The script reads the event JSON on stdin,
+finds the project (`$ZOUINIFY_PROJECT`, else the nearest ancestor of the event's `cwd` with `.ops/config.yaml`; none: exit 0
+in milliseconds), reads `hook_port` from `.ops/state/panel.json` and posts the JSON to `http://127.0.0.1:<hook_port>/api/hook`
+with a 1 s limit; it always exits 0, so it can never block a session. `zouinify up` prints the settings snippet when the
+file lacks it: **you add it yourself; a session never edits your settings.**
+
+The listener is a second server inside the panel process, bound to 127.0.0.1 only (`panel.hook_port`, default `panel.port
++ 2`); the LAN-facing server keeps answering 405 to every POST. It accepts `POST /api/hook` from a loopback peer, at most
+64 KiB, JSON, and keeps only allowlisted fields: event name, session id, permission mode, notification type, SessionStart
+source and SessionEnd reason, plus the reply or notification text for THIS project's sessions (truncated to 2000 characters,
+passed through the redactor). An event whose `cwd` lies outside the project keeps no text at all, in memory, in
+`.ops/state/events.jsonl` (0600, rotated daily, 14 days kept) or over the feed. Events are data: the sessions table shows a
+session's last reply and last event, a `permission_prompt`/`idle_prompt` marks it "waiting for you" with the exact time until
+a later `Stop`, `UserPromptSubmit`, `SessionStart` or `SessionEnd`; the screen heuristic stands for sessions without events.
+`GET /api/events` is the page's server-sent-events feed (same Host and token rules as every other request); the page
+re-reads the snapshot within a second of an event and keeps its 30 s poll as the fallback.
+
+Residual, until the loopback peer-uid check (T-0169): any local user of the workstation can post to the hook port and make
+the page show a forged "waiting" or "last reply" for this project. Events never trigger an action, so that is the whole
+exposure.
+
 ## UX specification
 
 The panel's look, screen anatomy, tiers of clickable actions and acceptance criteria are in
@@ -145,6 +169,7 @@ lib/zouinify/
   panelctl.py                 panel start/stop/status/url and the user-level projects list (the process side, outside panel/)
   panelstate.py               the server's own pid file and log (the only files the panel package may write)
   webauth.py                  the request-side checks (Host/Origin, bearer/cookie, weighted rate limiter, the decision) shared by the panel and the terminal page
+  panel/hooks.py              the loopback-only hook listener and the event store (T-0163); templates/hooks/zouinify-hook.sh is the script the human installs
   panel/                      the read-only server: sources.py (cached sources), server.py (GET-only HTTP), redact.py, static/
 templates/
   ops/config.yaml.example     the per-project config
