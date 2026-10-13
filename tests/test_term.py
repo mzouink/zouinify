@@ -439,6 +439,18 @@ class TestTermApi(TermWorld):
         self.assertEqual(st, 404)
         self.assertEqual(self.sent(), [])
 
+    def test_another_local_user_gets_nothing_on_loopback(self):
+        """T-0169's second layer: a loopback peer whose socket is not ours is refused before the unlock screen."""
+        cookie, _ = self.unlock()
+        with mock.patch.object(term_server.webauth, "same_user_peer", lambda conn: False):
+            for method, path, body in (("GET", "/term/health", None), ("GET", "/term/", None), ("POST", "/term/unlock", {"passphrase": PASS}),
+                                       ("GET", "/term/me", None)):
+                st, _, d = self.req(method, path, body=body, cookie=cookie)
+                self.assertEqual(st, 403, (path, d))
+        self.assertTrue(any(a["event"] == "refused" and a["reason"] == "other-local-user" for a in self.audit()))
+        st, _, _ = self.req("GET", "/term/me", cookie=cookie)
+        self.assertEqual(st, 200, "our own connections keep working")
+
     def test_the_panel_sees_the_terminal_only_while_its_process_lives(self):
         info = panelstate.term_info(self.cfg)
         self.assertEqual((info["enabled"], info["running"], info["url"], info["targets"]), (True, False, "", "workers"))

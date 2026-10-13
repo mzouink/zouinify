@@ -170,6 +170,7 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.1"
     timeout = SOCKET_TIMEOUT_S
+    same_user = None                 # the peer-uid verdict of this connection (T-0169), looked up on its first request
 
     # -- plumbing ---------------------------------------------------------------------------------------
     def log_message(self, fmt, *args):  # noqa: D401 - one line per request into term.log, never a secret
@@ -178,6 +179,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def ip(self) -> str:
         return self.client_address[0]            # the socket's peer, never a forwarded header
+
+    def peer_is_loopback(self) -> bool:
+        return self.client_address[0] in webauth.LOOPBACK_PEERS
+
+    def peer_is_same_user(self) -> bool:
+        """A loopback peer whose socket belongs to this process's uid (T-0169): the second loopback layer under the
+        passphrase. Another local user's connection gets nothing from the terminal page, not even the unlock screen.
+        Looked up once per connection; any doubt is False."""
+        if not self.peer_is_loopback():
+            return False
+        if self.same_user is None:
+            self.same_user = webauth.same_user_peer(self.connection)
+        return self.same_user
 
     def ua(self) -> str:
         return CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:80]
@@ -283,6 +297,10 @@ class Handler(BaseHTTPRequestHandler):
             self.audit("refused", reason="host-or-origin", path=path[:120])
             return self.send_json(HTTPStatus.FORBIDDEN, {"error": "host or origin not allowed: the terminal page answers only to its own "
                                                                   "names with no foreign Origin"}, head)
+        if self.peer_is_loopback() and not self.peer_is_same_user():
+            self.drain()
+            self.audit("refused", reason="other-local-user", path=path[:120])
+            return self.send_json(HTTPStatus.FORBIDDEN, {"error": "refused: a loopback connection from another local user"}, head)
         try:
             if method in ("GET", "HEAD"):
                 if path == "/term/health":
