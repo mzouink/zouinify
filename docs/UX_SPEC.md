@@ -9,7 +9,7 @@ Rules the UI can never violate, in one place:
 
 1. **Zero own state.** Every list is derived at render time from `ticket.sh human --json`, `ticket.sh board --json` (front
    matter until T-0158 lands), `claude agents --json`, the launcher registry, `tmux capture-pane` (redacted), hook events,
-   the config and the logs. The page never remembers "clicked", "read" or "done"; an item disappears when its source stops
+   the config, and the log tails and plan files named by `panel.logs` / `panel.plans_glob` (empty by default; the consumer sets them). The page never remembers "clicked", "read" or "done"; an item disappears when its source stops
    printing it. The only persisted things are the token hash and the receipt/audit log, and those are the server's.
 2. **The page never types into a Claude pane, never launches or kills a session, never runs a mutating `ticket.sh`
    command, never `aws`/`terraform`/`docker`/`git`.** A click is a *receipt* (T-0162) that the desk session verifies before
@@ -118,7 +118,7 @@ Counts are scoped to this project (sessions: `cwd == project root`; tickets: thi
 | `ready` | ready | blue | severity; **[launch worker]** after T-0162 (disabled in v1), hidden when FREEZE excludes the id |
 | `in-dev` | in-dev | amber | owner session name, `claimed Xh ago`, dirty/behind badges from `board --json --slow` when cached |
 | `review` | in-review + ready-to-merge | purple | owner; `ready-to-merge` sub-badge |
-| `to deploy` | merged (deploy != none) + ready-to-deploy | teal | the `plan:` basename; VOID badge when a newer plan exists (T-0081 rule, same as `ticket.sh human`) |
+| `to deploy` | merged (deploy != none) + ready-to-deploy | teal | the `plan:` basename; VOID badge when a newer file matching `panel.plans_glob` exists (the same newest-plan rule `ticket.sh human` applies); no badge when the glob is empty |
 | `deployed` | deployed | green outline | `closed_by` short shas; "awaiting live check" |
 
 Above the lanes, chips with counts: `backlog n` (grey), **`blocked n`** (amber; the questions are inbox DECIDE items),
@@ -247,7 +247,7 @@ vendored `ticket.sh` core. Nothing editable from the page.
 
 v1 (T-0160, read-only): `GET /health` (project root, version, bind), `GET /api/snapshot` (header, kpis, inbox, board,
 sessions, waiting, sitting, creds, logs, releases; each with `age_s`), `GET /api/tickets/<id>` (drawer), `GET /api/sessions/<name>`
-(detail with the redacted screen), `GET /api/logs?which=apply|frontend`. Any `POST` -> 405.
+(detail with the redacted screen), `GET /api/logs?label=<a panel.logs label>` (404 for an unknown label; the dashboard shows one tail per configured entry, none when the list is empty). Any `POST` -> 405.
 v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/poll` (desk only), `GET /api/events` (SSE),
 `POST /api/hook` (loopback listener only).
 
