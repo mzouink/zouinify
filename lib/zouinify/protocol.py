@@ -19,6 +19,7 @@ import sys
 
 from zouinify import ZouinifyError
 from zouinify import briefs as briefsmod
+from zouinify import ticketenv
 from zouinify.config import ROLE_SESSIONS
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,11 +34,13 @@ STATES = ("backlog", "ready", "in-dev", "in-review", "ready-to-merge", "merged",
           "dropped", "skipped")
 VERB_HINTS = {"APPLY": "a saved plan", "DEPLOY": "a deploy", "PUSH": "an image", "RUN": "any other command", "DECIDE": "",
               "CHECK": "browser or email", "APPROVE": "a paid run, with the dollar amount", "SSO": "refresh credentials"}
-SECTION_RE = re.compile(r"(?ms)^## (\d+)\. .*?(?=^## \d+\. |\Z)")
+HEADING_RE = re.compile(r"^## (\d+)\. ")
+FENCE_RE = re.compile(r"^(```|~~~)")
+RULE_RE = re.compile(r"^-{3,}\s*$")
 PROJECT_README_REL = os.path.join(".ops", "README.project.md")
 
 
-def plugin_docs_dir(cfg, given: str | None) -> str:
+def plugin_docs_dir(cfg, given: str | None, out=None) -> str:
     if given:
         d = os.path.realpath(os.path.expanduser(given))
         if not os.path.isdir(d):
@@ -46,6 +49,9 @@ def plugin_docs_dir(cfg, given: str | None) -> str:
     d = os.path.join(PLUGINS, cfg.deploy_plugin, "docs")
     if os.path.isdir(d):
         return d
+    if cfg.deploy_plugin != "none" and out is not None:
+        print(f"warning: no docs shipped for deploy plugin {cfg.deploy_plugin} ({d}); rendering with the generic `none` prose -- pass "
+              f"--plugin-docs DIR for the plugin's own", file=out)
     return os.path.join(PLUGINS, "none", "docs")
 
 
@@ -63,8 +69,33 @@ def load_fragments(directory: str) -> dict:
 
 
 def project_sections(text: str) -> dict:
-    """{number: block} for every `## N. ...` section of .ops/README.project.md; its preamble is ignored."""
-    return {int(m.group(1)): m.group(0).rstrip("\n").rstrip("-").rstrip("\n") for m in SECTION_RE.finditer(text)}
+    """{number: block} for every `## N. <title>` section of .ops/README.project.md (that exact heading form, at the margin,
+    outside fenced code), its preamble ignored, CRLF normalized, trailing blank and `---` rule lines dropped; the same
+    number twice is an error."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    sections: dict = {}
+    current = None
+    fenced = None
+    for line in text.split("\n"):
+        f = FENCE_RE.match(line)
+        if f:
+            fenced = None if fenced == f.group(1) else (fenced or f.group(1))
+        m = HEADING_RE.match(line) if fenced is None else None
+        if m:
+            n = int(m.group(1))
+            if n in sections:
+                raise ZouinifyError(f".ops/README.project.md: section `## {n}.` appears twice")
+            current = n
+            sections[n] = [line]
+            continue
+        if current is not None:
+            sections[current].append(line)
+    out = {}
+    for n, lines in sections.items():
+        while lines and (not lines[-1].strip() or RULE_RE.match(lines[-1])):
+            lines.pop()
+        out[n] = "\n".join(lines)
+    return out
 
 
 def read_project_readme(cfg, given: str | None) -> dict:
@@ -128,6 +159,8 @@ def context(cfg, fragments: dict, sections: dict) -> dict:
         "states_line": " ".join(STATES),
         "releases_item": (f"- `releases/R-YYYY-MM-DD-N.md` -- one per production release: what `{prod}` was moved to, and why." if prod else ""),
         "deploy_plugin": cfg.deploy_plugin,
+        "debug_phrase": (f"the `{cfg.sessions['debug'].name}` session does this" if "debug" in cfg.sessions and cfg.sessions["debug"].name
+                         else "a session that did not write the change does this"),
     })
     for role in ROLE_SESSIONS:
         ctx.setdefault(f"{role}.name", f"({role}: not configured)")
@@ -144,10 +177,10 @@ def context(cfg, fragments: dict, sections: dict) -> dict:
     return ctx
 
 
-def render_all(cfg, plugin_docs: str | None = None, project_readme: str | None = None) -> dict:
+def render_all(cfg, plugin_docs: str | None = None, project_readme: str | None = None, out=None) -> dict:
     if not os.path.isdir(TEMPLATES):
         raise ZouinifyError(f"no templates under {TEMPLATES}")
-    fragments = load_fragments(plugin_docs_dir(cfg, plugin_docs))
+    fragments = load_fragments(plugin_docs_dir(cfg, plugin_docs, out))
     ctx = context(cfg, fragments, read_project_readme(cfg, project_readme))
     out = {}
     for name in FILES:
@@ -172,7 +205,7 @@ def cmd_list(cfg, out=None) -> int:
 def cmd_render(cfg, out_dir: str, plugin_docs: str | None = None, project_readme: str | None = None, force: bool = False,
                out=None) -> int:
     out = out or sys.stdout
-    rendered = render_all(cfg, plugin_docs, project_readme)
+    rendered = render_all(cfg, plugin_docs, project_readme, out)
     out_dir = os.path.realpath(os.path.expanduser(out_dir))
     conflicts = []
     for name, text in rendered.items():
@@ -193,8 +226,6 @@ def cmd_render(cfg, out_dir: str, plugin_docs: str | None = None, project_readme
             with open(target, encoding="utf-8") as fh:
                 verb = "unchanged" if fh.read() == text else "overwrote"
         if verb != "unchanged":
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(text)
+            ticketenv.write_atomic(target, text)
         print(f"{verb:<10} {target}", file=out)
     return 0

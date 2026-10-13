@@ -36,7 +36,7 @@ branch is behind trunk or has uncommitted files, and lists ORPHANS (branches wit
 |---|---|---|
 | `BLOCKED` | needs a decision only you can make; the question is the ticket's `blocked_on:` line, verbatim | answer it |
 | `READY-TO-DEPLOY` | merged, handoff written; the ticket's `## Deploy handoff` has the exact commands | run them, then say "deployed" |
-| `DEPLOYED` | live; waiting for a real check from a fresh client or one real job | test it (the `{{debug.name}}` session does this) |
+| `DEPLOYED` | live; waiting for a real check from a fresh client or one real job | test it ({{debug_phrase}}) |
 | `DONE` | verified live | nothing |
 | `READY` | investigated and scoped, nobody working on it | say "go on T-xxxx" |
 | `BACKLOG` | known, not yet investigated, or parked | nothing (new reports go to the ticket desk) |
@@ -153,7 +153,7 @@ desk, don't work around it.
 8. {{plugin.rule_after_deploy}}
 9. **Scratchpads are per-session and can collide.** Anything another session needs goes in git, a ticket,
    or a message -- never "it's in my scratchpad".
-10. **One ticket, one branch, one worktree.** A follow-up that has to wait (an image push, a stage-2 pin or
+10. **One ticket, one branch, one worktree.** A follow-up that has to wait (a later deploy step, a pin or a
     switch) is a new `chore` ticket with `siblings:` naming the parent, on its own branch and worktree --
     never a second branch under the old ticket, never a desk cherry-pick onto trunk. A branch two tickets
     genuinely share is merged with `ticket.sh merge T-xxxx --allow-trailers T-yyyy`, agreed by both owners;

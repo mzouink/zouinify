@@ -116,7 +116,7 @@ Counts are scoped to this project (sessions: `cwd == project root`; tickets: thi
 
 ### 2.3 Ticket board (the lifecycle has 12 states, the dashboard shows 5 lanes)
 
-`scripts/ticket.sh` states: `backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped`.
+`scripts/ticket.sh` states: `backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped skipped`.
 
 | Lane | States shown | Accent | Card extras |
 |---|---|---|---|

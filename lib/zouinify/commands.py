@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
                                       "for the ticket.sh core (--env; --write puts it in a ticket worktree, never a main one)")
     s.add_argument("--check", action="store_true")
     s.add_argument("--json", action="store_true")
-    s.add_argument("--env", action="store_true", help="print tickets/ticket.env (KEY=\"value\" lines the core parses) to stdout")
+    s.add_argument("--env", action="store_true", help="print tickets/ticket.env (bare KEY=value lines the core parses) to stdout")
     s.add_argument("--write", nargs="?", const="", metavar="PATH", help="with --env: write it to PATH (default <root>/<tickets dir>/"
                    "ticket.env); refused inside a repository's main worktree; never commits")
 

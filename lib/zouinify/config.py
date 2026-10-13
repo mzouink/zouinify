@@ -23,6 +23,19 @@ DEFAULT_ASK_VERBS = ["APPLY", "DEPLOY", "PUSH", "RUN", "DECIDE", "CHECK", "APPRO
 DEFAULT_TICKET_TYPES = ["bug", "feature", "process", "chore"]
 PLUGIN_NAME_RE = re.compile(r"^[a-z0-9-]+$")           # tickets/plugins/<name>/plugin.sh (T-0186 grammar)
 IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+BRANCH_CHARS_RE = re.compile(r"^[A-Za-z0-9._/@+-]+$")          # what ticket.sh may put on a command line unquoted
+BRANCH_BAD_RE = re.compile(r"\.\.|@\{|//")                      # git check-ref-format, the rules the alphabet does not already cover
+
+
+def valid_branch_name(name) -> bool:
+    """git's ref rules (`git check-ref-format --branch`) plus a sane alphabet, because ticket.sh passes branch names to git
+    unquoted: letters, digits and . _ / @ + - only (git itself would also take $ ( ) ; and friends), no `..`, `@{` or
+    `//`, no leading `-` or `/`, no trailing `/`, `.` or `.lock`, no component starting with `.`, not `@`."""
+    if not isinstance(name, str) or name == "@" or not BRANCH_CHARS_RE.match(name):
+        return False
+    if BRANCH_BAD_RE.search(name) or name.startswith(("-", "/")) or name.endswith(("/", ".", ".lock")):
+        return False
+    return all(part and not part.startswith(".") and not part.endswith(".lock") for part in name.split("/"))
 
 
 class ConfigError(ZouinifyError):
@@ -186,6 +199,10 @@ def load(root: str | None = None) -> Config:
         if not isinstance(r, dict) or not _is_str(r.get("name")) or not _is_str(r.get("path")) or not _is_str(r.get("trunk")):
             errs.append(f"repos[{i}]: name, path and trunk are required")
             continue
+        for fld in ("trunk", "prod"):
+            if r.get(fld) not in (None, "") and not valid_branch_name(r.get(fld)):
+                errs.append(f"repos[{i}].{fld}: not a valid git branch name for ticket.sh (git's rules plus letters, digits and "
+                            f". _ / @ + -): {r.get(fld)!r}")
         clean_repos.append(dict(r))
         if r.get("default") and default_repo is None:
             default_repo = r
@@ -197,10 +214,16 @@ def load(root: str | None = None) -> Config:
 
     tk = raw.get("tickets") if isinstance(raw.get("tickets"), dict) else {}
     tickets_dir = str(tk.get("dir") or "tickets")
+    if os.path.isabs(tickets_dir) or tickets_dir.startswith("~") or ".." in tickets_dir.split("/") or tickets_dir.strip("/") == "":
+        errs.append("tickets.dir: a relative directory inside the project (default tickets)")
+        tickets_dir = "tickets"
+    tickets_dir = tickets_dir.rstrip("/")
     tickets_script = str(tk.get("script") or "scripts/ticket.sh")
     worktrees = str(tk.get("worktrees") or ".claude/worktrees")
     ask_verbs = _strlist(tk.get("ask_verbs"), "tickets.ask_verbs", errs, DEFAULT_ASK_VERBS)
     deploy_kinds = _strlist(tk.get("deploy_kinds"), "tickets.deploy_kinds", errs, ["none"])
+    if "none" not in deploy_kinds:
+        errs.append("tickets.deploy_kinds: must include none (a ticket without a deploy goes merged -> done on it)")
     deploy_plugin = tk.get("deploy_plugin")
     if deploy_plugin is None or deploy_plugin == "":
         deploy_plugin = "none"
@@ -209,11 +232,12 @@ def load(root: str | None = None) -> Config:
                     "or none")
         deploy_plugin = "none"
     ticket_types = _strlist(tk.get("types"), "tickets.types", errs, DEFAULT_TICKET_TYPES)
-    if ticket_types and any(not IDENT_RE.match(t) for t in ticket_types):
-        errs.append("tickets.types: single lowercase words (default: bug feature process chore)")
+    if not ticket_types or any(not IDENT_RE.match(t) for t in ticket_types):
+        errs.append("tickets.types: a non-empty list of single lowercase words (default: bug feature process chore)")
+        ticket_types = list(DEFAULT_TICKET_TYPES)
     protected_extra = _strlist(tk.get("protected_branches_extra"), "tickets.protected_branches_extra", errs, [])
-    if any(not _is_str(b) or " " in b for b in protected_extra):
-        errs.append("tickets.protected_branches_extra: branch names (no spaces)")
+    if any(not valid_branch_name(b) for b in protected_extra):
+        errs.append("tickets.protected_branches_extra: valid git branch names (git's rules plus letters, digits and . _ / @ + -)")
     if tk.get("states") not in (None, "default"):
         errs.append("tickets.states: only `default` (the 12 states of the core) exists in this version")
 

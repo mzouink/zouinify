@@ -95,6 +95,8 @@ def validate(field: str, value):
     v = str(value).strip() if value is not None else ""
     if field in ("name", "short", "trunk", "prod", "model", "human") and (not v.isprintable() or '"' in v or "\\" in v):
         raise ZouinifyError(f"{field}: printable characters only, without double quotes or backslashes")
+    if field in ("trunk", "prod") and v and not cfgmod.valid_branch_name(v):
+        raise ZouinifyError(f"{field}: not a valid git branch name")
     if field in ("name", "trunk", "model", "human"):
         if not v:
             raise ZouinifyError(f"{field}: a non-empty value")
@@ -104,8 +106,6 @@ def validate(field: str, value):
             raise ZouinifyError("short: 1-8 lowercase letters or digits (it prefixes every session name)")
         return v
     if field == "prod":
-        if v and " " in v:
-            raise ZouinifyError("prod: a branch name (no spaces), or empty for no production branch")
         return v
     if field == "port":
         try:
@@ -173,7 +173,7 @@ tickets:
   worktrees: .claude/worktrees
   states: default                       # the 12 states of the core
   deploy_kinds: [none]                  # add terraform, image+terraform, frontend, manual-aws as the project needs them
-  deploy_plugin: none                   # tickets/plugins/<plugin>.sh provides apply / deploy-check / the evidence regexes
+  deploy_plugin: none                   # tickets/plugins/<name>/plugin.sh (+ docs/) provides apply / deploy-check / the evidence gates
   ask_verbs: [APPLY, DEPLOY, PUSH, RUN, DECIDE, CHECK, APPROVE, SSO]
 human_only:                             # printed into every brief; the panel never runs them; add the project's own
 {human_only}

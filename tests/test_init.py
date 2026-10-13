@@ -102,9 +102,11 @@ class TestInit(InitWorld):
             r = self.nz("init", "--non-interactive", *IDENTITY, *bad)
             self.assertIn(f"zouinify: {bad[0].lstrip('-')}:", r.stderr, bad)
         self.assertFalse(os.path.exists(os.path.join(self.root, ".ops")), "a refused init writes nothing")
-        r = self.ok("init", "--dry-run", "--non-interactive", "--name", "demo", "--short", "dm", "--human", "Pat O'Brien", "--prod", "rel#1")
+        r = self.nz("init", "--non-interactive", *IDENTITY, "--prod", "rel#1")
+        self.assertIn("zouinify: prod: not a valid git branch name", r.stderr, "branch names follow git's rules plus a sane alphabet")
+        r = self.ok("init", "--dry-run", "--non-interactive", "--name", "demo", "--short", "dm", "--human", "Pat O'Brien", "--prod", "release/2026.10")
         self.assertIn("contact: {human: \"Pat O'Brien\"}", r.stdout, "an apostrophe is fine: the scalars are quoted")
-        self.assertIn('  - "git push to rel#1; fast-forwarding it', r.stdout, "a # in a branch name cannot start a comment")
+        self.assertIn('  - "git push to release/2026.10; fast-forwarding it', r.stdout)
 
     def test_dry_run_prints_the_plan_and_the_config_and_writes_nothing(self):
         before = snapshot(self.root)

@@ -10,7 +10,7 @@ tickets:
   worktrees: .claude/worktrees
   states: default                       # the 12 states of the core (backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped skipped); `custom:` is a later version
   deploy_kinds: [none, terraform, image+terraform, frontend, manual-aws]
-  deploy_plugin: aws-terraform          # tickets/plugins/<plugin>.sh provides `apply`, `deploy-check` and the evidence regexes; `none` for a repo with no deploys
+  deploy_plugin: aws-terraform          # tickets/plugins/<name>/plugin.sh (+ docs/) provides `apply`, `deploy-check` and the evidence gates; `none` for a repo with no deploys
   ask_verbs: [APPLY, DEPLOY, PUSH, RUN, DECIDE, CHECK, APPROVE, SSO]
   # types: [bug, feature, process, chore]       # optional: the ticket types `ticket.sh new` accepts (this is the default)
   # protected_branches_extra: []                 # optional: branch names `merge`/`prune` never touch, besides the trunks and the generic set

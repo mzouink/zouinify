@@ -85,7 +85,7 @@ class TestProtocol(World):
         self.assertIn("Read\ntickets/WORKER_BRIEF.md, then claim T-xxxx", section(readme, 6).replace("`", ""))
         self.assertIn("(`tp-desk`, tmux `tmux-desk`)".replace("tmux-desk", "tp-desk"), section(readme, 6))
         self.assertNotIn("sitting", readme.lower())
-        self.assertIn("the `tp-debug` session does this", s1)
+        self.assertIn("test it (the `tp-debug` session does this)", s1)
         self.assertIn(f"(`{self.root}`)", section(readme, 4), "rule 1 names the repo's absolute path")
         self.assertIn("2. **Never change the live system yourself.**", section(readme, 4), "the none plugin's rule 2")
         self.assertIn("8. **Don't trust a cached client.**", section(readme, 4))
@@ -122,6 +122,29 @@ class TestProtocol(World):
         self.assertIn("## 7. Deploying (all human-run)\n\n- **`cargo`** -- ship it with care.\n\n## 8. Files", readme)
         r = self.nz("protocol", "render", "--out", self.out, "--project-readme", os.path.join(self.tmp, "nope.md"))
         self.assertIn("not a file", r.stderr)
+
+    def test_section_splitter_edge_cases(self):
+        self.write(".ops/README.project.md", "## 0. Environments\r\n\r\n```bash\r\n## 1. not a heading\r\n```\r\n\r\nrun x -- then say deployed --\r\n\r\n---\r\n\r\n"
+                                            "## 7. Deploying\r\n\r\n~~~\r\n## 8. nor this\r\n~~~\r\n")
+        self.render()
+        readme = self.read_out("README.md")
+        self.assertNotIn("\r", readme, "CRLF input is normalized")
+        self.assertIn("## 0. Environments\n\n```bash\n## 1. not a heading\n```\n\nrun x -- then say deployed --\n\n---\n\n## 1. For the human", readme,
+                      "a heading inside a fence stays, the trailing `--` of a line stays, only the rule line is dropped")
+        self.assertIn("## 7. Deploying\n\n~~~\n## 8. nor this\n~~~\n\n## 8. Files", readme)
+        order = [readme.index(h) for h in ("## 0. Environments", "## 1. For the human", "## 6. The ticket desk", "## 7. Deploying", "## 8. Files")]
+        self.assertEqual(order, sorted(order), "the real sections stay in order; the fenced look-alikes are content")
+        self.write(".ops/README.project.md", "## 0. A\n\nx\n\n## 0. B\n\ny\n")
+        r = self.nz("protocol", "render", "--out", self.out, "--force")
+        self.assertIn("appears twice", r.stderr)
+
+    def test_configured_plugin_without_docs_warns_and_uses_the_generic_prose(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("  deploy_plugin: none\n", "  deploy_plugin: aws-terraform\n"))
+        r = self.render()
+        self.assertIn("warning: no docs shipped for deploy plugin aws-terraform", r.stdout)
+        self.assertIn("2. **Never change the live system yourself.**", self.read_out("README.md"))
+        self.assertIn("`plugins/aws-terraform/` -- the deploy plugin", self.read_out("README.md"))
 
     def test_plugin_docs_fill_the_deploy_prose_and_missing_fragments_are_refused(self):
         docs = os.path.join(self.tmp, "docs")
