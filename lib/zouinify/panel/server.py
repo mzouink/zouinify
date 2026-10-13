@@ -105,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         srv = self.server
         self.auth_label = ""              # per request: a keep-alive connection reuses this handler
         status, reason, _source = webauth.authorize(self.client_address[0], self.headers, srv.token_required, srv.token_matches,
-                                                    srv.limiter, COOKIE, is_loopback=self.peer_is_loopback())
+                                                    srv.limiter, COOKIE, loopback_exempt=True, is_loopback=self.peer_is_loopback())
         if reason == "token":
             self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
         return status, reason

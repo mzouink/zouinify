@@ -110,7 +110,19 @@ class TestAuthorize(unittest.TestCase):
         self.matcher = lambda tok: tok == GOOD
 
     def auth(self, peer, headers, token_required=True, **kw):
+        kw.setdefault("loopback_exempt", True)            # the panel's rule; the default is tested on its own below
         return webauth.authorize(peer, headers, token_required, self.matcher, self.lim, **kw)
+
+    def test_default_is_closed_on_loopback(self):
+        """Nobody gets the loopback exemption without asking for it: a server that forgets the argument fails closed."""
+        lim = webauth.RateLimiter()
+        self.assertEqual(webauth.authorize("127.0.0.1", H(), True, self.matcher, lim), (401, "no-token", None))
+        self.assertEqual(webauth.authorize("::1", H(Authorization="Bearer " + OTHER), True, self.matcher, lim), (401, "bad-token", "header"))
+        self.assertEqual(webauth.authorize("127.0.0.1", H(Authorization="Bearer " + GOOD), True, self.matcher, lim), (200, "token", "header"))
+        self.assertEqual(webauth.authorize("127.0.0.1", H(), True, self.matcher, lim, is_loopback=True), (401, "no-token", None),
+                         "is_loopback alone does not exempt")
+        self.assertEqual(webauth.authorize("127.0.0.1", H(), True, self.matcher, lim, loopback_exempt=True), (200, "loopback", None))
+        self.assertEqual(webauth.authorize("127.0.0.1", H(), False, self.matcher, lim), (200, "loopback", None), "no token required at all")
 
     def test_the_panel_rules(self):
         lan, loop = "10.0.0.7", "127.0.0.1"
@@ -144,6 +156,8 @@ class TestAuthorize(unittest.TestCase):
         loop = "127.0.0.1"
         kw = {"cookie_name": "zouinify_term", "loopback_exempt": False}
         self.assertEqual(self.auth(loop, H(), **kw), (401, "no-token", None), "the terminal page unlocks on loopback too")
+        self.assertEqual(webauth.authorize(loop, H(), True, self.matcher, self.lim, "zouinify_term"), (401, "no-token", None),
+                         "and gets the same without saying so: the default is closed")
         self.assertEqual(self.auth(loop, H(Cookie="zouinify_token=" + GOOD), **kw), (401, "no-token", None), "the panel cookie is not its secret")
         self.assertEqual(self.auth(loop, H(Cookie="zouinify_term=" + GOOD), **kw), (200, "token", "cookie"))
         self.assertEqual(self.auth(loop, H(Authorization="Bearer " + GOOD), **kw), (200, "token", "header"))

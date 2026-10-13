@@ -109,17 +109,19 @@ class RateLimiter:
 
 
 def authorize(peer_ip: str, headers, token_required: bool, matcher, limiter: RateLimiter, cookie_name: str = PANEL_COOKIE,
-              loopback_exempt: bool = True, is_loopback: bool | None = None) -> tuple:
+              loopback_exempt: bool = False, is_loopback: bool | None = None) -> tuple:
     """The one decision, as (status, reason, source):
-      200 "loopback"      no token is required, or the peer is loopback and loopback_exempt (the panel's rule: a
-                          same-user process can read everything directly; the terminal page passes False)
+      200 "loopback"      no token is required, or the peer is loopback AND the caller passed loopback_exempt=True
+                          (the panel's rule: a same-user process can read everything directly). The default is
+                          closed: a loopback request without a token is refused like any other (the terminal page).
       429 "rate-limited"  the address spent its budget; nothing else is looked at
       401 "no-token"      no well-formed token (a malformed Bearer counts as none and never falls back to the cookie)
       200 "token"         matcher(token) is true (the caller's constant-time comparison)
       401 "bad-cookie"    a well-formed cookie that does not match (weighed like no token: browsers resend cookies)
       401 "bad-token"     a well-formed Bearer that does not match (weight 1)
-    `source` is "header", "cookie" or None, for the caller's own log label. `is_loopback` overrides the peer
-    classification (default: peer_ip in LOOPBACK_PEERS)."""
+    `source` is "header", "cookie" or None, for the caller's own log label. `peer_ip` and `is_loopback` (an override
+    of `peer_ip in LOOPBACK_PEERS`) must come from the socket's peer address (the handler's client_address), never
+    from a header: X-Forwarded-For, X-Real-IP and Forwarded are written by the client."""
     if is_loopback is None:
         is_loopback = peer_ip in LOOPBACK_PEERS
     if not token_required or (loopback_exempt and is_loopback):
