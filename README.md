@@ -2,7 +2,7 @@
 <p align="center"><b>One dashboard for your Claude Code sessions, tickets and browser checks.</b></p>
 
 <p align="center">
-  <img src="img/zouinify_dashboard_command_center.png" alt="zouinify dashboard: ticket board, sessions, inbox and next sitting" width="900">
+  <img src="img/zouinify_dashboard_command_center.png" alt="zouinify dashboard: ticket board, sessions and inbox" width="900">
 </p>
 
 You run several Claude Code sessions in tmux: a ticket desk, a manager, a debugger, one worker per ticket. zouinify gives them
@@ -19,7 +19,7 @@ waiting, and what the tickets are doing. It is a Claude Code skill (`/zouinify .
 - **Sessions launched right, every time.** Model, name, permission mode, brief and identity come from one config file; running
   `up` twice never opens a second copy.
 - **One page for the human.** The inbox of things only you can do, the board, every session with its state, panes waiting for
-  you, the apply and deploy logs, the next sitting.
+  you, the apply and deploy logs.
 - **Safe by construction.** The page never types into a Claude session and never deploys anything. A click is a receipt the
   desk session verifies; approvals and production actions stay typed by you.
 
@@ -34,7 +34,7 @@ ln -s ~/src/zouinify/bin/zouinify ~/.local/bin/zouinify    # zouinify from a she
 Then, inside your project:
 
 ```bash
-cp ~/src/zouinify/templates/ops/config.yaml.example .ops/config.yaml   # edit: repos, sessions, sittings
+cp ~/src/zouinify/templates/ops/config.yaml.example .ops/config.yaml   # edit: repos, sessions
 zouinify config --check        # validates the file
 zouinify briefs render         # writes .ops/briefs/*.md from the templates
 zouinify up --dry-run          # shows the exact tmux + claude lines it would run

@@ -140,11 +140,6 @@ def now_local(cfg):
     return s.now_local(cfg)
 
 
-def next_sitting(cfg, now=None):
-    from zouinify import status as s
-    return s.next_sitting(cfg, now)
-
-
 def creds(cfg, now=None) -> dict:
     from zouinify import status as s
     return s.creds(cfg, now)

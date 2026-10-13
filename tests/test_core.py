@@ -100,7 +100,6 @@ tickets:
 human_only:
   - deploy to production
   - any cloud write against the production account
-sittings: {{tz: America/New_York, times: ["09:30", "16:00"], freeze_before_min: 10, push_before_min: 10}}
 budget: {{paid_usd_per_day: 5, approval_text: "T-{{id}} budget ok"}}
 model: fable
 sessions:
@@ -157,7 +156,7 @@ class World(unittest.TestCase):
         env.pop("ZOUINIFY_PROJECT", None)
         env.update(PATH=FAKES + os.pathsep + env.get("PATH", ""), FAKE_TMUX_STATE=self.state,
                    FAKE_TICKET_LOG=self.ticket_log, FAKE_HUMAN_COUNT="4", FAKE_HUMAN_JSON=self.human_json, TICKET_AS="tester-session",
-                   HOME=self.home, ZOUINIFY_NOW="2026-10-13T07:00:00")
+                   HOME=self.home, ZOUINIFY_NOW="2026-10-13T07:00:00-04:00")
         self.env = env
 
     def tearDown(self):
@@ -282,6 +281,16 @@ class TestEntryAndConfig(World):
         self.ok("config", "--check", cwd=self.tmp, env=env)
         r = self.nz("config", "--check", cwd=self.tmp)
         self.assertIn("config.yaml", r.stderr)
+
+    def test_old_sittings_key_is_ignored_with_a_warning(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("model: fable\n", 'model: fable\nsittings: {tz: America/New_York, times: ["09:30", "16:00"], freeze_before_min: 10}\n'))
+        r = self.ok("config", "--check")
+        self.assertIn("sittings: ignored", r.stdout)
+        r = self.ok("config", "--json")
+        self.assertNotIn("sittings", json.loads(r.stdout))
+        r = self.ok("status", "--line")
+        self.assertNotIn("sitting", r.stdout)
 
     def test_config_json_is_normalized(self):
         r = self.ok("config", "--json")
@@ -561,7 +570,7 @@ class TestHarness(World):
 
 
 class TestStatus(World):
-    LINE_RE = re.compile(r"^inbox (\d+) \| P0 (\d+) \| creds ([^|]+?) \| sitting (\d\d:\d\d) in ([^|]+?) \| (\d+) dev (\d+) rev (\d+) rtd (\d+) dep$")
+    LINE_RE = re.compile(r"^inbox (\d+) \| P0 (\d+) \| creds ([^|]+?) \| (\d+) dev (\d+) rev (\d+) rtd (\d+) dep$")
 
     def test_status_line(self):
         r = self.ok("status", "--line")
@@ -571,19 +580,18 @@ class TestStatus(World):
         self.assertEqual(m.group(1), "4")            # the 4 items of human --json
         self.assertEqual(m.group(2), "1")            # one P0 item in the inbox (T-0011, a deployed P0, asks nothing: not counted)
         self.assertEqual(m.group(3), "none")         # no sso cache, no credentials file
-        self.assertEqual(m.group(4), "09:30")        # ZOUINIFY_NOW is 07:00 ET
-        self.assertEqual(m.group(5), "2h30")
-        self.assertEqual(m.group(6), "1")            # T-0002 in-dev
-        self.assertEqual(m.group(7), "1")            # T-0008 in-review
-        self.assertEqual(m.group(8), "1")            # T-0009 ready-to-merge
-        self.assertEqual(m.group(9), "2")            # T-0010 and T-0011 deployed
+        self.assertEqual(m.group(4), "1")            # T-0002 in-dev
+        self.assertEqual(m.group(5), "1")            # T-0008 in-review
+        self.assertEqual(m.group(6), "1")            # T-0009 ready-to-merge
+        self.assertEqual(m.group(7), "2")            # T-0010 and T-0011 deployed
+        self.assertNotIn("sitting", line)
 
     def test_status_creds_sources(self):
         with open(os.path.join(self.sso, "abc.json"), "w") as fh:
             json.dump({"expiresAt": "2026-10-13T12:30:00Z", "accessToken": "SECRET-must-not-print"}, fh)
         r = self.ok("status", "--line", "--no-cache")
         m = self.LINE_RE.match(r.stdout.strip().splitlines()[-1])
-        self.assertEqual(m.group(3), "1h30")         # 11:00Z now (07:00 ET) -> 12:30Z
+        self.assertEqual(m.group(3), "1h30")         # ZOUINIFY_NOW 07:00-04:00 = 11:00Z -> 12:30Z
         self.assertNotIn("SECRET", r.stdout)
         os.remove(os.path.join(self.sso, "abc.json"))
         cred = os.path.join(self.home, ".aws", "credentials")
@@ -614,10 +622,10 @@ class TestStatus(World):
         self.assertEqual(d["p0"], 1)                 # inbox P0 items
         self.assertEqual(d["p0_open_tickets"], 2)    # T-0005 (ready) + T-0011 (deployed) on the board
         self.assertEqual(d["counts"]["in-dev"], 1)
-        self.assertEqual(d["sitting"]["at"], "09:30")
+        self.assertNotIn("sitting", d)
         r = self.ok("status")
         self.assertIn("inbox", r.stdout)
-        self.assertIn("09:30", r.stdout)
+        self.assertNotIn("sitting", r.stdout.lower())
 
 
 class TestBriefs(World):
@@ -630,7 +638,7 @@ class TestBriefs(World):
             desk = fh.read()
         self.assertIn("tp-desk", desk)
         self.assertIn("deploy to production", desk)
-        self.assertIn("09:30", desk)
+        self.assertNotIn("sitting", desk.lower())
         self.assertNotIn("{{", desk)
         for f in files:
             with open(os.path.join(out, f)) as fh:

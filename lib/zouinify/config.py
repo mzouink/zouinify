@@ -1,6 +1,6 @@
 """Load and validate the per-project configuration: <root>/.ops/config.yaml (schema v1).
 
-Everything project-specific (names, paths, window names, sitting times, a budget number) lives in that
+Everything project-specific (names, paths, window names, a budget number) lives in that
 file; the skill itself is project-agnostic. The commented example is templates/ops/config.yaml.example.
 """
 from __future__ import annotations
@@ -14,7 +14,6 @@ from zouinify import ZouinifyError
 CONFIG_REL = os.path.join(".ops", "config.yaml")
 ROLE_SESSIONS = ("desk", "manager", "debug", "chrome_debug")  # the fixed roles: `down` never kills them
 MODEL_WORDS = ("fable", "opus", "sonnet", "haiku")
-TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 DEFAULT_WORKER_PROMPT_TMPL = "Read {tickets_dir}/WORKER_BRIEF.md, then claim {{id}}."
 # the Claude Code status bar, e.g. `[Fable 5.1] 📁 repo | 🌿 branch`; group 1 is the model label (config key `model_re`)
 DEFAULT_MODEL_RE = r"\[((?:Fable|Opus|Sonnet|Haiku|Claude)[^\]\n]*)\]"
@@ -79,7 +78,6 @@ class Config:
     ask_verbs: list
     deploy_kinds: list
     human_only: list
-    sittings: dict
     budget: dict
     model: str | None
     model_re: str
@@ -113,7 +111,7 @@ class Config:
                 "repos": self.repos, "trunk": self.trunk, "prod": self.prod,
                 "tickets": {"dir": self.tickets_dir, "script": self.tickets_script, "worktrees": self.worktrees,
                             "ask_verbs": self.ask_verbs, "deploy_kinds": self.deploy_kinds},
-                "human_only": self.human_only, "sittings": self.sittings, "budget": self.budget,
+                "human_only": self.human_only, "budget": self.budget,
                 "model": self.model, "model_re": self.model_re, "sessions": {r: s.to_dict() for r, s in self.sessions.items()},
                 "panel": self.panel, "aws": self.aws, "contact": self.contact, "warnings": self.warnings}
 
@@ -200,20 +198,8 @@ def load(root: str | None = None) -> Config:
     if not human_only:
         warns.append("human_only is empty: the briefs will say nothing is reserved for the human")
 
-    st = raw.get("sittings") if isinstance(raw.get("sittings"), dict) else {}
-    times = st.get("times") if st.get("times") is not None else []
-    if not isinstance(times, list) or any(not (isinstance(t, str) and TIME_RE.match(t)) for t in times):
-        errs.append('sittings.times: a list of "HH:MM" strings')
-        times = []
-    try:
-        sittings = {"tz": str(st.get("tz") or "UTC"), "times": sorted(str(t) for t in times),
-                    "freeze_before_min": int(st.get("freeze_before_min", 10) or 0),
-                    "push_before_min": int(st.get("push_before_min", 10) or 0)}
-    except (TypeError, ValueError):
-        errs.append("sittings.freeze_before_min / push_before_min: integers (minutes)")
-        sittings = {"tz": "UTC", "times": [], "freeze_before_min": 10, "push_before_min": 10}
-    if not times:
-        warns.append("sittings.times is empty: the status line shows no next sitting")
+    if "sittings" in raw:
+        warns.append("sittings: ignored (the sitting protocol was removed on 2026-10-13: the inbox is continuous); drop the key")
 
     budget = dict(raw.get("budget")) if isinstance(raw.get("budget"), dict) else {}
     model = raw.get("model")
@@ -364,7 +350,7 @@ def load(root: str | None = None) -> Config:
         raise ConfigError(f"{path}:\n  - " + "\n  - ".join(errs))
     return Config(root=root, name=str(name), short=str(short), repos=clean_repos, trunk=trunk, prod=prod,
                   tickets_dir=tickets_dir, tickets_script=tickets_script, worktrees=worktrees, ask_verbs=ask_verbs,
-                  deploy_kinds=deploy_kinds, human_only=human_only, sittings=sittings, budget=budget,
+                  deploy_kinds=deploy_kinds, human_only=human_only, budget=budget,
                   model=str(model) if model else None, model_re=str(model_re), sessions=sessions, panel=panel, aws=aws, contact=contact,
                   warnings=warns)
 
@@ -374,5 +360,4 @@ def summary(cfg: Config) -> str:
     worker = cfg.sessions["worker"]
     return (f"project {cfg.name}/{cfg.short}, root {cfg.root}, trunk {cfg.trunk}"
             f"{', prod ' + cfg.prod if cfg.prod else ''}, tickets {cfg.tickets_dir}/ via {cfg.tickets_script}, "
-            f"sessions: {roles}, worker pattern {worker.name}, panel {cfg.panel['port']} {cfg.panel['bind']}, "
-            f"sittings {', '.join(cfg.sittings['times']) or 'none'} ({cfg.sittings['tz']})")
+            f"sessions: {roles}, worker pattern {worker.name}, panel {cfg.panel['port']} {cfg.panel['bind']}")

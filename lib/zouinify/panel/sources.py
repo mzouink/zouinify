@@ -1,7 +1,7 @@
 """The panel's data sources, each cached with its age: the human inbox (`ticket.sh human --json`), the
 board (`ticket.sh board --json` when the project's script has it, else the front matter), the sessions
 (`claude agents --json` + tmux panes + the launcher registry + redacted captures), credentials, the
-next sitting, log tails and plans (from `panel.logs` / `panel.plans_glob`), releases, FREEZE, the
+log tails and plans (from `panel.logs` / `panel.plans_glob`), releases, FREEZE, the
 trunk sha. Everything is read through zouinify.readonly; this module may not import anything else of
 zouinify (scripts/check_panel_ast.py). No ticket is written, no session is touched."""
 from __future__ import annotations
@@ -494,13 +494,6 @@ class Snapshot:
                           "p0": [], "newest_plan": "", "void_plans": [], "source": "", "warnings": [], "total": 0}
         rows = (sessions or {}).get("rows", [])
         now = readonly.now_local(cfg)
-        sitting = readonly.next_sitting(cfg, now)
-        if sitting:
-            at = dt.datetime.combine(now.date(), dt.time(int(sitting["at"][:2]), int(sitting["at"][3:])), tzinfo=now.tzinfo)
-            if at <= now:
-                at = at + dt.timedelta(days=1)
-            sitting["at_iso"] = at.isoformat()
-            sitting["freeze_iso"] = (at - dt.timedelta(minutes=cfg.sittings["freeze_before_min"])).isoformat()
         waiting = [r for r in rows if r["state"] == "waiting"]
         by_state: dict = {}
         for r in rows:
@@ -526,7 +519,7 @@ class Snapshot:
                      "sessions": len(rows), "tickets": board["total"]},
             "p0": board["p0"], "inbox": {"items": inbox["items"], "count": inbox.get("count"), "error": inbox_err},
             "board": {k: board[k] for k in ("lanes", "chips", "counts", "other", "newest_plan", "void_plans", "source", "warnings", "total")},
-            "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting, "sitting": sitting,
+            "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
             "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": live_checks(cfg, board),
             "config": {k: v for k, v in cfg.to_dict().items() if k != "warnings"}, "hook": hook_status(),
             "sources": self.sources_meta(), "errors": {"inbox": inbox_err, "board": board_err, "sessions": sess_err},

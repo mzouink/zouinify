@@ -1,7 +1,6 @@
 """`status [--line|--json]`: inbox count and inbox P0s (from `ticket.sh human --json`: what the human acts
-on, so a deployed P0 that asks nothing is not counted), credential time left, the next sitting and the
-board counts (front matter). Cached 30 s in <state_dir>/status.json (the tmux status bar re-runs it on
-every redraw)."""
+on, so a deployed P0 that asks nothing is not counted), credential time left and the board counts (front
+matter). Cached 30 s in <state_dir>/status.json (the tmux status bar re-runs it on every redraw)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -16,22 +15,13 @@ from zouinify import tickets as tk
 CACHE_TTL_S = 30
 
 
-def _tz(name: str):
-    try:
-        from zoneinfo import ZoneInfo
-        return ZoneInfo(name)
-    except Exception:  # noqa: BLE001 - no tzdata or unknown zone: fall back to local time
-        return None
-
-
-def now_local(cfg) -> dt.datetime:
-    """Now in the sittings' time zone; $ZOUINIFY_NOW (an ISO time in that zone) pins it for tests."""
-    tz = _tz(cfg.sittings["tz"])
+def now_local(cfg) -> dt.datetime:  # noqa: ARG001 - the config no longer carries a time zone
+    """Now, time-zone aware, in local time; $ZOUINIFY_NOW (an ISO time, with or without an offset) pins it for tests."""
     pinned = os.environ.get("ZOUINIFY_NOW")
     if pinned:
         t = dt.datetime.fromisoformat(pinned)
-        return t if t.tzinfo else (t.replace(tzinfo=tz) if tz else t.astimezone())
-    return dt.datetime.now(tz) if tz else dt.datetime.now().astimezone()
+        return t if t.tzinfo else t.astimezone()
+    return dt.datetime.now().astimezone()
 
 
 def fmt_dur(mins: int) -> str:
@@ -41,23 +31,6 @@ def fmt_dur(mins: int) -> str:
     return f"{h}h{m:02d}" if h else f"{m}m"
 
 
-def next_sitting(cfg, now: dt.datetime | None = None) -> dict | None:
-    times = cfg.sittings["times"]
-    if not times:
-        return None
-    now = now or now_local(cfg)
-    cands = []
-    for d in (0, 1):
-        for hm in times:
-            h, m = (int(x) for x in hm.split(":"))
-            t = (now + dt.timedelta(days=d)).replace(hour=h, minute=m, second=0, microsecond=0)
-            if t > now:
-                cands.append(t)
-    t = min(cands)
-    mins = int((t - now).total_seconds() // 60)
-    freeze = t - dt.timedelta(minutes=cfg.sittings["freeze_before_min"])
-    return {"at": t.strftime("%H:%M"), "day": t.strftime("%a"), "in_min": mins, "in": fmt_dur(mins),
-            "freeze_at": freeze.strftime("%H:%M"), "tz": cfg.sittings["tz"]}
 
 
 def _parse_iso(s: str) -> dt.datetime | None:
@@ -124,7 +97,7 @@ def collect(cfg, use_cache: bool = True) -> dict:
     items = tk.human_items(cfg)
     inbox = len(items) if items is not None else None
     p0 = sum(1 for it in items if str(it.get("priority", "")).upper() == "P0") if items is not None else 0
-    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "creds": creds(cfg, now), "sitting": next_sitting(cfg, now),
+    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "creds": creds(cfg, now),
             "counts": by, "generated": now.replace(microsecond=0).isoformat(), "trunk": cfg.trunk, "project": cfg.name}
     try:
         os.makedirs(cfg.state_dir, exist_ok=True)
@@ -138,21 +111,17 @@ def collect(cfg, use_cache: bool = True) -> dict:
 
 
 def line(data: dict) -> str:
-    s = data.get("sitting")
-    sit = f"sitting {s['at']} in {s['in']}" if s else "sitting none"
     c = data.get("counts") or {}
     inbox = data.get("inbox")
-    return (f"inbox {inbox if inbox is not None else '?'} | P0 {data.get('p0', 0)} | creds {data['creds']['left']} | {sit} | "
+    return (f"inbox {inbox if inbox is not None else '?'} | P0 {data.get('p0', 0)} | creds {data['creds']['left']} | "
             f"{c.get('in-dev', 0)} dev {c.get('in-review', 0)} rev {c.get('ready-to-merge', 0)} rtd {c.get('deployed', 0)} dep")
 
 
 def long(data: dict) -> str:
-    s = data.get("sitting")
     c = data.get("counts") or {}
     rows = [f"{data.get('project')} @ {data.get('generated')}  (trunk {data.get('trunk')})",
             f"inbox   {data.get('inbox') if data.get('inbox') is not None else '? (ticket.sh human --json failed)'}",
             f"P0      {data.get('p0', 0)} in the inbox ({data.get('p0_open_tickets', 0)} open P0 ticket(s) on the board)",
             f"creds   {data['creds']['left']}  ({data['creds']['source']})",
-            (f"sitting {s['day']} {s['at']} {s['tz']} in {s['in']} (inbox freezes at {s['freeze_at']})" if s else "sitting none configured"),
             "board   " + ("  ".join(f"{k} {v}" for k, v in sorted(c.items())) or "no tickets")]
     return "\n".join(rows)

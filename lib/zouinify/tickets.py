@@ -60,7 +60,7 @@ def front_matter(path: str) -> dict:
 
 
 def slug_of(path: str) -> str:
-    """`T-0155-h6-sitting-protocol.md` -> `t0155-h6-sitting-protocol` (ticket.sh's worktree/branch slug)."""
+    """`T-0042-upload-chip-toggle.md` -> `t0042-upload-chip-toggle` (ticket.sh's worktree/branch slug)."""
     base = os.path.basename(path)
     if base.endswith(".md"):
         base = base[:-3]

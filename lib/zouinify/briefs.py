@@ -30,17 +30,13 @@ def context(cfg) -> dict:
                   + (f" as `{b['approval_text']}`" if b.get("approval_text") else ""))
     else:
         budget = "no paid-run budget is configured: every paid run needs the human's own typed OK"
-    st = cfg.sittings
-    sittings = (", ".join(st["times"]) + f" ({st['tz']}); the inbox freezes {st['freeze_before_min']} min before, "
-                f"one notification {st['push_before_min']} min before") if st["times"] else "no fixed sittings configured"
     ctx = {
         "project.name": cfg.name, "project.short": cfg.short, "project.root": cfg.root,
         "trunk": cfg.trunk, "prod": cfg.prod or "(no production branch configured)",
         "tickets_dir": cfg.tickets_dir, "tickets_script": cfg.tickets_script, "worktrees": cfg.worktrees,
         "ask_verbs": ", ".join(cfg.ask_verbs), "model": cfg.model or (desk.model if desk else "the configured model"),
         "human_only": "\n".join(f"  - {x}" for x in cfg.human_only) or "  - (nothing listed under human_only in .ops/config.yaml)",
-        "budget": budget, "sittings": sittings,
-        "freeze_before_min": str(st["freeze_before_min"]), "push_before_min": str(st["push_before_min"]),
+        "budget": budget,
         "repos": "\n".join(f"  - {r['name']}: {r['path']} (trunk {r['trunk']}" + (f", prod {r['prod']})" if r.get("prod") else ")")
                            for r in cfg.repos),
         "human": str((cfg.contact or {}).get("human") or "the human"),

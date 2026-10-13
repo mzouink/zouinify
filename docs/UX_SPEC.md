@@ -67,18 +67,18 @@ framework, no CDN** (the page must work on a LAN with no internet and must not l
 │ ▣ Dashboard  │ !! P0 T-0146 live regression     · DEPLOY waiting since 19:50 (10h)                            │
 │ ◫ Tickets    │ ┌ For you ──────────┐ ┌ Sessions ─────────────┐ ┌ Deploy & verify ───────────────┐           │
 │ >_ Sessions  │ │ 12 items · 1 P0   │ │ 1 waiting for you     │ │ 3 to deploy · 19 deployed      │           │
-│ ✓ Live checks│ │ next sitting 09:30│ │ 2 working · 4 idle    │ │ awaiting a live check          │           │
+│ ✓ Live checks│ │ nothing else      │ │ 2 working · 4 idle    │ │ awaiting a live check          │           │
 │ ✉ Inbox      │ └───────────────────┘ └───────────────────────┘ └────────────────────────────────┘           │
 │ ◔ Desk chat  │ Tickets   backlog 26 · blocked 1 · done 90 · dropped 3                              [Send to desk]│
 │ ⚙ Settings   │ ┌ ready 4 ─┬ in-dev 1 ─┬ review 1 ──┬ to deploy 5 ─┬ deployed 19 ─┐                            │
 │              │ │ T-0155 P1│ T-0125 P2 │ T-0119 P1  │ T-0145 P1    │ T-0139 P0    │  (horizontal scroll < 1440)│
 │              │ │ T-0156 P2│ t0119-wo… │ t0119-wo…  │ plan 10-12…  │ T-0141 P2    │                            │
 │              │ └──────────┴───────────┴────────────┴──────────────┴──────────────┘                            │
-│              │ ┌ Inbox (ticket.sh human) ───────────────────────────┐ ┌ Panes waiting for you ─┐ ┌ Next sitting ┐│
-│              │ │ 1 DEPLOY T-0146 P0 … [copy cmd] expect … [OK]       │ │ t0119-worker    perm   │ │  09:30 ET    ││
-│              │ │ 2 APPROVE T-0119 P1 … type in tickets window: … [copy]│ │  since 14:40 (16h)     │ │  in 2h38     ││
-│              │ │ 3 APPLY T-0145 P1 … [copy cmd] expect … [OK]        │ │ t0117-worker   2d      │ │ freezes 09:20││
-│              │ └─────────────────────────────────────────────────────┘ └────────────────────────┘ └──────────────┘│
+│              │ ┌ Inbox (ticket.sh human) ───────────────────────────┐ ┌ Panes waiting for you ─┐                │
+│              │ │ 1 DEPLOY T-0146 P0 … [copy cmd] expect … [OK]       │ │ t0119-worker    perm   │                 │
+│              │ │ 2 APPROVE T-0119 P1 … type in tickets window: … [copy]│ │  since 14:40 (16h)     │                 │
+│              │ │ 3 APPLY T-0145 P1 … [copy cmd] expect … [OK]        │ │ t0117-worker   2d      │                 │
+│              │ └─────────────────────────────────────────────────────┘ └────────────────────────┘                 │
 │              │ ┌ Sessions ─────────────────────────────────────────────┐ ┌ Desk chat ─────────────────────────┐ │
 │              │ │ desk  mp-desk                 mp-desk  Opus  working  │ │ you: is T-0145 safe to apply?       │ │
 │              │ │ worker t0119-worker    Fable  WAITING  T-0119  14:40  │ │ desk (a1b2c3): yes, plan is newest…│ │
@@ -102,7 +102,7 @@ source on hover, a padlock showing `loopback` or `intranet`. No user menu: there
 
 | Card | Big number | Secondary | Click |
 |---|---|---|---|
-| **For you** | inbox count (`ticket.sh human --count`) | `P0 n` in red when > 0; next sitting time | `#/inbox` |
+| **For you** | inbox count (`ticket.sh human --count`) | `P0 n` in red when > 0 | `#/inbox` |
 | **Sessions** | sessions waiting for you (amber when > 0) | `w working · i idle · g gone` | `#/sessions` |
 | **Deploy & verify** | tickets in `ready-to-deploy` (+ `merged` with a deploy) | `deployed awaiting a live check: n` | `#/tickets?state=ready-to-deploy` |
 
@@ -200,11 +200,10 @@ There is no test runner. Evidence is what the debug/chrome_debug sessions write:
 evidence line and age; v2 adds thumbnails and a per-ticket evidence page. The KPI is "awaiting a live check: n · checked in
 7 d: m", never a pass rate.
 
-### 2.8 Next sitting
+### 2.8 Next sitting (removed)
 
-From `.ops/config.yaml` `sittings`: the next time in the configured timezone, the countdown computed client-side from the
-server's ISO timestamp (re-computed on tab visibility change), the freeze time ("inbox freezes 09:20"), P0 note ("a P0 is the
-only thing that may interrupt before"). `Not scheduled` when the config has no sittings.
+The sitting protocol was removed by the user on 2026-10-13: the inbox is continuous, there is no countdown, no freeze time and
+no `sittings` key in the config (an old key is accepted and ignored). A P0 is the only thing that interrupts the human.
 
 ### 2.9 Desk chat (the lavish-style chat box; after T-0162 + T-0163)
 
@@ -218,7 +217,7 @@ Enter sends, Shift+Enter newline. In v1 (read-only) the panel shows the desk's l
 
 ### 2.10 Settings (read-only)
 
-The parsed `.ops/config.yaml` (sessions table, repos, sittings, panel bind mode, port, state dir), the hook status ("hook
+The parsed `.ops/config.yaml` (sessions table, repos, panel bind mode, port, state dir), the hook status ("hook
 installed in ~/.claude/settings.json: yes/no", detected by reading the file; the snippet with a copy button when missing),
 token instructions ("rotate with `zouinify panel token rotate` in your terminal"), the version of the skill and of the
 vendored `ticket.sh` core. Nothing editable from the page.
@@ -230,7 +229,7 @@ vendored `ticket.sh` core. Nothing editable from the page.
 | ≥ 1440 | sidebar, 3 KPIs, 5 lanes visible, lower rows 2 + 1 |
 | 1024-1439 | sidebar, board scrolls horizontally, lower rows 2 columns |
 | 768-1023 | collapsed sidebar, KPIs 3 then 2 + 1, board scrolls, panels stack |
-| < 768 (phone over the LAN) | top bar + menu; order: P0 banner, **Inbox**, **Panes waiting**, KPIs, board (horizontal scroll), Sessions, Desk chat, Next sitting; 44 px touch targets; safe-area padding; no hover-only actions |
+| < 768 (phone over the LAN) | top bar + menu; order: P0 banner, **Inbox**, **Panes waiting**, KPIs, board (horizontal scroll), Sessions, Desk chat; 44 px touch targets; safe-area padding; no hover-only actions |
 
 ## 4. States, security UX, accessibility
 
@@ -246,7 +245,7 @@ vendored `ticket.sh` core. Nothing editable from the page.
 ## 5. API the UI consumes
 
 v1 (T-0160, read-only): `GET /health` (project root, version, bind), `GET /api/snapshot` (header, kpis, inbox, board,
-sessions, waiting, sitting, creds, logs, releases; each with `age_s`), `GET /api/tickets/<id>` (drawer), `GET /api/sessions/<name>`
+sessions, waiting, creds, logs, releases; each with `age_s`), `GET /api/tickets/<id>` (drawer), `GET /api/sessions/<name>`
 (detail with the redacted screen), `GET /api/logs?label=<a panel.logs label>` (404 for an unknown label; the dashboard shows one tail per configured entry, none when the list is empty). Any `POST` -> 405.
 v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/poll` (desk only), `GET /api/events` (SSE),
 `POST /api/hook` (loopback listener only).
@@ -254,7 +253,7 @@ v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/po
 ## 6. Acceptance (UI part; the ticket's functional acceptance applies too)
 
 1. Desktop first view: dark navy shell, sidebar, three KPIs as in 2.2, five lanes as in 2.3 with the chips, Inbox / Panes
-   waiting / Next sitting row, Sessions / Desk chat row; visually in the family of the hero's laptop screen, flat, no collage.
+   waiting row, Sessions / Desk chat row; visually in the family of the hero's laptop screen, flat, no collage.
 2. The Inbox panel lists exactly the items `scripts/ticket.sh human` prints, in the same order, with command, expect and age;
    a tier-2 item has no button and shows the text to type.
 3. A session at a permission prompt appears in "Panes waiting for you" with its since-time within one refresh.

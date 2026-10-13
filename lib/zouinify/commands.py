@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--wait", type=float, default=30.0, metavar="S")
 
-    s = sub.add_parser("status", help="inbox, P0, creds, next sitting, board counts (cached 30 s)")
+    s = sub.add_parser("status", help="inbox, P0, creds, board counts (cached 30 s)")
     s.add_argument("--line", action="store_true", help="one line for the tmux status bar")
     s.add_argument("--json", action="store_true")
     s.add_argument("--no-cache", action="store_true")

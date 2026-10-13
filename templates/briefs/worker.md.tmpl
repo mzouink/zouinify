@@ -21,10 +21,9 @@ protocol is `{{tickets_dir}}/README.md`; this page is its two-minute version.
    work decisions; it is not the human's own approval for a settings edit or a permission prompt in your session.
 5. **No live mutations.** Human-only, never by a session; hand the exact command to the desk instead:
 {{human_only}}
-6. **Sittings.** The human applies, deploys and decides at fixed sittings only ({{sittings}}): your apply or
-   deploy goes to the next sitting, never "now", so finish the handoff and move on. Mark a ticket `P0` only for
-   a live regression (production broken, access control, data loss): a P0 is the one thing that reaches the
-   human between sittings.
+6. **The inbox.** Your apply, deploy or decision goes to the human's inbox (`{{tickets_script}} ask`) and waits
+   there; never "now" in your window, so finish the handoff and move on. Mark a ticket `P0` only for a live
+   regression (production broken, access control, data loss): a P0 is the one thing that interrupts the human.
 7. **Paid runs and pushes go through the desk.** {{budget}}.
 8. **New bugs or ideas:** `{{tickets_script}} new ...` (it stays backlog) and tell the desk; never claim a
    backlog ticket.

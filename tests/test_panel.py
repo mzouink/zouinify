@@ -357,7 +357,7 @@ class TestApi(PanelWorld):
             self.assertIn(name, s["sources"], name)
             self.assertIn("age_s", s["sources"][name])
             self.assertIn("ttl_s", s["sources"][name])
-        self.assertEqual(s["sitting"]["at"], "09:30")
+        self.assertNotIn("sitting", s)
         self.assertEqual(s["config"]["project"]["name"], "testproj")
         self.assertNotIn("aws_secret", json.dumps(s["config"]))
         self.assertIn("installed", s["hook"])
