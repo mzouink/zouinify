@@ -39,8 +39,9 @@ QUERY_RE = re.compile(r"[?#][^ \"]*")   # a mistyped /?t=<token>, or a hand-buil
 COOKIE = "zouinify_token"
 COOKIE_MAX_AGE_S = 90 * 24 * 3600
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
-RATE_LIMIT = 10          # weighted refusals per window per address before 429 for the rest of the window: ...
-NO_TOKEN_WEIGHT = 0.2    # ... a wrong token counts 1, a missing one 0.2 (a first visit is the unlock page plus a favicon)
+RATE_LIMIT = 10          # weighted refusals per window per address before 429 for the rest of the window: a wrong
+NO_TOKEN_WEIGHT = 0.2    # Bearer counts 1; a missing token or a wrong cookie 0.2 (first visits, a junk cookie set by
+                         # another server under this host name, a cookie left from before a rotation: not an attack)
 RATE_WINDOW_S = 60.0
 SOCKET_TIMEOUT_S = 30    # a half-open LAN connection must not pin a thread forever
 LOOPBACK_PEERS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
@@ -113,13 +114,15 @@ class Handler(BaseHTTPRequestHandler):
         return tok if TOKEN_RE.match(tok) else None
 
     def presented_token(self):
+        """(token, source): the well-formed token the request carries and where from ("header" or "cookie"), or
+        (None, None). A malformed Bearer never falls back to the cookie."""
         if (self.headers.get("Authorization") or "")[:7].lower() == "bearer ":
-            return self.bearer_token()        # a malformed Bearer never falls back to the cookie
+            return self.bearer_token(), "header"
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
             if k == COOKIE and TOKEN_RE.match(v.strip()):
-                return v.strip()
-        return None
+                return v.strip(), "cookie"
+        return None, None
 
     def authorize(self) -> tuple:
         """(status, reason): 200 when the request may proceed, 401 or 429 otherwise. Loopback peers are never
@@ -131,13 +134,18 @@ class Handler(BaseHTTPRequestHandler):
         ip = self.client_address[0]
         if srv.rate_limited(ip):
             return 429, "rate-limited"
-        tok = self.presented_token()
+        tok, source = self.presented_token()
         if not tok:
             srv.note_failure(ip, NO_TOKEN_WEIGHT)
             return 401, "no-token"
         if panelstate.token_matches(srv.cfg, tok):
             self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
             return 200, "token"
+        if source == "cookie":
+            # the browser sends a cookie on every request: a junk one (set by another server under this host name,
+            # cookies ignore ports) or a pre-rotation one would lock the address out within a minute at weight 1
+            srv.note_failure(ip, NO_TOKEN_WEIGHT)
+            return 401, "bad-cookie"
         srv.note_failure(ip)
         return 401, "bad-token"
 

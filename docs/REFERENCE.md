@@ -97,18 +97,21 @@ browser token**, the page and its static files included:
    server answers with the `zouinify_token` cookie, `HttpOnly` and `SameSite=Strict`, and the page reloads. From then on
    every request carries it (the cookie, or `Authorization: Bearer <token>`); the server compares it in constant time.
 3. Wrong or missing token: 401 and an `AUDIT` line in `server.log` with the source address (never the token). Refusals from
-   one address are budgeted per minute (a wrong token counts 1, a missing one 0.2, budget 10): beyond it, 429 for the rest
-   of the minute. Idle or half-open connections are dropped after 30 s. A `Host` other than 127.0.0.1, localhost, the
+   one address are budgeted per minute (a wrong Bearer counts 1, a missing token or a wrong cookie 0.2, budget 10): beyond
+   it, 429 for the rest of the minute. Idle or half-open connections are dropped after 30 s. A `Host` other than 127.0.0.1, localhost, the
    configured `link_host`, the machine's names or its IPv4 addresses, or a foreign `Origin`: 403 (DNS rebinding). Rotate any
    time with the same command; running servers pick the new hash up without a restart, old tokens stop at once.
 
 Two facts to know before you rely on it. **Loopback is token-free in both modes**, and that means any other *local user* of
 the workstation (or anyone with an ssh -L to it) reaches the panel without a token: the read-only panel shows what every
 same-user process could read anyway, but on a shared machine other accounts can read it too (true since the first panel). And
-**cookies ignore ports**: the cookie is `HttpOnly`, so a page served by another web server under the same host name cannot
-read it, but the browser attaches it to that page's same-site requests to the panel; those are refused by the Origin check
-(fetch), cannot be framed (`frame-ancestors 'none'`) and the panel is read-only anyway. Keep the LAN name of the panel for
-the panel all the same. A loopback token or a peer-uid check is a follow-up ticket.
+**cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
+panel's host name, on any port, RECEIVES the `zouinify_token` cookie with every request that browser makes to it. `HttpOnly`
+only keeps their page scripts from reading it; a server process under that name that logs its request headers has the
+token. Such a server can also set a junk `zouinify_token`, which the panel then refuses on every request (weighed like a
+missing token, so the unlock address still works). The real fixes are a dedicated host name for the panel that nothing
+else serves under (a DNS alias or a hosts entry), or HTTPS with a `__Host-` cookie; until then keep the LAN name of the
+panel for the panel and run no other service under it. A loopback token or a peer-uid check is a follow-up ticket.
 
 `zouinify panel start` and `zouinify up` refuse to start an intranet panel without a token and point at the command; neither
 ever prints a token. `zouinify panel url` prints the address without it. Writes stay 405 in both modes; tier-2 items never get

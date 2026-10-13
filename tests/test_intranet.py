@@ -216,6 +216,22 @@ class TestIntranetToken(IntranetServer):
         self.assertGreaterEqual(wrong, panel_server.RATE_LIMIT - 3, "the first visits used only a fraction of the budget")
         self.assertEqual(self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD})[0], 429)
 
+    def test_a_junk_cookie_does_not_lock_the_browser_out(self):
+        """Another server under this host name (any port) can set a junk zouinify_token; the browser then sends it on
+        every request. Weighed like a missing token: the unlock address still works, a wrong Bearer still weighs 1."""
+        for i in range(12):
+            st, _, _ = self.req("/api/snapshot", headers={"Cookie": "zouinify_token=" + OTHER})
+            self.assertEqual(st, 401, i)
+        self.assertIn("AUDIT 401 bad-cookie ip=127.0.0.1", self.server_log())
+        self.assertNotIn("bad-token", self.server_log())
+        st, _, _ = self.req("/api/unlock", headers={"Cookie": "zouinify_token=" + OTHER, "Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200, "the unlock with the right Bearer wins over the junk cookie and replaces it")
+        wrong = 0
+        while self.req("/api/snapshot", headers={"Authorization": "Bearer " + OTHER})[0] == 401:
+            wrong += 1
+            self.assertLessEqual(wrong, panel_server.RATE_LIMIT)
+        self.assertGreaterEqual(wrong, panel_server.RATE_LIMIT - 3, "12 junk cookies used 2.4 of the budget of 10")
+
     def test_a_literal_fragment_in_the_request_line_never_reaches_the_log(self):
         st, _, _ = self.req("/#t=" + GOOD)                    # no browser sends a fragment; a hand-built client might
         self.assertEqual(st, 401)
@@ -244,6 +260,8 @@ class TestIntranetToken(IntranetServer):
         self.assertEqual(redact("open http://ws:4790/#t=" + sample + " now"), "open http://ws:4790/#t=<redacted> now")
         self.assertEqual(redact("Cookie: zouinify_token=" + sample), "Cookie: zouinify_token=<redacted>")
         self.assertNotIn(sample, redact("?t=" + sample))
+        self.assertEqual(redact("GET /%23t=" + sample + " HTTP/1.1"), "GET /%23t=<redacted> HTTP/1.1", "URL-encoded #t=")
+        self.assertNotIn(sample, redact("%26t%3D" + sample))
         self.assertNotIn(GOOD, redact("Authorization: Bearer " + GOOD))
         self.assertEqual(redact("?t=abc&x=1"), "?t=abc&x=1", "short values are not tokens")
 
