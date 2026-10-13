@@ -46,14 +46,27 @@ class HookWorld(PanelWorld):
         test = self
         self.peer_patch = mock.patch.object(panel_hooks.HookHandler, "peer_is_loopback", lambda h: not test.fake_remote)
         self.peer_patch.start()
-        # what run() does for a real server: the pid file with the listener's port and its per-start nonce (T-0182)
+        # what run() does for a real server: the pid file with the listener's port and its per-start nonce (T-0182). The
+        # script requires that pid to be a live zouinify process of ours: a helper whose command line says so stands in
+        # for the panel process (the test runner's own command line does not name zouinify).
+        self.panel_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)", "lib/zouinify/cli.py", "--project", self.root,
+                                            "panel", "start", "--foreground"],       # the panel's command line shape, as the script checks it
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.nonce = panelstate.new_hook_nonce()
-        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at,
-                                    hook_port=self.hook_port, hook_nonce=self.nonce)
+        self.write_pid_file(self.panel_proc.pid)
+
+    def write_pid_file(self, pid: int, nonce=None, hook_port=None):
+        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], pid, self.srv.started_at,
+                                    hook_port=self.hook_port if hook_port is None else hook_port, hook_nonce=nonce or self.nonce)
 
     def tearDown(self):
         self.peer_patch.stop()
         self.srv.close_hooks()
+        try:
+            self.panel_proc.kill()
+            self.panel_proc.wait(5)
+        except OSError:
+            pass
         super().tearDown()
 
     def post_hook(self, body, raw: bytes | None = None, length: int | None = None, headers: dict | None = None,
@@ -406,20 +419,62 @@ class TestHookListener(HookWorld):
         self.assertEqual(r.returncode, 0)
         time.sleep(0.3)
         self.assertEqual(self.events_file(), [])
-        # M2: our own project, but the pid file names a dead process, then a process of another user
-        for pid in (2147483000, 1):
-            panelstate.write_panel_json(self.cfg, self.srv.server_address[1], pid, self.srv.started_at, hook_port=self.hook_port, hook_nonce=self.nonce)
-            r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="STALE-PID-REPLY"))
-            self.assertEqual(r.returncode, 0, pid)
-            time.sleep(0.3)
-            self.assertEqual(self.events_file(), [], f"pid {pid}: not a live process of ours, nothing sent")
-        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at, hook_port=self.hook_port, hook_nonce=self.nonce)
+        # M2: our own project, but the pid file names a dead process, then a process of another user, then a live
+        # process of ours that is NOT the panel (a pid reused by a `sleep`: the re-review's reproduction)
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for pid, why in ((2147483000, "dead"), (1, "another user's"), (sleeper.pid, "ours, live, not the panel (even under a path that says zouinify)")):
+                self.write_pid_file(pid)
+                r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="STALE-PID-REPLY"))
+                self.assertEqual(r.returncode, 0, pid)
+                time.sleep(0.3)
+                self.assertEqual(self.events_file(), [], f"pid {pid} ({why}): nothing sent")
+        finally:
+            sleeper.kill()
+        # the pid is right but the port is not LISTENed on by us: a freed port after a crash, or one someone else took
+        import socket
+        free = socket.socket(); free.bind(("127.0.0.1", 0)); free_port = free.getsockname()[1]; free.close()
+        self.write_pid_file(self.panel_proc.pid, hook_port=free_port)
+        r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="FREED-PORT-REPLY"))
+        self.assertEqual(r.returncode, 0)
+        time.sleep(0.3)
+        self.assertEqual(self.events_file(), [], "no LISTEN socket of ours on that port: nothing sent")
+        self.write_pid_file(self.panel_proc.pid)
         r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="live again"))
         self.assertEqual([e["text"] for e in self.wait_events(1)], ["live again"])
         # a stale nonce (the file was rewritten by a new start) is refused by the listener
-        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at, hook_port=self.hook_port, hook_nonce="stale-" + "x" * 20)
+        self.write_pid_file(self.panel_proc.pid, nonce="stale-" + "x" * 20)
         st, _ = self.post_hook(payload("Stop", self.root, "sid-desk", last_assistant_message="old nonce"))
         self.assertEqual(st, 403)
+
+    def test_t0182_stop_drops_the_pid_file_before_the_port_is_freed(self):
+        """Route (b) of the re-review: during a clean stop the port must never be free while panel.json still names it."""
+        import threading
+        cfg = self.cfg
+        srv = panel_server.make_server(cfg, port=0)
+        seen = {}
+        real_close = srv.close_hooks
+
+        def closing():
+            seen["pid_file_at_close"] = panelstate.read_panel_json(cfg) or {}
+            real_close()
+        srv.close_hooks = closing
+        t = threading.Thread(target=panel_server.run, args=(srv,), daemon=True)
+        t.start()
+        want = srv.hooks.server_address[1]
+        deadline = time.time() + 5
+        while time.time() < deadline and (panelstate.read_panel_json(cfg) or {}).get("hook_port") != want:
+            time.sleep(0.05)
+        pj = panelstate.read_panel_json(cfg)
+        self.assertEqual(pj["hook_port"], want, "run() names the listener's port and nonce while serving")
+        self.assertTrue(pj["hook_nonce"])
+        self.assertNotEqual(pj["hook_nonce"], self.nonce, "a fresh nonce per start")
+        srv.shutdown()
+        t.join(10)
+        self.assertNotIn("hook_port", seen["pid_file_at_close"], "the port left the pid file BEFORE the listener closed")
+        self.assertNotIn("hook_nonce", seen["pid_file_at_close"])
+        self.assertNotIn("pid", seen["pid_file_at_close"])
 
     def test_t0182_lows_fields_size_routing_backlog_hygiene_housekeeping(self):
         # short fields are identifiers: prose or symbols in them are dropped, even for own events

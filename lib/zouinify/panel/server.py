@@ -382,9 +382,9 @@ def run(srv: PanelServer) -> int:
     try:
         srv.serve_forever(poll_interval=0.5)
     finally:
+        panelstate.remove_panel_json(cfg, panelstate.pid())   # FIRST: no pid file names a port that is about to be free (T-0182)
         srv.snap.stop()
         srv.close_hooks()
         srv.server_close()
-        panelstate.remove_panel_json(cfg, panelstate.pid())
         panelstate.log(cfg, "zouinify panel stopped")
     return 0
