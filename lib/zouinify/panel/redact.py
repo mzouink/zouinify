@@ -28,7 +28,7 @@ TOOL_P_RE = re.compile(r"(?i)\b(sshpass|mysql|mysqladmin|mysqldump|mariadb|psql|
 # attributes stay (so `zouinify_token=<redacted>` still says which cookie it was, as T-0165's test pins)
 COOKIE_RE = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)([^\n]+)")
 COOKIE_PAIR_RE = re.compile(r"([^=;\s]+)=([^;]*)")
-COOKIE_ATTRS = {"path", "domain", "expires", "max-age", "samesite", "priority"}
+COOKIE_ATTRS = frozenset({"path", "domain", "expires", "max-age", "samesite", "priority"})
 # file extensions a dotted name may end in without being a host name (the foreign-dialog allowlist in sources uses it)
 FILE_EXT = r"(?:js|mjs|cjs|py|md|txt|json|ya?ml|html?|css|sh|log|csv|pem|tf|tfvars|tsx?|jsx|lock|toml|ini|cfg|conf|xml|svg|png|jpe?g|gif|pdf|zip|tar|gz|whl|egg|so|example|tmpl|bak|orig)"
 # `PGPASSWORD=hunter2`, `PASSCODE abc`, `MY_API_TOKEN: x` (an env-style name in capitals, then its value)
@@ -43,7 +43,7 @@ WRAP_RE = re.compile(r"^[ \t]*[A-Za-z0-9/+=_.\-]{8,}")
 MARKER_RE = re.compile(r"<redacted-next-line>")
 PEM_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S)
 PEM_OPEN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*\Z", re.S)
-SHAPES = [
+SHAPES = (            # frozen (T-0164): nothing may add or drop a shape at runtime
     (re.compile(rf"(?i)\b({SCHEMES})\s+[A-Za-z0-9._~+/=-]{{4,}}(?:,\s*[a-z]+=\S+)*"), lambda m: f"{m.group(1)} <redacted>"),
     # the panel's own browser token (T-0165): the `#t=` address printed by `panel token rotate`, the cookie
     (re.compile(r"((?:(?:[#&?]|%23|%26|%3[Ff])t|zouinify_token)(?:=|%3[Dd]))[A-Za-z0-9_-]{32,256}"), r"\1<redacted>"),
@@ -61,7 +61,7 @@ SHAPES = [
                 r"(?=[A-Za-z0-9/+]{0,39}[0-9/+])[A-Za-z0-9/+]{40}"), "<redacted>"),
     # long base64 blobs (session tokens are hundreds of characters)
     (re.compile(r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+]{80,}={0,2}(?![A-Za-z0-9/+=])"), "<redacted>"),
-]
+)
 
 
 def redact(text: str) -> str:

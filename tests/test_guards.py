@@ -196,6 +196,10 @@ AST_OFFENDING = [
     "import os\nos.path.isfile = lambda p: True",
     "import re\nre.compile = None",
     "from http.server import BaseHTTPRequestHandler\nimport json\njson.dumps = str",
+    "from http import HTTPStatus\nHTTPStatus.OK = 1",                                 # an imported name is read-only too
+    "from zouinify import readonly\nreadonly.ROLE_SESSIONS.append('x')",            # a mutating call through a module
+    "from zouinify import webauth\nwebauth.LOOPBACK_PEERS.clear()",
+    "import os\nos.path.sep = '/'",
     "import os\nos.system('tmux kill-server')",
     "import sys\nsys.modules['o' + 's'].system('x')",
     "import os\nf = getattr(os, 'sys' + 'tem')",
@@ -307,6 +311,17 @@ AST_OFFENDING_WITH_SIBLINGS = [
     "import zouinify.panel.sources\nzouinify.panel.sources.readonly.fail('x')",
     "from . import redact\nredact.redact = str",                                      # T-0164: a sibling is read-only too
     "from .sources import readonly as r\nr.capture_pane = lambda n: ''",
+    "from .sources import Snapshot\nSnapshot.refresh = len",                         # a class imported by name
+    "from .sources import Snapshot\ndel Snapshot.build",
+    "from . import sources\nsources.AWS_READONLY_OPS.add(('s3', 'rm'))",              # container mutation, module-rooted
+    "from . import sources\nsources.AWS_BOOLEAN_FLAGS.clear()",
+    "from . import sources\nsources.SEV['P0'] = 9",
+    "from . import sources\ndel sources.STATE_ORDER['gone']",
+    "from .sources import SEV\nSEV['P0'] = 9",                                       # ... and import-rooted
+    "from .sources import SEV\nSEV.update(P0=9)",
+    "from .sources import AWS_READONLY_OPS\nAWS_READONLY_OPS.discard(('s3', 'ls'))",
+    "from .redact import SHAPES\nSHAPES.append((None, ''))",
+    "from .sources import STATE_ORDER\nSTATE_ORDER.pop('gone')",
 ]
 AST_ALLOWED_WITH_SIBLINGS = """from . import sources
 from .sources import Snapshot, classify_item, item_id
@@ -451,8 +466,35 @@ class TestPanelAst(unittest.TestCase):
                 fh.write("from zouinify import readonly\ndel readonly.capture_pane\n")
             r = self.run_ast(tmp)
             self.assertIn("deletion of zouinify.readonly.capture_pane", r.stdout)
+            with open(os.path.join(tmp, "server.py"), "w") as fh:
+                fh.write("from zouinify import webauth\nwebauth.LOOPBACK_PEERS.clear()\nfrom http import HTTPStatus\nHTTPStatus.OK = 1\n")
+            r = self.run_ast(tmp)
+            self.assertIn("mutating call .clear() on zouinify.webauth", r.stdout)
+            self.assertIn("assignment to HTTPStatus.OK", r.stdout)
         finally:
             shutil.rmtree(tmp)
+
+    def test_panel_containers_are_frozen(self):
+        """T-0164 review: the classifier's sets, the lane orders, the shapes and the content types cannot be widened or
+        emptied at runtime by any code the gate might miss."""
+        import sys
+        from types import MappingProxyType
+        sys.path.insert(0, os.path.join(REPO, "lib"))
+        from zouinify.panel import redact, server, sources
+        for name, value, kind in (("sources.SEV", sources.SEV, MappingProxyType), ("sources.STATE_ORDER", sources.STATE_ORDER, MappingProxyType),
+                                  ("sources.AWS_READONLY_OPS", sources.AWS_READONLY_OPS, frozenset),
+                                  ("sources.AWS_BOOLEAN_FLAGS", sources.AWS_BOOLEAN_FLAGS, frozenset),
+                                  ("redact.COOKIE_ATTRS", redact.COOKIE_ATTRS, frozenset), ("redact.SHAPES", redact.SHAPES, tuple),
+                                  ("server.CONTENT_TYPES", server.CONTENT_TYPES, MappingProxyType), ("server.REFUSED", server.REFUSED, MappingProxyType)):
+            self.assertIsInstance(value, kind, name)
+        with self.assertRaises(TypeError):
+            sources.SEV["P0"] = 9
+        with self.assertRaises(AttributeError):
+            sources.AWS_READONLY_OPS.add(("s3", "rm"))
+        with self.assertRaises(AttributeError):
+            redact.SHAPES.append((None, ""))
+        self.assertIn(("s3", "ls"), sources.AWS_READONLY_OPS)
+        self.assertEqual(sources.SEV["P0"], 0)
 
     def test_allowed_panel_code_passes(self):
         tmp = tempfile.mkdtemp()

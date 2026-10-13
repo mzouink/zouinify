@@ -22,16 +22,17 @@ import re
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import MappingProxyType
 
 from zouinify import panelstate, readonly, webauth
 from zouinify.panel.sources import Snapshot
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
-                 ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json"}
+CONTENT_TYPES = MappingProxyType({".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
+                                  ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json"})
 ALLOW = "GET, HEAD"
 CSP = webauth.CSP
-REFUSED = {"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW}
+REFUSED = MappingProxyType({"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW})
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 QUERY_RE = re.compile(r"[?#][^ \"]*")   # a mistyped /?t=<token>, or a hand-built /#t=<token>, must never reach the log
 COOKIE = webauth.PANEL_COOKIE
@@ -171,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200:
             return self.deny(status, reason, "")
         self.audit(405, "write-attempt")
-        self.send_bytes(HTTPStatus.METHOD_NOT_ALLOWED, json.dumps(REFUSED).encode("utf-8"), "application/json; charset=utf-8", {"Allow": ALLOW})
+        self.send_bytes(HTTPStatus.METHOD_NOT_ALLOWED, json.dumps(dict(REFUSED)).encode("utf-8"), "application/json; charset=utf-8", {"Allow": ALLOW})
 
     def do_POST(self):
         self.refuse()

@@ -12,8 +12,11 @@ package is checked structurally. Every Python file under it may only:
     `re.functools`, `panelstate.tempfile`, `os.getpid` are out; `os.path.*` is in); on a sibling module only the
     names it defines, and a module it imported continues the walk under that module's rules;
   - never use a module as a value (no aliasing, no passing modules around), and never assign to, delete or
-    augment an attribute reached from a module (`webauth.host_allowed = len`, `del readonly.capture_pane`,
-    `webauth.RATE_LIMIT += 1`): the allowlisted modules are read-only for the panel;
+    augment an attribute reached from a module or from a name imported from a sibling or an allowlisted module
+    (`webauth.host_allowed = len`, `del readonly.capture_pane`, `webauth.RATE_LIMIT += 1`, `Snapshot.refresh = len`),
+    never assign or delete an item of one (`sources.SEV["P0"] = 9`, `del STATE_ORDER["gone"]`) and never call a
+    mutating method on one (`sources.AWS_READONLY_OPS.add(...)`, `SHAPES.append(...)`, `.clear()`, `.update()`, ...):
+    modules and what they export are read-only for the panel, and the panel's own containers are frozen;
   - never reference getattr/setattr/delattr/__import__/exec/eval/compile/globals/locals/vars/...,
     nor `open` / `print` except as the function of a direct call; never `*args` / `**kwargs` in a call;
   - never open a file for writing (the builtin open() with a non-read or non-literal mode); `.open` on anything is banned;
@@ -54,6 +57,7 @@ MODULES = {
     "os": {"path", "sep", "linesep", "pathsep", "curdir", "pardir", "extsep"},
     "os.path": ALL,
     "time": {"time", "monotonic", "sleep", "strftime", "gmtime", "localtime", "perf_counter"},
+    "types": {"MappingProxyType"},
     "datetime": {"datetime", "timedelta", "timezone", "date", "time"},
     "re": {"compile", "match", "fullmatch", "search", "sub", "subn", "findall", "finditer", "split", "escape", "I", "M", "S", "X",
            "IGNORECASE", "MULTILINE", "DOTALL", "VERBOSE", "error", "Pattern"},
@@ -76,6 +80,8 @@ BANNED_NAMES = {
     "multiprocessing", "os_", "posix", "zouinify",
 }
 CALL_ONLY = {"open", "print"}   # fine as `open(...)` / `print(...)`, never as a value
+MUTATORS = {"add", "append", "clear", "discard", "extend", "insert", "pop", "popitem", "remove", "setdefault", "update",
+            "sort", "reverse", "__setitem__", "__delitem__"}   # never on a module's or an imported name's container
 BANNED_ATTRS = {
     "os", "subprocess", "sys", "ticket_sh", "kill", "killpg", "pthread_kill", "raise_signal", "system", "popen", "spawn", "spawnl",
     "spawnle", "spawnlp", "spawnv", "spawnve", "spawnvp", "exec", "execl", "execle", "execlp", "execv", "execve", "execvp",
@@ -174,6 +180,7 @@ class Checker(ast.NodeVisitor):
         self.modules: dict = {}      # local name -> module path (allowlisted module or a panel sibling)
         self.called_attr: set = set()
         self.called_name: set = set()
+        self.imported: set = set()   # names bound by `from <sibling|allowlisted module> import <name>` that are not modules
 
     def flag(self, node, why: str) -> None:
         line = f"{self.path}:{getattr(node, 'lineno', 0)}: {why}"
@@ -245,6 +252,8 @@ class Checker(ast.NodeVisitor):
                     self.modules[a.asname or a.name] = bindings[a.name]
                 elif a.name not in defined:
                     self.flag(node, f"`from {shown} import {a.name}`: {sib}.py defines no such name")
+                else:
+                    self.imported.add(a.asname or a.name)
             return
         if mod.startswith("zouinify"):
             self.flag(node, f"`from {shown} import ...` is not on the panel allowlist (only readonly, panelstate, webauth and panel siblings)")
@@ -261,8 +270,26 @@ class Checker(ast.NodeVisitor):
                 continue
             if f"{mod}.{a.name}" in MODULES:
                 self.modules[a.asname or a.name] = f"{mod}.{a.name}"
+            else:
+                self.imported.add(a.asname or a.name)
 
     # -- attributes and names ------------------------------------------------------------------------------
+    def protected_root(self, node):
+        """The name a chain of attributes and subscripts hangs from, when it is a module or an imported name."""
+        while isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        if isinstance(node, ast.Name) and (node.id in self.modules or node.id in self.imported):
+            return self.modules.get(node.id, node.id)
+        return None
+
+    def visit_Subscript(self, node):
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            root = self.protected_root(node.value)
+            if root is not None:
+                verb = "item deletion on" if isinstance(node.ctx, ast.Del) else "item assignment on"
+                self.flag(node, f"{verb} {root}: modules and what they export are read-only for the panel")
+        self.generic_visit(node)
+
     def walk_chain(self, node, root_name: str, chain: list) -> None:
         m = self.modules[root_name]
         for a in reversed(chain):
@@ -301,11 +328,13 @@ class Checker(ast.NodeVisitor):
         while isinstance(root, ast.Attribute):
             chain.append(root.attr)
             root = root.value
-        if isinstance(root, ast.Name) and root.id in self.modules:
-            if isinstance(node.ctx, (ast.Store, ast.Del)):
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            owner = self.protected_root(node.value)
+            if owner is not None:
                 verb = "deletion of" if isinstance(node.ctx, ast.Del) else "assignment to"
-                self.flag(node, f"{verb} {self.modules[root.id]}.{'.'.join(reversed(chain))}: modules are read-only for the panel "
-                                "(no rebinding of a checked function, constant or class)")
+                self.flag(node, f"{verb} {owner}.{'.'.join(reversed(chain))}: modules and what they export are read-only for the "
+                                "panel (no rebinding of a checked function, constant or class)")
+        if isinstance(root, ast.Name) and root.id in self.modules:
             self.walk_chain(node, root.id, chain)
         self.generic_visit(node)
 
@@ -330,6 +359,10 @@ class Checker(ast.NodeVisitor):
                 self.check_open(node, method=False)
         elif isinstance(f, ast.Attribute):
             self.called_attr.add(id(f))
+            if f.attr in MUTATORS:
+                owner = self.protected_root(f.value)
+                if owner is not None:
+                    self.flag(node, f"mutating call .{f.attr}() on {owner}: modules and what they export are read-only for the panel")
         for a in node.args:
             if isinstance(a, ast.Starred):
                 self.flag(node, "*args in a call")

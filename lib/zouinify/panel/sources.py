@@ -15,6 +15,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
+from types import MappingProxyType
 
 from zouinify import panelstate, readonly
 from zouinify.panel.redact import FILE_EXT, redact
@@ -26,8 +27,9 @@ EVIDENCE_RE = re.compile(
 LANES = (("ready", ("ready",)), ("in-dev", ("in-dev",)), ("review", ("in-review", "ready-to-merge")),
          ("to deploy", ("ready-to-deploy", "merged")), ("deployed", ("deployed",)))
 CHIPS = ("backlog", "blocked", "done", "dropped")
-SEV = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-STATE_ORDER = {"waiting": 0, "working": 1, "idle": 2, "shell": 3, "gone": 4}
+# frozen (T-0164): a panel module must not be able to widen the tier classifier or reorder the lanes at runtime
+SEV = MappingProxyType({"P0": 0, "P1": 1, "P2": 2, "P3": 3})
+STATE_ORDER = MappingProxyType({"waiting": 0, "working": 1, "idle": 2, "shell": 3, "gone": 4})
 TIER2_DECIDE_RE = re.compile(r"CLAUDE\.md|settings", re.I)
 # a command that mutates production however the ask is labelled: the human runs it, never a button (any version)
 FLAGS = r"(?:-\S*\s+(?:\S+\s+)?)*"   # `-chdir=x -auto-approve`, `-C dir`, `-f file` between a tool and its verb
@@ -40,11 +42,11 @@ TIER2_COMMAND_RE = re.compile(
     rf"\bansible-playbook\b|\bgh\s+workflow\s+(?:run|enable|disable)\b|\bgh\s+(?:secret|variable)\s+set\b|\bgh\s+repo\s+(?:delete|rename|edit|archive)\b",
     re.I)
 # `aws ...`: every operation mutates unless it is one of these (global flags may sit anywhere before the service)
-AWS_READONLY_OPS = {("s3", "ls"), ("s3", "presign"), ("sso", "login"), ("sso", "logout"), ("configure", "list"), ("configure", "get"),
-                    ("configure", "list-profiles"), ("logs", "filter-log-events"), ("logs", "tail"), ("sts", "get-caller-identity")}
+AWS_READONLY_OPS = frozenset({("s3", "ls"), ("s3", "presign"), ("sso", "login"), ("sso", "logout"), ("configure", "list"), ("configure", "get"),
+                    ("configure", "list-profiles"), ("logs", "filter-log-events"), ("logs", "tail"), ("sts", "get-caller-identity")})
 AWS_READONLY_PREFIXES = ("get-", "list-", "describe-", "head-", "batch-get-")
-AWS_BOOLEAN_FLAGS = {"--debug", "--version", "--no-verify-ssl", "--no-paginate", "--no-cli-pager", "--no-sign-request",
-                     "--no-cli-auto-prompt", "--cli-auto-prompt", "--dryrun", "--recursive", "--quiet", "--exact-timestamps", "--only-show-errors"}
+AWS_BOOLEAN_FLAGS = frozenset({"--debug", "--version", "--no-verify-ssl", "--no-paginate", "--no-cli-pager", "--no-sign-request",
+                     "--no-cli-auto-prompt", "--cli-auto-prompt", "--dryrun", "--recursive", "--quiet", "--exact-timestamps", "--only-show-errors"})
 SEGMENT_RE = re.compile(r"\s*(?:&&|\|\||\||;|\n)\s*")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
