@@ -359,7 +359,7 @@ class TestApi(PanelWorld):
         self.assertNotIn(FAKE_SESSION_TOKEN, scr)
         self.assertIn("Bearer <redacted>", scr)
         self.assertIn("mysql -p<redacted> db", scr, "glued -p")
-        self.assertIn("Cookie: <redacted>", scr)
+        self.assertIn("Cookie: sid=<redacted>; zouinify_token=<redacted>", scr)
         self.assertNotIn("sid=abc", scr)
         self.assertIn("<redacted-email>", scr)
         self.assertNotIn("alice@", scr)
@@ -625,8 +625,9 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(r("mkdir -pv dir && ls -p"), "mkdir -pv dir && ls -p", "combined short flags and a bare -p are not passwords")
         self.assertEqual(r("mysql -P3306 -u root -pS3cret!"), "mysql -P3306 -u root -p<redacted>")
         self.assertEqual(r("mkdir -p/tmp/x"), "mkdir -p/tmp/x", "a glued path is left alone")
-        self.assertEqual(r("Cookie: sid=abc; zouinify_token=x"), "Cookie: <redacted>")
-        self.assertEqual(r("Set-Cookie: sid=abc; HttpOnly"), "Set-Cookie: <redacted>")
+        self.assertEqual(r("Cookie: sid=abc; zouinify_token=x"), "Cookie: sid=<redacted>; zouinify_token=<redacted>")
+        self.assertEqual(r("Set-Cookie: sid=abc; Path=/; Max-Age=3600; SameSite=Strict; HttpOnly"),
+                         "Set-Cookie: sid=<redacted>; Path=/; Max-Age=3600; SameSite=Strict; HttpOnly", "names and attributes stay, values go")
         self.assertEqual(r("curl --cookie 'a=b' h"), "curl --cookie <redacted> h")
         self.assertEqual(r("cookies are fine words"), "cookies are fine words")
         # another project's screen: e-mails except the human's, paths, hosts, addresses

@@ -19,8 +19,11 @@ FLAG_RE = re.compile(rf"(?i)(--?[a-z_-]*(?:password|passcode|token|secret|cookie
 # `mysql -pS3cret`: a value glued to a lowercase -p (combined short flags such as `-pv` are shorter than 4 characters;
 # a glued path or option such as `-p/tmp` is left alone)
 GLUED_P_RE = re.compile(r"(?<![\w/.~-])-p(?![/~.-])(\S{4,})")
-# `Cookie: a=b; c=d`, `Set-Cookie: sid=...; HttpOnly`: the whole header value
+# `Cookie: a=b; c=d`, `Set-Cookie: sid=...; Path=/; HttpOnly`: every cookie VALUE goes, the names and the standard
+# attributes stay (so `zouinify_token=<redacted>` still says which cookie it was, as T-0165's test pins)
 COOKIE_RE = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)([^\n]+)")
+COOKIE_PAIR_RE = re.compile(r"([^=;\s]+)=([^;]*)")
+COOKIE_ATTRS = {"path", "domain", "expires", "max-age", "samesite", "priority"}
 # another project's screen (T-0175): e-mail addresses (a URL's user part, `//alice@host`, is not one), absolute or
 # `~` paths of two or more segments, dotted host names of three or more labels that do not end in a file extension,
 # IPv4 addresses
@@ -78,12 +81,17 @@ def redact(text: str) -> str:
     out = LABEL_RE.sub(lambda m: f"{m.group(1)}<redacted>", out)
     out = FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     out = GLUED_P_RE.sub("-p<redacted>", out)
-    out = COOKIE_RE.sub(lambda m: f"{m.group(1)}<redacted>", out)
+    out = COOKIE_RE.sub(lambda m: m.group(1) + cookie_pairs(m.group(2)), out)
     out = ENV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     out = PROMPT_RE.sub(lambda m: f"{m.group(1)} <redacted>" if m.group(2) else f"{m.group(1)} <redacted-next-line>", out)
     for rx, rep in SHAPES:
         out = rx.sub(rep, out)
     return wrapped_lines(out)
+
+
+def cookie_pairs(header_value: str) -> str:
+    """`sid=abc; Path=/; zouinify_token=x` -> `sid=<redacted>; Path=/; zouinify_token=<redacted>`."""
+    return COOKIE_PAIR_RE.sub(lambda p: p.group(0) if p.group(1).lower() in COOKIE_ATTRS else f"{p.group(1)}=<redacted>", header_value)
 
 
 def wrapped_lines(text: str) -> str:
