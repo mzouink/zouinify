@@ -36,15 +36,18 @@ ln -s ~/src/zouinify/bin/zouinify ~/.local/bin/zouinify    # zouinify from a she
 Then, inside your project:
 
 ```bash
-cp ~/src/zouinify/templates/ops/config.yaml.example .ops/config.yaml   # edit: repos, sessions
-zouinify config --check        # validates the file
-zouinify briefs render         # writes .ops/briefs/*.md from the templates
+zouinify init                  # asks for name, short tag, branches, model, port, your name; writes .ops/config.yaml,
+                               # .ops/briefs/*.md and the .ops/state/ line in .gitignore; never overwrites, nothing outside the repo
+zouinify config --check        # validates the file (edit it first: repos, human_only, budget)
 zouinify up --dry-run          # shows the exact tmux + claude lines it would run
 zouinify up                    # starts the desk, manager and debug sessions
 ```
 
-Needs Python 3.9+ with PyYAML, tmux 3.2+, and the `claude` CLI on PATH. `zouinify init`, which also scaffolds `tickets/` and
-`scripts/ticket.sh`, comes in week 3.
+`zouinify init --dry-run` prints the plan and the config without writing; `--non-interactive --name N --short S --human H`
+answers the questions from flags (for a session, which has no terminal). Without `init`: copy
+`templates/ops/config.yaml.example` to `.ops/config.yaml` and run `zouinify briefs render`. Needs Python 3.9+ with PyYAML,
+tmux 3.2+, and the `claude` CLI on PATH. The tracked protocol files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` section)
+are the second half of `init` (T-0185): a plan first, then your own yes.
 
 ## How it fits together
 
@@ -84,6 +87,6 @@ typing in the desk's window.
 
 1. **Week 1:** CLI core (done), read-only panel, the first project's config.
 2. **Week 2:** receipts channel (browser token, audit, rate limit, `zouinify poll`), hooks, optional intranet access.
-3. **Week 3:** launch and kill from the panel via the desk, `zouinify init` for a fresh repo, a home page listing your projects.
+3. **Week 3:** launch and kill from the panel via the desk, `zouinify init` for a fresh repo (config + briefs done; the tracked protocol files next), a home page listing your projects.
 
 Inspired by [lavish-axi](https://github.com/kunchenguid/lavish-axi): a local page, a long-polling agent, nothing in the cloud.

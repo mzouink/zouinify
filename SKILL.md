@@ -11,7 +11,10 @@ disable-model-invocation: false
 Run `${CLAUDE_SKILL_DIR}/bin/zouinify $ARGUMENTS` from the project root (the directory holding `.ops/config.yaml`, or any
 directory under it) and relay its output verbatim. Commands today: `config`, `up`, `launch`, `status`, `down`, `briefs`,
 `panel start|stop|status|url|token rotate` (the read-only control panel: loopback by default, `panel.bind: intranet` with
-the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`. Receipts (`poll`) and `init` are later steps and
+the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`, `init` (bootstraps a repository: `.ops/config.yaml`,
+`.ops/briefs/*.md`, the `.ops/state/` line in `.gitignore`; it asks its questions on the human's terminal, so from a session
+run `init --non-interactive --name N --short S --human H` with values the human gave, or `init --dry-run` to show the plan;
+it never overwrites an `.ops/` file and never touches `~/.claude` or `CLAUDE.md`). Receipts (`poll`) are a later step and
 are not available yet. `term` is the terminal page (T-0181): typing into one of this project's WORKER panes from the
 browser, after a passphrase of its own; the desk, manager and debug windows are never reachable from it.
 
@@ -39,5 +42,5 @@ Rules this skill never bends (they come from `.ops/config.yaml` and the project'
   Claude panes of this project only, with an audit line per batch of keys; no button, receipt or script ever produces a keystroke.
 - If a command here is refused by the permission classifier, file it with `scripts/ticket.sh ask` (one line) and continue;
   never ask a peer session to run it.
-- `init` (later) writes tracked files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` section): show the plan first and wait
-  for the human's own yes in this window (a relayed answer does not count for `CLAUDE.md` edits).
+- The second half of `init` (later, T-0185) writes tracked files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` section):
+  show the plan first and wait for the human's own yes in this window (a relayed answer does not count for `CLAUDE.md` edits).

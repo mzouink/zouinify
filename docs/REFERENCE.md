@@ -16,15 +16,24 @@ ln -s ~/src/zouinify ~/.claude/skills/zouinify        # the skill: /zouinify <co
 ln -s ~/src/zouinify/bin/zouinify ~/.local/bin/zouinify   # the same CLI from a shell
 ```
 
-Then, in a project: copy `templates/ops/config.yaml.example` to `<repo>/.ops/config.yaml`, fill it in, add `.ops/state/` to
-`.gitignore`, run `zouinify config --check`, `zouinify briefs render` (writes `.ops/briefs/*.md` from the templates; edit them
-to taste) and `zouinify up --dry-run`. (`zouinify init`, which scaffolds all of that plus `tickets/` and `scripts/ticket.sh`, is
-week 3.)
+Then, at a repository's root: `zouinify init`. It asks for the project name, the short tag that prefixes the session names,
+the trunk and production branches, the model, the panel port and your name (Enter takes the proposal: the directory name,
+its initials, the checked-out branch, `main`, `fable`, `4700 + crc32(root) % 90` with its three ports free, `$USER`) and
+writes `.ops/config.yaml` (commented; the terminal block present but `enabled: false`), `.ops/briefs/*.md` from the templates
+and the `.ops/state/` line in `.gitignore`, then runs `config --check` and prints `up --dry-run`'s plan. It never overwrites
+an existing `.ops/` file (a second run lists what exists and exits 0), never writes outside the realpath'd repository root
+(a symlinked `.ops` or `.gitignore` is refused or skipped), never touches `~/.claude` or `CLAUDE.md`. `--dry-run` prints the
+plan and the config and writes nothing; `--non-interactive` takes the answers from `--name --short --human` (required) and
+`--trunk --prod --model --port` (optional) for a caller without a terminal, such as a session. The tracked protocol files
+(`tickets/`, `scripts/ticket.sh`, the `CLAUDE.md` section) are the second half (T-0185), written only after a plan and the
+human's own yes. By hand instead: copy `templates/ops/config.yaml.example` to `<repo>/.ops/config.yaml`, fill it in, add
+`.ops/state/` to `.gitignore`, run `zouinify config --check`, `zouinify briefs render` and `zouinify up --dry-run`.
 
 ## Commands
 
 | Command | Effect |
 |---|---|
+| `zouinify init [--dry-run] [--non-interactive] [--name N --short S --human H] [--trunk B --prod B --model M --port P]` | Bootstrap the repository at the root (or `--project DIR`): `.ops/config.yaml` from questions on the terminal or from the flags, `.ops/briefs/*.md` from the templates, the `.ops/state/` line in `.gitignore`; then `config --check` and `up --dry-run`'s plan. Never overwrites an `.ops/` file, never writes outside the realpath'd root, never touches `~/.claude` or `CLAUDE.md`; a second run reports and exits 0. |
 | `zouinify config [--check\|--json]` | Load and validate `.ops/config.yaml` (every problem listed at once); `--json` prints the normalized config. The project root is `$ZOUINIFY_PROJECT`, `--project DIR`, or the nearest ancestor holding `.ops/config.yaml`. |
 | `zouinify up [role...] [--dry-run] [--wait S]` | Start the standard session set (`always: true`) or the named roles, **idempotently**: an existing tmux session of that name is reported (`attached`, with its status from `claude agents --json` and the model from its status bar), never duplicated. A new one is `tmux new-session -d -s <tmux> -c <root> -e TICKET_AS=<name> -e ZOUINIFY_PROJECT=<root> claude --model <model> -n <name> [--permission-mode <mode>] [flags] "<brief>"`; `up` waits up to 30 s for the status bar to show the model and fails loudly on a wrong one. `--dry-run` prints the exact lines. Launched sessions are recorded in `.ops/state/sessions.json`. |
 | `zouinify launch worker T-xxxx [--receipt ID] [--dry-run]` | One worker per ticket, named `t<num>-<slug>` (the ticket's slug, like `ticket.sh claim`), prompt `Read tickets/WORKER_BRIEF.md, then claim T-xxxx.`, `TICKET_AS=<name>`. Refuses unless the ticket is `ready` with an empty `owner:`, refuses an id that `tickets/FREEZE` does not list while a freeze is on, refuses a duplicate tmux name. The worker claims the ticket itself. With `--receipt ID` (the desk acting on a panel click) it appends `ticket.sh log T-xxxx "launched <name> (panel receipt ID)"`, signed by the caller's `TICKET_AS`. `launch <role>` starts one role session (`chrome_debug` gets `--chrome`). |

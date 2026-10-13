@@ -20,6 +20,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", metavar="DIR", help="project root (default: $ZOUINIFY_PROJECT or the nearest .ops/config.yaml)")
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
 
+    s = sub.add_parser("init", help="bootstrap this repository: .ops/config.yaml (asked for on a terminal), .ops/briefs/*.md, the "
+                                    ".ops/state/ line in .gitignore; never overwrites, never writes outside the repository")
+    s.add_argument("--dry-run", action="store_true", help="print the plan and the config it would write; write nothing")
+    s.add_argument("--non-interactive", action="store_true", help="no questions: --name, --short and --human are required, the rest "
+                                                                   "default to the proposals")
+    for f, h in (("name", "project name"), ("short", "short tag prefixing the session names (1-8 lowercase letters or digits)"),
+                 ("trunk", "trunk branch (default: the checked-out branch)"), ("prod", "production branch ('' for none)"),
+                 ("model", "model for every session (default fable)"), ("port", "panel port (default 4700 + crc32(root) %% 90, free)"),
+                 ("human", "your name, the human the briefs address")):
+        s.add_argument(f"--{f}", metavar=f.upper(), help=h)
+
     s = sub.add_parser("config", help="validate .ops/config.yaml (--check) or print it normalized (--json)")
     s.add_argument("--check", action="store_true")
     s.add_argument("--json", action="store_true")
@@ -84,6 +95,10 @@ def main(argv=None) -> int:
         if args.cmd == "briefs" and args.action == "list":
             from zouinify import briefs
             return briefs.cmd_list()
+        if args.cmd == "init":                                # before the config load: there is no config yet
+            from zouinify import initcmd
+            flags = {f: getattr(args, f) for f in initcmd.FIELDS if getattr(args, f) is not None}
+            return initcmd.cmd_init(args.project, flags, dry_run=args.dry_run, non_interactive=args.non_interactive)
         cfg = cfgmod.load(args.project)
         if args.cmd == "config":
             if args.json:
