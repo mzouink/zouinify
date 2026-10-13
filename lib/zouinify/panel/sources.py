@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from zouinify import panelstate, readonly
-from zouinify.panel.redact import redact
+from zouinify.panel.redact import redact, redact_foreign, suspicious
 
 PROMPT_RE = re.compile(r"Do you want|Allow |permission|\(y/n\)|Yes, and|Esc to|Enter to confirm|\[Y/n\]|\(esc\)", re.I)
 CHROME_RE = re.compile(r"^\s*(\[[A-Z][a-z]+ [0-9.]+\]|\U0001F4B0|⏵|─|╭|╰|│\s*$|❯\s*$|>\s*$)")
@@ -202,7 +202,7 @@ def last_body_line(screen: str) -> str:
     return body[-1].strip()[:160] if body else ""
 
 
-OPTION_RE = re.compile(r"^\s*(?:❯\s*)?[1-9]\.\s+\S")
+OPTION_RE = re.compile(r"^\s*(?:[❯>]\s*)?[1-9]\.\s+\S")
 BOX_RE = re.compile(r"^\s*│\s?|\s*│\s*$")
 
 
@@ -266,13 +266,50 @@ def registered_projects() -> list:
 
 def project_label(cwd: str, projects: list) -> tuple:
     """(label, registered): a registered project's name when `cwd` is under its root, else the cwd's last path
-    segment only. Nothing more of a foreign path is ever exposed (T-0175 merge gate: the panel may serve the LAN)."""
+    segment only; the home directory, or any segment holding an `@` (a login such as user@org), shows as `~`. Nothing
+    more of a foreign path is ever exposed (T-0175 merge gate: the panel may serve the LAN)."""
     rc = os.path.realpath(cwd or "")
     for p in projects:
         root = os.path.realpath(str(p.get("root") or ""))
         if root and (rc == root or rc.startswith(root + os.sep)):
             return str(p.get("name") or os.path.basename(root)), True
-    return (os.path.basename(rc.rstrip(os.sep)) or "?"), False
+    if rc == os.path.realpath(os.path.expanduser("~")):
+        return "~", False
+    base = os.path.basename(rc.rstrip(os.sep))
+    if "@" in base:
+        base = "~"
+    return (base or "?"), False
+
+
+def foreign_screen(screen: str, keep_emails=()) -> tuple:
+    """(text, withheld_reason) for another project's screen (already through `redact`): only the dialog, from the
+    question above the first option (or the first prompt line) to the bottom, chrome and blank lines dropped, then
+    `redact_foreign` (e-mails, paths, hosts, addresses). Withheld entirely when no prompt or dialog is on the visible
+    screen or a secret-shaped string survives redaction (manager's merge condition, T-0175). The capture is the last
+    visible screen only, never scrollback."""
+    lines = screen.splitlines()
+    first_opt = next((i for i, l in enumerate(lines) if OPTION_RE.match(l)), None)
+    first_prompt = next((i for i, l in enumerate(lines) if PROMPT_RE.search(l)), None)
+    start = None
+    if first_opt is not None:
+        start = first_opt
+        for i in range(first_opt - 1, max(-1, first_opt - 9), -1):
+            t = BOX_RE.sub("", lines[i]).strip()
+            if not t or CHROME_RE.match(lines[i]) or t.startswith("☐") or t.startswith("☑"):
+                if start < first_opt:
+                    break
+                continue
+            start = i
+    if first_prompt is not None and (start is None or first_prompt < start):
+        start = first_prompt
+    if start is None:
+        return "", "no prompt or dialog on the visible screen"
+    body = [l for l in lines[start:] if l.strip() and not CHROME_RE.match(l)]
+    text = redact_foreign("\n".join(body), keep_emails)
+    why = suspicious(text)
+    if why:
+        return "", why
+    return text, ""
 
 
 def foreign_waiting_source(cfg) -> dict:
@@ -290,6 +327,7 @@ def foreign_waiting_source(cfg) -> dict:
         return {"rows": []}
     pane_by_pid = pane_index(readonly.list_panes())
     projects = registered_projects()
+    keep = tuple(cfg.panel.get("keep_emails") or ())
     rows: list = []
     seen: set = set()
     for a in waiting:
@@ -300,10 +338,11 @@ def foreign_waiting_source(cfg) -> dict:
         pane = walk_to_pane(a.get("pid"), pane_by_pid)
         tmux_name = pane["session"] if pane else None
         screen = redact(readonly.capture_pane(tmux_name)) if tmux_name else ""
+        portion, why = foreign_screen(screen, keep) if screen else ("", "")
         label, registered = project_label(str(a.get("cwd") or ""), projects)
         rows.append({"name": name, "tmux": tmux_name, "project": label, "registered": registered, "in_project": False,
-                     "role": "", "ticket": "", "waiting_for": waiting_line(screen) or last_body_line(screen), "since": "",
-                     "started_at": a.get("startedAt")})
+                     "role": "", "ticket": "", "since": "", "started_at": a.get("startedAt"), "withheld": why,
+                     "waiting_for": "waiting (screen withheld)" if why else (waiting_line(portion) or last_body_line(portion))})
     rows.sort(key=lambda r: (r["project"], r["name"]))
     return {"rows": rows}
 
@@ -654,7 +693,11 @@ class Snapshot:
             if not row:
                 return None
             d = dict(row)
+            screen = redact(readonly.capture_pane(row["tmux"])) if row.get("tmux") else ""
+            d["screen"], d["withheld"] = foreign_screen(screen, tuple(self.cfg.panel.get("keep_emails") or ())) if screen else ("", "")
+            return d
         d["screen"] = redact(readonly.capture_pane(row["tmux"])) if row.get("tmux") else ""
+        d["withheld"] = ""
         return d
 
     def session(self, name: str, fresh: bool = False):

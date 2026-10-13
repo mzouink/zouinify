@@ -80,8 +80,11 @@ dynamically or write, a click cannot become a launch, a kill, a keystroke, a tic
 `#/waiting` lists every Claude session of yours that `claude agents --json` reports as waiting on you, across all your
 projects, this project first. Each row names the tmux window; answer from your own terminal with
 `tmux attach -t <window>` (the page copies the window name; the panel itself never names or runs a tmux command). Rows
-of other projects show the project name from `~/.zouinify/projects.json`, or the directory name, never a path; their
-screens are redacted exactly like this project's.
+of other projects show the project name from `~/.zouinify/projects.json`, or the directory name (`~` for your home
+directory), never a path. Their drawer shows the dialog only (question, options, footer), through the full redaction
+suite plus paths, host names, addresses and every e-mail address not listed in `panel.keep_emails` (put your own there);
+when no dialog is visible or a secret-shaped string survives, the row says "waiting (screen withheld)". The capture is
+the last visible screen only, never scrollback.
 
 ## UX specification
 

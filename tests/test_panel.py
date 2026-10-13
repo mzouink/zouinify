@@ -85,7 +85,7 @@ class PanelWorld(World):
         self.port = free_port()
         self.write(".ops/config.yaml", open(os.path.join(self.root, ".ops", "config.yaml")).read()
                    .replace("port: 4799", f"port: {self.port}")
-                   .replace("panel: {", "panel: {autostart: false, logs: [{label: apply, glob: 'deploy/*.apply.log'}], plans_glob: 'deploy/*.plan', "))
+                   .replace("panel: {", "panel: {autostart: false, logs: [{label: apply, glob: 'deploy/*.apply.log'}], plans_glob: 'deploy/*.plan', keep_emails: [keeper@example.org], "))
         os.makedirs(os.path.join(self.root, "deploy"))
         self.write("deploy/old.plan", "old")
         time.sleep(0.02)
@@ -116,7 +116,17 @@ class PanelWorld(World):
         with open(os.path.join(self.state, "sessions.json")) as fh:
             foreign_pid = json.load(fh)["elsewhere-bf"]["pid"]
         with open(os.path.join(self.state, "screen-elsewhere-bf.txt"), "w") as fh:
-            fh.write(PROMPT_SCREEN + SECRET_SCREEN)
+            fh.write(PROMPT_SCREEN + SECRET_SCREEN + "mysql -pS3cret db\nCookie: sid=abc; zouinify_token=x\n"
+                     "mail alice@example.org and keeper@example.org\nsee /groups/lab/user/proj/file.txt on node7.lab.example.org 10.1.2.3\n")
+        # a dialog plus a token-shaped string the redactor cannot place -> withheld; a screen with no dialog -> withheld
+        for name, text in (("withheld-zz", "Do you want to proceed?\n > 1. Yes\n   2. No\nkey " + "Ab1" * 12 + "\n"),
+                           ("nodialog-qq", "just some text\n> \n   [Fable 5.1] x | dev\n")):
+            subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", self.foreign_cwd, "claude", "--model", "fable", "--", name],
+                           env=self.env, check=True, capture_output=True)
+            with open(os.path.join(self.state, f"screen-{name}.txt"), "w") as fh:
+                fh.write(text)
+        with open(os.path.join(self.state, "sessions.json")) as fh:
+            fake_pids = {n: v["pid"] for n, v in json.load(fh).items()}
         os.makedirs(os.path.join(self.home, ".zouinify"), exist_ok=True)
         with open(os.path.join(self.home, ".zouinify", "projects.json"), "w") as fh:
             json.dump([{"name": "proj-two", "short": "p2", "root": self.foreign_cwd, "port": 4701, "pid": 1, "url": "http://127.0.0.1:4701/"}], fh)
@@ -129,6 +139,9 @@ class PanelWorld(World):
                 {"name": "other-project", "cwd": self.tmp, "status": "idle", "pid": 3, "kind": "interactive"},
                 {"name": "elsewhere-bf", "cwd": self.foreign_cwd, "status": "waiting", "pid": foreign_pid, "kind": "interactive"},
                 {"name": "lonely-xy", "cwd": os.path.join(self.tmp, "other3"), "status": "waiting", "pid": 7, "kind": "interactive"},
+                {"name": "home-session", "cwd": self.home, "status": "waiting", "pid": 8, "kind": "interactive"},
+                {"name": "withheld-zz", "cwd": self.foreign_cwd, "status": "waiting", "pid": fake_pids["withheld-zz"], "kind": "interactive"},
+                {"name": "nodialog-qq", "cwd": self.foreign_cwd, "status": "waiting", "pid": fake_pids["nodialog-qq"], "kind": "interactive"},
             ], fh)
         self.env["FAKE_CLAUDE_AGENTS"] = self.agents
         self.env_patch = mock.patch.dict(os.environ, self.env, clear=True)
@@ -301,7 +314,7 @@ class TestApi(PanelWorld):
         w = s["waiting_all"]
         names = [r["name"] for r in w["rows"]]
         self.assertEqual(names[0], "t0001-first-ready-ticket", "this project's rows come first")
-        self.assertEqual(sorted(names), ["elsewhere-bf", "lonely-xy", "t0001-first-ready-ticket"])
+        self.assertEqual(sorted(names), ["elsewhere-bf", "home-session", "lonely-xy", "nodialog-qq", "t0001-first-ready-ticket", "withheld-zz"])
         by = {r["name"]: r for r in w["rows"]}
         mine = by["t0001-first-ready-ticket"]
         self.assertTrue(mine["in_project"])
@@ -323,17 +336,50 @@ class TestApi(PanelWorld):
             if not r["in_project"]:
                 self.assertNotIn("cwd", r)
                 self.assertNotIn(self.tmp, json.dumps(r), "a foreign row never carries a path")
-        self.assertEqual(w["elsewhere"], 2)
-        self.assertEqual(s["kpis"]["waiting_elsewhere"], 2)
+        self.assertEqual(w["elsewhere"], 5)
+        self.assertEqual(s["kpis"]["waiting_elsewhere"], 5)
+        self.assertEqual((by["home-session"]["project"], by["home-session"]["registered"]), ("~", False),
+                         "a session started in the home directory is labelled ~, never the login")
+        self.assertEqual(by["withheld-zz"]["waiting_for"], "waiting (screen withheld)")
+        self.assertIn("token-shaped", by["withheld-zz"]["withheld"])
+        self.assertEqual(by["nodialog-qq"]["waiting_for"], "waiting (screen withheld)")
+        self.assertIn("no prompt or dialog", by["nodialog-qq"]["withheld"])
+        self.assertEqual(e["withheld"], "")
         self.assertEqual(s["kpis"]["waiting"], 1, "the project KPI ignores foreign sessions")
         self.assertEqual([r["name"] for r in s["waiting"]], ["t0001-first-ready-ticket"], "the dashboard panel keeps this project's rows")
         self.assertNotIn("elsewhere-bf", {r["name"] for r in s["sessions"]["rows"]}, "the sessions table stays per project")
         d = self.get_json("/api/waiting/elsewhere-bf")
-        self.assertIn("aws_secret_access_key = <redacted>", d["screen"], "a foreign capture is redacted like every other")
-        self.assertNotIn(FAKE_SESSION_TOKEN, d["screen"])
-        self.assertIn("Bearer <redacted>", d["screen"])
+        scr = d["screen"]
+        self.assertEqual(d["withheld"], "")
+        self.assertIn("Do you want to proceed?", scr, "the dialog is shown, from the question")
+        self.assertIn("Bash(git push origin dev)", scr, "the command the permission box asks about is part of the dialog")
+        self.assertNotIn("[Fable 5.1]", scr, "another project's status line (cwd, branch) is never shown")
+        self.assertNotIn("x | dev", scr)
+        self.assertIn("aws_secret_access_key = <redacted>", scr, "a foreign capture is redacted like every other")
+        self.assertNotIn(FAKE_SESSION_TOKEN, scr)
+        self.assertIn("Bearer <redacted>", scr)
+        self.assertIn("mysql -p<redacted> db", scr, "glued -p")
+        self.assertIn("Cookie: <redacted>", scr)
+        self.assertNotIn("sid=abc", scr)
+        self.assertIn("<redacted-email>", scr)
+        self.assertNotIn("alice@", scr)
+        self.assertIn("keeper@example.org", scr, "the human's own address (panel.keep_emails) stays readable")
+        self.assertIn("<path>", scr)
+        self.assertNotIn("/groups/lab", scr)
+        self.assertIn("<host>", scr)
+        self.assertNotIn("node7", scr)
+        self.assertIn("<ip>", scr)
+        self.assertNotIn("10.1.2.3", scr)
         self.assertNotIn(self.tmp, json.dumps(d))
         self.assertNotIn("cwd", d)
+        wd = self.get_json("/api/waiting/withheld-zz")
+        self.assertEqual(wd["screen"], "")
+        self.assertIn("token-shaped", wd["withheld"])
+        nd = self.get_json("/api/waiting/nodialog-qq")
+        self.assertEqual((nd["screen"], nd["withheld"]), ("", "no prompt or dialog on the visible screen"))
+        md = self.get_json("/api/waiting/t0001-first-ready-ticket")
+        self.assertIn("[Fable 5.1]", md["screen"], "this project's own sessions keep showing the whole redacted screen")
+        self.assertEqual(md["withheld"], "")
         st, _, _ = self.req("GET", "/api/waiting/tp-desk")
         self.assertEqual(st, 404, "a session that is not waiting has no waiting detail")
         st, _, _ = self.req("GET", "/api/waiting/no-such")
@@ -574,6 +620,32 @@ class TestRedact(unittest.TestCase):
         wrapped = "aws_session_token = FQoGZXIvYXdzEBYaDHNvbWV0aGluZ2hl\ncmUiLGZha2V0b2tlbg==\n$ ls"
         self.assertEqual(r(wrapped), "aws_session_token = <redacted>\n<redacted>\n$ ls")
         self.assertEqual(r("x = <redacted>\nshort\n"), "x = <redacted>\nshort\n", "a short next line is not a continuation")
+        # T-0175 merge conditions (manager): glued -p, cookies
+        self.assertEqual(r("mysql -pS3cret db"), "mysql -p<redacted> db")
+        self.assertEqual(r("mkdir -pv dir && ls -p"), "mkdir -pv dir && ls -p", "combined short flags and a bare -p are not passwords")
+        self.assertEqual(r("mysql -P3306 -u root -pS3cret!"), "mysql -P3306 -u root -p<redacted>")
+        self.assertEqual(r("mkdir -p/tmp/x"), "mkdir -p/tmp/x", "a glued path is left alone")
+        self.assertEqual(r("Cookie: sid=abc; zouinify_token=x"), "Cookie: <redacted>")
+        self.assertEqual(r("Set-Cookie: sid=abc; HttpOnly"), "Set-Cookie: <redacted>")
+        self.assertEqual(r("curl --cookie 'a=b' h"), "curl --cookie <redacted> h")
+        self.assertEqual(r("cookies are fine words"), "cookies are fine words")
+        # another project's screen: e-mails except the human's, paths, hosts, addresses
+        rf = panel_redact.redact_foreign
+        self.assertEqual(rf("mail alice@example.org now"), "mail <redacted-email> now")
+        self.assertEqual(rf("mail Me@Lab.org now", keep_emails=("me@lab.org",)), "mail Me@Lab.org now")
+        self.assertEqual(rf("Message from @rna-desk-6b: hi"), "Message from @rna-desk-6b: hi", "a session mention is not an address")
+        self.assertEqual(rf("Password for 'https://alice@github.test': x"), "Password for 'https://alice@github.test': <redacted>", "a URL user is not an address")
+        self.assertEqual(rf("see /groups/lab/user/proj/file.txt and ~/x/y"), "see <path> and <path>")
+        self.assertEqual(rf("GET /status 200"), "GET /status 200", "a one-segment path is not a path")
+        self.assertEqual(rf("on node7.lab.example.org and 10.1.2.3"), "on <host> and <ip>")
+        self.assertEqual(rf("app.min.js stays, example.test stays, v3.12.1 stays"), "app.min.js stays, example.test stays, v3.12.1 stays")
+        self.assertEqual(rf("mysql -pS3cret alice@example.org"), "mysql -p<redacted> <redacted-email>", "the plain suite runs too")
+        sus = panel_redact.suspicious
+        self.assertEqual(sus("plain words and a sha " + "a" * 40), "")
+        self.assertEqual(sus("x = <redacted>"), "")
+        self.assertEqual(sus(""), "")
+        self.assertIn("token-shaped", sus("key " + "Ab1" * 12))
+        self.assertIn("credential label", sus("password: still-here"))
 
 
 class TestControl(World):

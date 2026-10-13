@@ -35,6 +35,7 @@ panel:
   state_dir: .ops/state                 # gitignored: panel.json (port, pid, token hash), sessions.json, events.jsonl, audit.jsonl
   refresh_s: 30
   redact: default
+  keep_emails: []                       # e-mail addresses left readable on OTHER projects' screens (yours); every other address becomes <redacted-email>
   logs: []                              # log tails on the dashboard, e.g. [{label: "terraform apply", glob: "terraform/*.apply.log"}, {label: "site deploy", glob: ".deploy_site.log"}]
   plans_glob: ""                        # e.g. "terraform/*.tfplan": the newest file matching it is the only applicable plan, older ones are shown VOID; empty = no plan rule
 aws:   {profile: default, sso_cache: ~/.aws/sso/cache, assumed_token_hours: 2}   # omit the block if the project has no cloud credentials to show

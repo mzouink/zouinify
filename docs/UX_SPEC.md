@@ -180,8 +180,13 @@ waiting, whatever its project: this project's rows first, then the others groupe
 from `~/.zouinify/projects.json`, else the directory name of that session, never a path). Row: name, project badge, tmux
 window, the prompt's first line (redacted capture), since (first seen waiting by this panel), and "answer from your terminal:
 attach to tmux window `<name>`" with a copy button for the window name (the panel names no tmux command: its guard forbids
-the verb; the command is in REFERENCE.md). **[show pane]** opens the redacted screen (`GET /api/waiting/<name>`) for any
-of the user's sessions. The dashboard's "Panes waiting for you" keeps this project's rows and links "+ n elsewhere"; the
+the verb; the command is in REFERENCE.md). **[show pane]** opens `GET /api/waiting/<name>`: this project's sessions show
+their whole redacted screen as on the Sessions page; another project's session shows **the dialog only** (from the
+question above the first option, or the first prompt line, to the bottom; chrome and status line dropped), through the
+full redaction suite plus e-mail addresses other than `panel.keep_emails`, absolute and `~` paths, host names and IPv4
+addresses; when no prompt or dialog is on the visible screen, or a secret-shaped string survives redaction, the row says
+"waiting (screen withheld)" and the drawer shows the reason instead of text. The capture is the last visible screen,
+never scrollback. A session started in the home directory, or under a directory named like a login, is labelled `~`. The dashboard's "Panes waiting for you" keeps this project's rows and links "+ n elsewhere"; the
 Sessions KPI shows "n elsewhere". No `[type]` until Z-11 is decided; whether the terminal page may reach sessions outside
 this project's config is a separate decision. Zero own state; the panel's gates unchanged; a foreign capture is redacted
 exactly like this project's (merge gate: the panel may serve the LAN).
