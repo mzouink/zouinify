@@ -82,8 +82,8 @@ projects, this project first. Each row names the tmux window; answer from your o
 `tmux attach -t <window>` (the page copies the window name; the panel itself never names or runs a tmux command). Rows
 of other projects show the project name from `~/.zouinify/projects.json`, or the directory name (`~` for your home
 directory), never a path. Their drawer shows an allowlist, not a redaction: the question and option lines of the
-dialog, and only when every line is plain printable text (no path, address, host name, key- or id-shaped string, long
-number, cookie or credential text); otherwise the row says "waiting (screen withheld)" with the reason, and you attach
+dialog, and only when every line is plain printable text (no path, network address, host name, key- or id-shaped string, long
+number, cookie text, credential/login/flag word); otherwise the row says "waiting (screen withheld)" with the reason, and you attach
 to the window to read it. The capture is
 the last visible screen only, never scrollback.
 

@@ -185,7 +185,9 @@ their whole redacted screen as on the Sessions page; another project's session s
 (desk + security review, 2026-10-13): only the question block right above the first option line and the option lines
 with their continuation lines, each NFKC-normalised, zero-width characters stripped, checked whole (withheld over 400
 characters, shown to 160) and accepted only as printable text with no `/`, `\`, `~` or `@`, no alphanumeric run of 8+ mixing letters and digits, no token-shaped
-run of 16+, no 9+ digit number, no dotted host name, no cookie text and nothing the redactor would change; with no option
+run of 16+, no 9+ digit number, no dotted host name, no cookie text, none of the review's denylist words (pass, pwd,
+secret, token, credential, auth, login, key, `sudo -S`, a -p/-P/-k/-W/-b flag not followed by a digit), no IPv4 or IPv6
+address and nothing the redactor would change; with no option
 list, the first prompt line alone. One failing line withholds the whole dialog: the row says "waiting (screen withheld)"
 and the drawer shows name, project, since and the reason. The capture is the last visible screen, never scrollback.
 A session started in the home directory, or under a directory named like a login, is labelled `~`. The dashboard's "Panes waiting for you" keeps this project's rows and links "+ n elsewhere"; the

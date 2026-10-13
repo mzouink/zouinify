@@ -620,6 +620,8 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(r("cookies are fine words"), "cookies are fine words")
         self.assertEqual(r("sshpass -p S3cret ssh h; mkdir -p dir; mysql -p hunter2"), "sshpass -p <redacted> ssh h; mkdir -p dir; mysql -p <redacted>",
                          "a space-separated -p is a password for tools whose -p means one, a directory for mkdir")
+        self.assertEqual(r("psql -p 5432 -h db"), "psql -p 5432 -h db", "an all-digit -p value is a port, not a password")
+        self.assertEqual(r("mysql -P3306 -p5432 -pS3cret"), "mysql -P3306 -p5432 -p<redacted>", "a glued all-digit value is a port too")
         self.assertEqual(r("pass=x pwd=y PASS=z tests pass: 3 credentials: abc"), "pass=<redacted> pwd=<redacted> PASS=<redacted> tests pass: 3 credentials: <redacted>")
 
 
@@ -639,7 +641,8 @@ class TestForeignDialog(unittest.TestCase):
         self.assertEqual(why, "")
         self.assertTrue(text.startswith("T-0140 is live. Want me to fix deploy.sh and push the file now?\n❯ 1. Yes, fix and push now\n"), text)
         self.assertNotIn("Chat about this", text, "lines after a separator are not part of the option block")
-        for ok in ("edit deploy.sh and config.py?", "on 2026-10-13 at 09:30?", "close T-0140 and t0119?", "a misconfiguration internationalization?"):
+        for ok in ("edit deploy.sh and config.py?", "on 2026-10-13 at 09:30:15?", "close T-0140 and t0119?", "a misconfiguration internationalization?",
+                   "serve on port -p5432?", "Bash(git push origin dev)"):
             self.assertEqual(panel_sources.foreign_dialog(ok + "\n > 1. Yes\n")[1], "", ok)
 
     def test_every_probe_is_withheld(self):
@@ -672,6 +675,25 @@ class TestForeignDialog(unittest.TestCase):
             ("ask t0070-extract-shared-cognito-auth-edge-g-c8?\n > 1. Yes\n", "token-shaped", "a long dashed name"),
             ("x" * 401 + "\n > 1. Yes\n", "longer than 400", "an over-long line"),
             ("just text\n> \n   [Fable 5.1] x | dev\n", "no prompt or dialog", "no dialog at all"),
+            # the final review's denylist: short passwords next to flags or words the redactor does not know
+            ("Bash(docker login -u bob -p hunter2)\n > 1. Yes\n", "credential, login or flag word", "docker login -p"),
+            ("Bash(echo 'S3cr3t!' | sudo -S apt update)\n > 1. Yes\n", "credential, login or flag word", "sudo -S"),
+            ("Bash(gpg --passphrase hunter2 f)\n > 1. Yes\n", "credential, login or flag word", "gpg --passphrase"),
+            ("passphrase: hunter2\n > 1. Yes\n", "credential, login or flag word", "passphrase:"),
+            ("Bash(export DB_PASS=hunter2)\n > 1. Yes\n", "credential, login or flag word", "DB_PASS="),
+            ("Bash(zip -P hunter2 a.zip f)\n > 1. Yes\n", "credential, login or flag word", "zip -P"),
+            ("Bash(unzip -P hunter2 a.zip)\n > 1. Yes\n", "credential, login or flag word", "unzip -P"),
+            ("Bash(openssl enc -k hunter2 -in f)\n > 1. Yes\n", "credential, login or flag word", "openssl -k"),
+            ("Bash(htpasswd -b f bob hunter2)\n > 1. Yes\n", "credential, login or flag word", "htpasswd -b"),
+            ("the password is hunter2\n > 1. Yes\n", "credential, login or flag word", "password is"),
+            ("token swordfish\n > 1. Yes\n", "credential, login or flag word", "token word"),
+            ("secret swordfish\n > 1. Yes\n", "credential, login or flag word", "secret word"),
+            ("rotate the api key?\n > 1. Yes\n", "credential, login or flag word", "the word key"),
+            ("auth header?\n > 1. Yes\n", "credential, login or flag word", "auth"),
+            ("use mysql -W now?\n > 1. Yes\n", "credential, login or flag word", "-W flag"),
+            ("ping 10.1.2.3?\n > 1. Yes\n", "network address", "an IPv4 address"),
+            ("ping fe80::1?\n > 1. Yes\n", "network address", "an IPv6 address"),
+            ("ping ::1?\n > 1. Yes\n", "network address", "the IPv6 loopback"),
         ]
         for screen, reason, label in probes:
             text, why = fd(screen)

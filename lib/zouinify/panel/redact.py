@@ -18,12 +18,12 @@ LABEL_RE = re.compile(rf"(?i)(\b(?:{LABELS})\b[\"']?\s*[=:]\s*)(?!(?:{SCHEMES})\
 FLAG_RE = re.compile(rf"(?i)(--?[a-z_-]*(?:password|passcode|token|secret|cookie)[a-z_-]*)(\s+|=)({VALUE})")
 # `mysql -pS3cret`: a value glued to a lowercase -p (combined short flags such as `-pv` are shorter than 4 characters;
 # a glued path or option such as `-p/tmp` is left alone)
-GLUED_P_RE = re.compile(r"(?<![\w/.~-])-p(?![/~.-])(\S{4,})")
+GLUED_P_RE = re.compile(r"(?<![\w/.~-])-p(?![/~.-])(?!\d+\b)(\S{4,})")   # an all-digit value (`-p5432`) is a port
 # `pass=x`, `pwd=x`, `PASS=x` (only with `=`: "tests pass: 3" and `pwd` output are prose)
 PASS_EQ_RE = re.compile(rf"(?i)\b(pass|pwd)=({VALUE})")
 # `sshpass -p S3cret`, `mysql -p hunter2`: a space-separated -p value of a tool whose -p means password
 TOOL_P_RE = re.compile(r"(?i)\b(sshpass|mysql|mysqladmin|mysqldump|mariadb|psql|pg_dump|pg_restore|mongo|mongosh|redis-cli|smbclient|lftp|sqlplus|isql|rclone)"
-                       r"\b([^\n]*?\s-p)\s+(?!-)(\S+)")
+                       r"\b([^\n]*?\s-p)\s+(?!-)(?!\d+(?![^\s]))(\S+)")
 # `Cookie: a=b; c=d`, `Set-Cookie: sid=...; Path=/; HttpOnly`: every cookie VALUE goes, the names and the standard
 # attributes stay (so `zouinify_token=<redacted>` still says which cookie it was, as T-0165's test pins)
 COOKIE_RE = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)([^\n]+)")

@@ -289,6 +289,12 @@ TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9+=_-]{16,}")
 DIGITS_RE = re.compile(r"\d{9,}")
 HOSTY_RE = re.compile(rf"(?i)(?<![\w.-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?!{FILE_EXT}\b)[a-z]{{2,}}\b")
 COOKIE_WORD_RE = re.compile(r"(?i)\bcookies?\b|\bset-cookie\b")
+# the keyword DENYLIST of the final review: any credential word, login/auth word, `sudo -S`, or a -p/-P/-k/-W/-b flag not
+# followed by a digit withholds the line (`docker login -u bob -p hunter2`, `gpg --passphrase x`, `password is hunter2`,
+# `token swordfish`, `zip -P`, `openssl enc -k`, `htpasswd -b`); unbounded on purpose ("passed" too: withholding costs little)
+DENY_WORD_RE = re.compile(r"(?i)pass|pwd|secret|token|credential|auth|login|\bkey\b|sudo\s+-S\b|(?<!\S)-[pPkWb](?![0-9])")
+IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+IPV6_RE = re.compile(r"(?i)(?<![0-9a-f:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f])::[0-9a-f]{1,4}\b")
 FOREIGN_LINE_MAX = 400            # a line longer than this is withheld; a clean line is shown to FOREIGN_LINE_SHOWN
 FOREIGN_LINE_SHOWN = 160
 FOREIGN_LOOKBACK = 6
@@ -305,7 +311,8 @@ def line_ok(t: str) -> str:
     """The allowlist a line of another project's dialog must pass (desk + reviewer, T-0175): the reason it fails, else ''.
     Printable text under 400 characters (checked whole; shown to 160) with no path, home or address character (`/ \\ ~ @`), no alphanumeric run of 8+
     mixing letters and digits (keys, ids, shas, split secrets), no token-shaped run of 16+ with a digit or symbol, no
-    9+ digit number, no dotted host name, no cookie text, and nothing the redactor would change."""
+    9+ digit number, no dotted host name, no cookie text, no credential/login/flag word (the review's denylist), no IPv4 or
+    IPv6 address, and nothing the redactor would change."""
     if len(t) > FOREIGN_LINE_MAX:
         return "a line longer than 400 characters"
     if not t.isprintable():
@@ -325,6 +332,10 @@ def line_ok(t: str) -> str:
         return "a host name"
     if COOKIE_WORD_RE.search(t):
         return "cookie text"
+    if DENY_WORD_RE.search(t):
+        return "a credential, login or flag word"
+    if IPV4_RE.search(t) or any(re.search(r"(?i)[a-f]|::", m.group(0)) for m in IPV6_RE.finditer(t)):
+        return "a network address"
     if redact(t) != t:
         return "a credential-shaped value"
     return ""
