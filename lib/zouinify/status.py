@@ -47,8 +47,10 @@ def _parse_iso(s: str) -> dt.datetime | None:
 
 
 def creds(cfg, now: dt.datetime | None = None) -> dict:
-    """Time left on the cloud credentials, without reading any key material: the SSO cache's expiresAt
-    when one exists, else the credentials file's mtime plus aws.assumed_token_hours (an estimate)."""
+    """Time left on the cloud credentials, without reading any key material: the SSO ACCESS TOKEN's expiresAt
+    (the horizon that forces `aws sso login`; the short role credentials auto-refresh under it) when one exists,
+    else the credentials file's mtime plus aws.assumed_token_hours (an estimate). The SSO cache also holds the
+    client registration (`botocore-client-id-*.json`, clientId/clientSecret, ~90 days): never that one (T-0178)."""
     aws = cfg.aws
     if not aws:
         return {"left": "n/a", "source": "no aws block in .ops/config.yaml"}
@@ -61,13 +63,16 @@ def creds(cfg, now: dt.datetime | None = None) -> dict:
                 d = json.load(fh)
         except (OSError, ValueError):
             continue
-        e = d.get("expiresAt") if isinstance(d, dict) else None
+        if not isinstance(d, dict) or "accessToken" not in d:     # the registration file, or not an SSO token cache
+            continue
+        e = d.get("expiresAt")
         t = _parse_iso(e) if isinstance(e, str) else None
         if t and (exp is None or t > exp):
             exp = t
     if exp:
         mins = int((exp - now_utc).total_seconds() // 60)
-        return {"left": "EXPIRED" if mins <= 0 else fmt_dur(mins), "source": "sso cache expiresAt",
+        return {"left": ("EXPIRED" if mins <= 0 else fmt_dur(mins)) + " sso",
+                "source": "sso cache: the access token's expiresAt (what forces `aws sso login`; role credentials refresh under it)",
                 "expires_at": exp.isoformat()}
     credf = os.environ.get("AWS_SHARED_CREDENTIALS_FILE") or os.path.expanduser("~/.aws/credentials")
     try:
@@ -114,7 +119,8 @@ def line(data: dict) -> str:
     c = data.get("counts") or {}
     inbox = data.get("inbox")
     return (f"inbox {inbox if inbox is not None else '?'} | P0 {data.get('p0', 0)} | creds {data['creds']['left']} | "
-            f"{c.get('in-dev', 0)} dev {c.get('in-review', 0)} rev {c.get('ready-to-merge', 0)} rtd {c.get('deployed', 0)} dep")
+            f"{c.get('in-dev', 0)} dev {c.get('in-review', 0) + c.get('ready-to-merge', 0)} rev "
+            f"{c.get('ready-to-deploy', 0)} rtd {c.get('deployed', 0)} dep")    # rtd = the human's apply queue (T-0178)
 
 
 def long(data: dict) -> str:

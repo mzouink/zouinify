@@ -635,18 +635,31 @@ class TestStatus(World):
         self.assertEqual(m.group(2), "1")            # one P0 item in the inbox (T-0011, a deployed P0, asks nothing: not counted)
         self.assertEqual(m.group(3), "none")         # no sso cache, no credentials file
         self.assertEqual(m.group(4), "1")            # T-0002 in-dev
-        self.assertEqual(m.group(5), "1")            # T-0008 in-review
-        self.assertEqual(m.group(6), "1")            # T-0009 ready-to-merge
+        self.assertEqual(m.group(5), "2")            # T-0008 in-review + T-0009 ready-to-merge (the review lane)
+        self.assertEqual(m.group(6), "0")            # rtd = ready-to-deploy, the human's apply queue: none in the fixture (T-0178)
         self.assertEqual(m.group(7), "2")            # T-0010 and T-0011 deployed
         self.assertNotIn("sitting", line)
+
+    def test_status_line_rtd_is_the_apply_queue(self):
+        self.write("tickets/T-0012-planned-one.md", TICKET.format(id="T-0012", title="planned one", sev="P2", status="ready-to-deploy", owner="w12"))
+        r = self.ok("status", "--line", "--no-cache")
+        m = self.LINE_RE.match(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(m.group(6), "1", "a ready-to-deploy ticket is the apply queue")
+        self.assertEqual(m.group(5), "2", "ready-to-merge stays in the review count")
 
     def test_status_creds_sources(self):
         with open(os.path.join(self.sso, "abc.json"), "w") as fh:
             json.dump({"expiresAt": "2026-10-13T12:30:00Z", "accessToken": "SECRET-must-not-print"}, fh)
+        with open(os.path.join(self.sso, "botocore-client-id-sess.json"), "w") as fh:    # the client registration: ~90 days
+            json.dump({"clientId": "abc", "clientSecret": "REGSECRET-must-not-print", "expiresAt": "2027-01-10T12:00:00Z"}, fh)
         r = self.ok("status", "--line", "--no-cache")
         m = self.LINE_RE.match(r.stdout.strip().splitlines()[-1])
-        self.assertEqual(m.group(3), "1h30")         # ZOUINIFY_NOW 07:00-04:00 = 11:00Z -> 12:30Z
+        self.assertEqual(m.group(3), "1h30 sso", "the access token's horizon, not the registration's (T-0178)")   # 11:00Z -> 12:30Z
         self.assertNotIn("SECRET", r.stdout)
+        r = self.ok("status", "--no-cache")
+        self.assertIn("access token", r.stdout)
+        self.assertNotIn("SECRET", r.stdout)
+        os.remove(os.path.join(self.sso, "botocore-client-id-sess.json"))
         os.remove(os.path.join(self.sso, "abc.json"))
         cred = os.path.join(self.home, ".aws", "credentials")
         with open(cred, "w") as fh:
