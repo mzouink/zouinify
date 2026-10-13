@@ -5,11 +5,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]      # 3.13: class bodies carry new dunders (T-0172)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - run: pip install pyyaml pytest
       - run: python -m pytest -q tests
       - name: the panel never launches, kills or types (regex denylist)

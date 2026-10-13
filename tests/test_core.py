@@ -10,12 +10,15 @@ gives the RED evidence against the base commit:
     git -C <repo> archive f19a01c | tar -x -C /tmp/base
     ZOUINIFY_UNDER_TEST=/tmp/base/bin/zouinify python3 -m pytest -q tests/test_core.py
 """
+import glob
+import importlib
 import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -547,20 +550,71 @@ class TestDown(World):
 
 
 class TestHarness(World):
-    """T-0170: nothing the World adds may shadow a unittest.TestCase attribute, and assertions must really fail."""
+    """T-0170/T-0172: nothing the World adds may shadow a unittest.TestCase attribute, and assertions must really fail."""
 
-    def test_no_helper_shadows_testcase(self):
-        inherited = set(dir(unittest.TestCase)) - {"setUp", "tearDown", "setUpClass", "tearDownClass", "__doc__", "__module__"}
+    FIXTURE_HOOKS = {"setUp", "tearDown", "setUpClass", "tearDownClass"}
+
+    @classmethod
+    def inherited_names(cls, names=None):
+        """The unittest.TestCase attributes a World class must not redefine: the non-dunder ones minus the fixture
+        hooks. Dunders are left out on purpose: Python 3.13+ puts __firstlineno__ and __static_attributes__ into
+        every class body, TestCase's included, and no helper is ever named __x__ (T-0172)."""
+        names = dir(unittest.TestCase) if names is None else names
+        return {n for n in names if not n.startswith("__")} - cls.FIXTURE_HOOKS
+
+    @staticmethod
+    def shadowed(klass, inherited):
+        return sorted(set(vars(klass)) & inherited)
+
+    @staticmethod
+    def world_descendants():
+        """Every World descendant of every test module. The sibling modules are imported first, so a partial run
+        (`pytest tests/test_core.py`) walks the same classes as the full one."""
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        for path in sorted(glob.glob(os.path.join(HERE, "test_*.py"))):
+            importlib.import_module(os.path.splitext(os.path.basename(path))[0])
         classes, todo = [], [World]
         while todo:                                   # every descendant, not only the direct subclasses
-            cls = todo.pop()
-            classes.append(cls)
-            todo.extend(cls.__subclasses__())
-        self.assertGreater(len(classes), 1)
-        for cls in classes:
-            shadowed = sorted(set(vars(cls)) & inherited)
-            self.assertFalse(shadowed, f"{cls.__name__} redefines unittest.TestCase attribute(s) {shadowed}")
+            klass = todo.pop()
+            classes.append(klass)
+            todo.extend(klass.__subclasses__())
+        return classes
+
+    def test_no_helper_shadows_testcase(self):
+        inherited = self.inherited_names()
+        classes = self.world_descendants()
+        self.assertGreater(len({k.__module__ for k in classes}), 1, "the sibling test modules are imported and walked")
+        for klass in classes:
+            shadowed = self.shadowed(klass, inherited)
+            self.assertFalse(shadowed, f"{klass.__name__} redefines unittest.TestCase attribute(s) {shadowed}")
         self.assertIs(type(self).fail, unittest.TestCase.fail)
+
+    def test_guard_ignores_the_class_body_dunders_of_python_313(self):
+        """A plain class body passes under 3.13 semantics (TestCase and every class carry the two new dunders); a
+        helper named after a TestCase method is still caught."""
+        inherited = self.inherited_names(list(dir(unittest.TestCase)) + ["__firstlineno__", "__static_attributes__"])
+
+        class Plain:
+            __firstlineno__ = 1
+            __static_attributes__ = ()
+
+            def helper(self):
+                return self
+
+        class Bad:
+            __firstlineno__ = 1
+
+            def fail(self, *args, **kw):
+                return args
+
+            def assertIn(self, *args):
+                return args
+
+        self.assertEqual(self.shadowed(Plain, inherited), [])
+        self.assertEqual(self.shadowed(Bad, inherited), ["assertIn", "fail"])
+        self.assertNotIn("setUp", inherited)
+        self.assertIn("skipTest", inherited)
 
     def test_assertions_really_fail(self):
         for check in (lambda: self.assertIn("a", "b"), lambda: self.assertNotIn("a", "a"), lambda: self.assertEqual("x", "y"),
