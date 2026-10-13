@@ -184,6 +184,9 @@ AST_OFFENDING = [
     "import subprocess",
     "from zouinify import panelstate\nh = panelstate.read_panel_json(cfg)",      # returns the token hash
     "from zouinify import panelstate\npanelstate.set_token(cfg, 'x')",
+    "from zouinify import webauth\nx = webauth.not_in_the_api(1)",                 # T-0174: exactly __all__
+    "from zouinify import webauth\nt = webauth.threading.Thread",
+    "from zouinify import webauth\nw = webauth._hosts(80, [])",
     "import os\nos.system('tmux kill-server')",
     "import sys\nsys.modules['o' + 's'].system('x')",
     "import os\nf = getattr(os, 'sys' + 'tem')",
@@ -316,7 +319,12 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
-from zouinify import panelstate, readonly
+from zouinify import panelstate, readonly, webauth
+
+LIMITER = webauth.RateLimiter(webauth.RATE_LIMIT, webauth.RATE_WINDOW_S)
+
+def allowed(headers, port):
+    return webauth.host_allowed(headers, port, set()) and webauth.authorize("127.0.0.1", headers, True, bool, LIMITER, webauth.PANEL_COOKIE)[0] == 200
 
 def read(p):
     with open(p, encoding="utf-8", errors="replace") as fh:

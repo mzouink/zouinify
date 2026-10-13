@@ -5,7 +5,7 @@ A regex denylist cannot stop string tricks (`sys.modules['o'+'s']`, `getattr(mod
 (`o = open`, `m = os`), walks through an allowed module into a dangerous one (`http.server.shutil`,
 `re.functools.partial(open, mode="w")`) or relative imports (`from ..tickets import ticket_sh`), so the panel
 package is checked structurally. Every Python file under it may only:
-  - import the allowlisted modules; from `zouinify` only `readonly` and `panelstate`; from its own package only
+  - import the allowlisted modules; from `zouinify` only `readonly`, `panelstate` and `webauth`; from its own package only
     sibling modules and the names they define (relative imports are resolved to absolute names first; `import
     zouinify...` is refused: only `from zouinify.panel.<mod> import <name>`);
   - use, on an allowlisted module, only the attributes on that module's list (so `http.client`, `http.server.shutil`,
@@ -41,6 +41,8 @@ PANELSTATE_API = {"version", "pid", "now_iso", "url", "state_dir", "panel_json_p
                   "write_panel_json", "remove_panel_json", "hook_installed",
                   "token_matches", "token_id", "token_configured"}   # never set_token (rotation is the process side's)
                                                                     # nor read_panel_json (it returns the token hash)
+WEBAUTH_API = {"LOOPBACK_PEERS", "TOKEN_RE", "PANEL_COOKIE", "RATE_LIMIT", "RATE_WINDOW_S", "NO_TOKEN_WEIGHT", "CSP",
+               "unlock_csp", "host_allowed", "bearer_token", "presented_token", "RateLimiter", "authorize"}   # == webauth.__all__ (T-0174)
 MODULES = {
     "__future__": {"annotations"},
     "http": {"HTTPStatus", "server"},
@@ -61,8 +63,9 @@ MODULES = {
     "urllib.parse": {"urlsplit", "urlparse", "unquote", "unquote_plus", "quote", "parse_qs", "parse_qsl", "urlencode", "urljoin"},
     "zouinify.readonly": READONLY_API,
     "zouinify.panelstate": PANELSTATE_API,
+    "zouinify.webauth": WEBAUTH_API,
 }
-ZOUINIFY_NAMES = {"readonly", "panelstate"}
+ZOUINIFY_NAMES = {"readonly", "panelstate", "webauth"}
 BANNED_NAMES = {
     "getattr", "setattr", "delattr", "__import__", "exec", "eval", "compile", "globals", "locals", "vars", "breakpoint", "input",
     "exit", "quit", "help", "memoryview", "subprocess", "sys", "importlib", "socket", "signal", "ctypes", "runpy", "code",
@@ -241,7 +244,7 @@ class Checker(ast.NodeVisitor):
                     self.flag(node, f"`from {shown} import {a.name}`: {sib}.py defines no such name")
             return
         if mod.startswith("zouinify"):
-            self.flag(node, f"`from {shown} import ...` is not on the panel allowlist (only readonly, panelstate and panel siblings)")
+            self.flag(node, f"`from {shown} import ...` is not on the panel allowlist (only readonly, panelstate, webauth and panel siblings)")
             return
         if mod not in MODULES:
             self.flag(node, f"`from {shown} import ...` is not on the panel allowlist")

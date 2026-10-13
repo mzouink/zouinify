@@ -278,6 +278,49 @@ class TestIntranetToken(IntranetServer):
         self.assertIn(f"panel running: http://lanhost.test:{self.port}/", out.getvalue())
         self.assertNotIn("127.0.0.1", out.getvalue())
 
+    def test_request_matrix_is_unchanged(self):
+        """T-0174 characterisation: peer x Host x credential -> status, audit reason and log label. The table is the
+        panel's behaviour since T-0165 and must hold before and after the move to zouinify.webauth (this test passes
+        on both sides of that change; a difference in any cell is a behaviour change, not a refactor)."""
+        tid = panelstate.token_id(self.cfg)
+        creds = {
+            "none": {},
+            "header-good": {"Authorization": "Bearer " + GOOD},
+            "header-bad": {"Authorization": "Bearer " + OTHER},
+            "cookie-good": {"Cookie": "zouinify_token=" + GOOD},
+            "cookie-bad": {"Cookie": "zouinify_token=" + OTHER},
+            "malformed-bearer+good-cookie": {"Authorization": "Bearer junk", "Cookie": "zouinify_token=" + GOOD},
+            "bad-header+good-cookie": {"Authorization": "Bearer " + OTHER, "Cookie": "zouinify_token=" + GOOD},
+            "basic+good-cookie": {"Authorization": "Basic abc", "Cookie": "zouinify_token=" + GOOD},
+        }
+        lan_expect = {"none": (401, "no-token"), "header-good": (200, "token"), "header-bad": (401, "bad-token"),
+                      "cookie-good": (200, "token"), "cookie-bad": (401, "bad-cookie"), "malformed-bearer+good-cookie": (401, "no-token"),
+                      "bad-header+good-cookie": (401, "bad-token"), "basic+good-cookie": (200, "token")}
+        rows = []
+        for via in ("loopback", "lan"):
+            for host_kind in ("good", "evil"):
+                for name, hdr in creds.items():
+                    host = None if host_kind == "good" else f"evil.example:{self.port}"
+                    before = self.server_log().count("\n")
+                    st, _, _ = self.req("/health", host=host, headers=hdr, via=via)
+                    new = [l for l in self.server_log().splitlines()[before:] if "/health" in l or " AUDIT " in l]
+                    audit = [l for l in new if " AUDIT " in l]
+                    reason = audit[-1].split(" AUDIT ")[1].split(" ip=")[0] if audit else ""
+                    label = " token=" in [l for l in new if '"GET /health' in l][-1]
+                    rows.append((via, host_kind, name, st, reason, label))
+        for via, host_kind, name, st, reason, label in rows:
+            cell = f"{via}/{host_kind}/{name}"
+            if host_kind == "evil":
+                self.assertEqual((st, reason, label), (403, "403 host-or-origin", False), cell)
+            elif via == "loopback":
+                self.assertEqual((st, reason, label), (200, "", False), cell)
+            else:
+                est, ereason = lan_expect[name]
+                self.assertEqual((st, reason, label), (est, "" if est == 200 else f"{est} {ereason}", est == 200), cell)
+        self.assertTrue(tid)
+        self.assertIn(" token=" + tid, self.server_log())
+        self.assertEqual(len(rows), 32)
+
     def test_keep_alive_does_not_carry_the_token_label(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
         self.fake_remote = True

@@ -19,32 +19,31 @@ import hashlib
 import json
 import os
 import re
-import threading
-import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from zouinify import panelstate, readonly
+from zouinify import panelstate, readonly, webauth
 from zouinify.panel.sources import Snapshot
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json"}
 ALLOW = "GET, HEAD"
-CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'"
+CSP = webauth.CSP
 REFUSED = {"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW}
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 QUERY_RE = re.compile(r"[?#][^ \"]*")   # a mistyped /?t=<token>, or a hand-built /#t=<token>, must never reach the log
-COOKIE = "zouinify_token"
+COOKIE = webauth.PANEL_COOKIE
 COOKIE_MAX_AGE_S = 90 * 24 * 3600
-TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
-RATE_LIMIT = 10          # weighted refusals per window per address before 429 for the rest of the window: a wrong
-NO_TOKEN_WEIGHT = 0.2    # Bearer counts 1; a missing token or a wrong cookie 0.2 (first visits, a junk cookie set by
-                         # another server under this host name, a cookie left from before a rotation: not an attack)
-RATE_WINDOW_S = 60.0
+# The request-side checks (Host/Origin, bearer/cookie, the weighted per-address rate limit, the decision) live in
+# zouinify.webauth since T-0174, shared with the terminal page; these names stay for readers of this module.
+TOKEN_RE = webauth.TOKEN_RE
+RATE_LIMIT = webauth.RATE_LIMIT
+NO_TOKEN_WEIGHT = webauth.NO_TOKEN_WEIGHT
+RATE_WINDOW_S = webauth.RATE_WINDOW_S
+LOOPBACK_PEERS = webauth.LOOPBACK_PEERS
 SOCKET_TIMEOUT_S = 30    # a half-open LAN connection must not pin a thread forever
-LOOPBACK_PEERS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 # The unlock page: the 401 answer to a token-less navigation. Its only script reads the #t= fragment (which the
 # server never sees), sends it once as a Bearer header to /api/unlock (the server sets the HttpOnly cookie) and
@@ -59,9 +58,7 @@ UNLOCK_SCRIPT = (
     "el.textContent=r.status===429?'Too many refused requests from this address: wait a minute, then open the address again.'"
     ":'This token is not the current one (rotated since?). Run `zouinify panel token rotate` in your own terminal and open the new address.';"
     "}).catch(function(){el.textContent='Could not reach the panel to unlock this browser; reload to try again.';});})();")
-UNLOCK_CSP = ("default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'sha256-"
-              + base64.b64encode(hashlib.sha256(UNLOCK_SCRIPT.encode("utf-8")).digest()).decode("ascii")
-              + "'; form-action 'none'; frame-ancestors 'none'")
+UNLOCK_CSP = webauth.unlock_csp(base64.b64encode(hashlib.sha256(UNLOCK_SCRIPT.encode("utf-8")).digest()).decode("ascii"))
 UNLOCK_HTML = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
                "<link rel=\"icon\" href=\"data:,\"><title>zouinify</title><style>body{background:#081321;color:#eef6ff;font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px}"
                "main{max-width:36rem;margin:10vh auto}code{color:#26e0d0}</style></head><body><main><h1>zouin<span style=\"color:#26e0d0\">ify</span></h1>"
@@ -91,63 +88,27 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0] in LOOPBACK_PEERS
 
     def host_allowed(self) -> bool:
-        """Only the panel's own names may address it: 127.0.0.1 / localhost, plus the LAN names the process side
-        computed when bound to the intranet. A page served under another name (DNS rebinding) and any foreign
-        Origin are refused."""
-        port = self.server.server_address[1]
-        names = {"127.0.0.1", "localhost"} | set(self.server.allowed_hosts)
-        hosts = {f"{n}:{port}" for n in names}
-        if port == 80:
-            hosts |= names
-        host = (self.headers.get("Host") or "").strip().lower()
-        if host not in hosts:
-            return False
-        origin = (self.headers.get("Origin") or "").strip().lower()
-        return not origin or origin in {f"http://{h}" for h in hosts}
+        """Only the panel's own names (127.0.0.1 / localhost and the process side's LAN names, with the port) and no
+        foreign Origin: zouinify.webauth decides."""
+        return webauth.host_allowed(self.headers, self.server.server_address[1], self.server.allowed_hosts)
 
     def bearer_token(self):
-        """The `Authorization: Bearer <token>` value when well-formed, else None."""
-        auth = self.headers.get("Authorization") or ""
-        if auth[:7].lower() != "bearer ":
-            return None
-        tok = auth[7:].strip()
-        return tok if TOKEN_RE.match(tok) else None
+        return webauth.bearer_token(self.headers)
 
     def presented_token(self):
-        """(token, source): the well-formed token the request carries and where from ("header" or "cookie"), or
-        (None, None). A malformed Bearer never falls back to the cookie."""
-        if (self.headers.get("Authorization") or "")[:7].lower() == "bearer ":
-            return self.bearer_token(), "header"
-        for part in (self.headers.get("Cookie") or "").split(";"):
-            k, _, v = part.strip().partition("=")
-            if k == COOKIE and TOKEN_RE.match(v.strip()):
-                return v.strip(), "cookie"
-        return None, None
+        return webauth.presented_token(self.headers, COOKIE)
 
     def authorize(self) -> tuple:
-        """(status, reason): 200 when the request may proceed, 401 or 429 otherwise. Loopback peers are never
-        asked for the token (same-uid processes can read everything directly); every other peer always is."""
+        """(status, reason): 200 when the request may proceed, 401 or 429 otherwise; the decision is
+        zouinify.webauth.authorize with the panel's rules (loopback peers are never asked for the token: same-uid
+        processes can read everything directly). The log label names the token id on an accepted token."""
         srv = self.server
         self.auth_label = ""              # per request: a keep-alive connection reuses this handler
-        if not srv.token_required or self.peer_is_loopback():
-            return 200, "loopback"
-        ip = self.client_address[0]
-        if srv.rate_limited(ip):
-            return 429, "rate-limited"
-        tok, source = self.presented_token()
-        if not tok:
-            srv.note_failure(ip, NO_TOKEN_WEIGHT)
-            return 401, "no-token"
-        if panelstate.token_matches(srv.cfg, tok):
+        status, reason, _source = webauth.authorize(self.client_address[0], self.headers, srv.token_required, srv.token_matches,
+                                                    srv.limiter, COOKIE, is_loopback=self.peer_is_loopback())
+        if reason == "token":
             self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
-            return 200, "token"
-        if source == "cookie":
-            # the browser sends a cookie on every request: a junk one (set by another server under this host name,
-            # cookies ignore ports) or a pre-rotation one would lock the address out within a minute at weight 1
-            srv.note_failure(ip, NO_TOKEN_WEIGHT)
-            return 401, "bad-cookie"
-        srv.note_failure(ip)
-        return 401, "bad-token"
+        return status, reason
 
     def send_bytes(self, status: int, body: bytes, ctype: str, extra: dict | None = None, head: bool = False) -> None:
         self.send_response(status)
@@ -305,24 +266,12 @@ class PanelServer(ThreadingHTTPServer):
         self.token_required = token_required
         self.started_at = panelstate.now_iso()
         self.snap = Snapshot(cfg, self.server_address[1], bind, self.started_at)
-        self.failures: dict = {}
-        self.failures_lock = threading.Lock()
+        self.limiter = webauth.RateLimiter()      # the panel's weights: wrong Bearer 1, missing token or wrong cookie 0.2
 
-    def rate_limited(self, ip: str) -> bool:
-        """Weighted refusals in the window: wrong tokens weigh 1, missing ones NO_TOKEN_WEIGHT (ordinary first visits)."""
-        now = time.time()
-        with self.failures_lock:
-            recent = [(t, w) for t, w in self.failures.get(ip, []) if now - t < RATE_WINDOW_S]
-            self.failures[ip] = recent
-            return sum(w for _, w in recent) >= RATE_LIMIT
-
-    def note_failure(self, ip: str, weight: float = 1.0) -> None:
-        with self.failures_lock:
-            lst = self.failures.setdefault(ip, [])
-            lst.append((time.time(), weight))
-            del lst[:-100]                   # per address: never more than a window's worth
-            if len(self.failures) > 1000:   # never grow without bound
-                self.failures = {k: v for k, v in self.failures.items() if v and time.time() - v[-1][0] < RATE_WINDOW_S}
+    def token_matches(self, presented: str) -> bool:
+        """The matcher authorize() is given: constant time, against the hash in panel.json (re-read per request, so a
+        rotation takes effect at once)."""
+        return panelstate.token_matches(self.cfg, presented)
 
 
 def bind_address(bind: str) -> str:

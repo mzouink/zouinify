@@ -132,12 +132,14 @@ lib/zouinify/
   status.py  briefs.py        the status line; brief templates
   panelctl.py                 panel start/stop/status/url and the user-level projects list (the process side, outside panel/)
   panelstate.py               the server's own pid file and log (the only files the panel package may write)
+  webauth.py                  the request-side checks (Host/Origin, bearer/cookie, weighted rate limiter, the decision) shared by the panel and the terminal page
   panel/                      the read-only server: sources.py (cached sources), server.py (GET-only HTTP), redact.py, static/
 templates/
   ops/config.yaml.example     the per-project config
   briefs/*.md.tmpl            desk, manager, debug, chrome_debug, worker
   tickets/, scripts/, claude/, hooks/   (week 3: the vendored lifecycle core, the CLAUDE.md section, the hook)
 readonly.py                 the read-only facade the panel may import (captures, pane list, human/board --json)
+                            (with panelstate.py and webauth.py the only zouinify modules the panel package may import)
 scripts/check_panel_ast.py    CI merge gate: the panel package uses only allowlisted imports and attributes, no dynamic import, no exec, no write
 scripts/check_panel_guard.sh  CI regex denylist on every file type under the panel package
 scripts/check_public.sh       CI + pre-push: no account ids, keys, secrets, e-mails or home paths in tracked files;
