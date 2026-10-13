@@ -307,6 +307,7 @@ class Handler(BaseHTTPRequestHandler):
 class PanelServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 64
 
     def __init__(self, address, handler, cfg, bind: str, allowed_hosts, token_required: bool, hook_port: int = 0):
         super().__init__(address, handler)
@@ -372,7 +373,7 @@ def run(srv: PanelServer) -> int:
     cfg = srv.cfg
     actual = srv.server_address[1]
     hook_port = srv.hooks.server_address[1]
-    panelstate.write_panel_json(cfg, actual, panelstate.pid(), srv.started_at, hook_port=hook_port)
+    panelstate.write_panel_json(cfg, actual, panelstate.pid(), srv.started_at, hook_port=hook_port, hook_nonce=panelstate.new_hook_nonce())
     srv.snap.start_refresher()
     srv.serve_hooks()
     panelstate.log(cfg, f"zouinify panel {panelstate.version()} serving {cfg.name} on {srv.server_address[0]}:{actual} "

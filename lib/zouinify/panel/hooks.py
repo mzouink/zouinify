@@ -11,7 +11,9 @@ the "Waiting for me" page). The only file write is panelstate.append_event().
 
 Who may post: a loopback peer whose socket belongs to this process's uid (T-0169, webauth.same_user_peer via
 /proc/net/tcp); another local user of the workstation is refused with 403 and audited. Linux only; when the
-lookup fails the listener fails closed.
+lookup fails the listener fails closed. A browser cannot post either (T-0182): any Origin header is refused, the
+body must be application/json (so a page would have to preflight, and OPTIONS is 405), Host must be the listener's
+own loopback name, and the per-start nonce from panel.json (0600) must come back as X-Zouinify-Hook.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from zouinify import panelstate, webauth
 from zouinify.panel.redact import redact
 from zouinify.panel.sources import project_roots, under
 
-MAX_BODY = 64 * 1024                 # a hook payload is small; anything larger is refused unread
+MAX_BODY = 1024 * 1024               # a long reply must still arrive (its Stop clears "waiting"); larger is refused unread
 MAX_TEXT = 2000                      # the reply text kept (redacted) for this project's own events
 MAX_EVENTS = 500                     # the in-memory ring
 MAX_SESSIONS = 1000                  # per-session views kept (least recently updated dropped first)
@@ -37,11 +39,17 @@ EVENTS = ("Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmi
 WAITING_TYPES = ("permission_prompt", "idle_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input")
 CLEARING_EVENTS = ("Stop", "UserPromptSubmit", "SessionEnd", "SessionStart")
 SHORT = {"hook_event_name": 40, "session_id": 64, "permission_mode": 24, "notification_type": 40, "source": 24, "reason": 24}
+SHORT_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")     # the short fields are identifiers, never prose (a foreign event's only channel)
 UNDERSCORE_RE = re.compile(r"_")
+QUERY_RE = re.compile(r"\?[^ \"]*")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+HOOK_HEADER = "X-Zouinify-Hook"
 
 
 def clip(value, n: int) -> str:
-    return str(value)[:n] if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
+    """A short identifier field: kept only when it looks like one (letters, digits, _ . : -), else dropped."""
+    s = str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) else ""
+    return s if len(s) <= n and SHORT_RE.match(s) else ""
 
 
 class EventStore:
@@ -151,7 +159,14 @@ class HookHandler(BaseHTTPRequestHandler):
     timeout = 10
 
     def log_message(self, fmt, *args):  # noqa: D401 - one line per request into the server log, never a payload
-        panelstate.log(self.server.cfg, f"hook {self.address_string()} {fmt % args}")
+        msg = QUERY_RE.sub("?<query-redacted>", CONTROL_RE.sub("", fmt % args))[:200]
+        panelstate.log(self.server.cfg, f"hook {self.address_string()} {msg}")
+
+    def host_ok(self) -> bool:
+        """The listener answers to its own loopback names only (a page under another name cannot address it)."""
+        port = self.server.server_address[1]
+        host = (self.headers.get("Host") or "").strip().lower()
+        return host in {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
 
     def peer_is_loopback(self) -> bool:
         return self.client_address[0] in webauth.LOOPBACK_PEERS
@@ -169,11 +184,15 @@ class HookHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):   # the peer left: nothing to report, no traceback in the log
+            self.close_connection = True
 
     def refuse(self, status, reason: str) -> None:
-        panelstate.log(self.server.cfg, f"AUDIT hook {status} {reason} ip={self.client_address[0]} {self.command} {self.path[:80]}")
+        path = CONTROL_RE.sub("", self.path.split("?", 1)[0])[:80]
+        panelstate.log(self.server.cfg, f"AUDIT hook {status} {reason} ip={self.client_address[0]} {self.command} {path}")
         self.close_connection = True
         self.reply(status, {"error": reason}, {"Allow": "POST"} if status == 405 else None)
 
@@ -182,6 +201,15 @@ class HookHandler(BaseHTTPRequestHandler):
             return self.refuse(HTTPStatus.FORBIDDEN, "hooks are accepted from this user's processes on this machine only")
         if self.path.split("?", 1)[0] != "/api/hook":
             return self.refuse(HTTPStatus.NOT_FOUND, "not found")
+        if self.headers.get("Origin") is not None:
+            return self.refuse(HTTPStatus.FORBIDDEN, "a browser page may not post hooks (Origin present)")
+        if not self.host_ok():
+            return self.refuse(HTTPStatus.FORBIDDEN, "Host is not the listener's own loopback name")
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            return self.refuse(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "hooks are application/json (a browser would have to preflight)")
+        if not panelstate.hook_nonce_matches(self.server.cfg, self.headers.get(HOOK_HEADER)):
+            return self.refuse(HTTPStatus.FORBIDDEN, "missing or wrong X-Zouinify-Hook (the per-start nonce from panel.json)")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -211,6 +239,7 @@ class HookHandler(BaseHTTPRequestHandler):
 class HookServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 64              # closing several sessions at once fires many hooks together: no dropped bursts
 
     def __init__(self, cfg, store: EventStore, port: int):
         super().__init__(("127.0.0.1", port), HookHandler)      # loopback only, whatever panel.bind says

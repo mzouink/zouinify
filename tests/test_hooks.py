@@ -46,17 +46,32 @@ class HookWorld(PanelWorld):
         test = self
         self.peer_patch = mock.patch.object(panel_hooks.HookHandler, "peer_is_loopback", lambda h: not test.fake_remote)
         self.peer_patch.start()
+        # what run() does for a real server: the pid file with the listener's port and its per-start nonce (T-0182)
+        self.nonce = panelstate.new_hook_nonce()
+        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at,
+                                    hook_port=self.hook_port, hook_nonce=self.nonce)
 
     def tearDown(self):
         self.peer_patch.stop()
         self.srv.close_hooks()
         super().tearDown()
 
-    def post_hook(self, body, raw: bytes | None = None, length: int | None = None):
+    def post_hook(self, body, raw: bytes | None = None, length: int | None = None, headers: dict | None = None,
+                  ctype: str = "application/json", nonce=True, host=None, path: str = "/api/hook"):
+        """A POST the way the hook script sends it (Host, JSON content type, the nonce header); each piece can be
+        overridden to probe the listener's checks."""
         conn = http.client.HTTPConnection("127.0.0.1", self.hook_port, timeout=30)
         data = raw if raw is not None else json.dumps(body).encode("utf-8")
-        conn.putrequest("POST", "/api/hook")
-        conn.putheader("Content-Type", "application/json")
+        conn.putrequest("POST", path, skip_host=True, skip_accept_encoding=True)
+        conn.putheader("Host", host or f"127.0.0.1:{self.hook_port}")
+        if ctype:
+            conn.putheader("Content-Type", ctype)
+        if nonce is True:
+            conn.putheader(panel_hooks.HOOK_HEADER, self.nonce)
+        elif nonce:
+            conn.putheader(panel_hooks.HOOK_HEADER, str(nonce))
+        for k, v in (headers or {}).items():
+            conn.putheader(k, v)
         conn.putheader("Content-Length", str(len(data) if length is None else length))
         conn.endheaders()
         conn.send(data)
@@ -178,10 +193,8 @@ class TestHookListener(HookWorld):
         conn.request("GET", "/api/hook")
         r = conn.getresponse(); r.read(); conn.close()
         self.assertEqual(r.status, 405)
-        conn = http.client.HTTPConnection("127.0.0.1", self.hook_port, timeout=30)
-        conn.request("POST", "/api/other", body=b"{}", headers={"Content-Length": "2"})
-        r = conn.getresponse(); r.read(); conn.close()
-        self.assertEqual(r.status, 404)
+        st, _ = self.post_hook(None, raw=b"{}", path="/api/other")
+        self.assertEqual(st, 404)
         st, _, _ = self.req("POST", "/api/hook", body=json.dumps(payload("Stop", self.root, "sid-desk", last_assistant_message="x")).encode())
         self.assertEqual(st, 405, "the main (LAN-facing) server still refuses every POST: hooks come in on the loopback port only")
         self.assertEqual(self.events_file(), [])
@@ -260,9 +273,22 @@ class TestHookListener(HookWorld):
         st, hdr, body = self.req("HEAD", "/api/events")
         self.assertEqual((st, body), (200, b""))
 
+    def script_env(self) -> dict:
+        env = {k: v for k, v in self.env.items() if k != "ZOUINIFY_PROJECT"}
+        env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+        return env
+
+    def run_script(self, p: dict, env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([HOOK_SCRIPT], input=json.dumps(p), capture_output=True, text=True, env=env or self.script_env(), timeout=10)
+
+    def wait_events(self, n: int, timeout: float = 3.0) -> list:
+        deadline = time.time() + timeout
+        while time.time() < deadline and len(self.events_file()) < n:
+            time.sleep(0.05)
+        return self.events_file()
+
     def test_hook_script_posts_for_a_project_session_and_is_silent_elsewhere(self):
         self.assertTrue(os.access(HOOK_SCRIPT, os.X_OK), HOOK_SCRIPT)
-        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at, hook_port=self.hook_port)
         env = {k: v for k, v in self.env.items() if k != "ZOUINIFY_PROJECT"}
         env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
         p = payload("Stop", os.path.join(self.root, ".claude", "worktrees", "t0001-first-ready-ticket"), "sid-worker", last_assistant_message="from the script")
@@ -317,8 +343,143 @@ class TestHookListener(HookWorld):
         self.assertIn("zouinify-hook.sh", s["hook"]["snippet"])
         self.assertIn("permission_prompt|idle_prompt", s["hook"]["snippet"])
         self.assertIn("add the snippet yourself", s["hook"]["note"])
-        pj = json.load(open(os.path.join(self.root, ".ops", "state", "panel.json"))) if os.path.exists(os.path.join(self.root, ".ops", "state", "panel.json")) else {}
-        self.assertNotIn("hook_port", pj, "write_panel_json is the server's job in run(); the in-process test did not call it yet")
+        pj = json.load(open(os.path.join(self.root, ".ops", "state", "panel.json")))
+        self.assertEqual(pj["hook_port"], self.hook_port)
+        self.assertEqual(pj["hook_nonce"], self.nonce, "the per-start nonce lives in the 0600 pid file, nowhere else")
+        self.assertNotIn(self.nonce, json.dumps(s), "never in the snapshot")
+        self.assertNotIn(self.nonce, self.server_log(), "never in the log")
+
+    def test_t0182_browser_shaped_requests_are_refused(self):
+        """M1: a web page cannot post hooks: any Origin is refused, the body must be application/json (a page would
+        have to preflight; OPTIONS is 405), Host must be the listener's own name, and the nonce must match."""
+        ev = payload("Stop", self.root, "sid-desk", last_assistant_message="CSRF planted reply")
+        st, body = self.post_hook(ev, headers={"Origin": "http://evil.example"})
+        self.assertEqual(st, 403)
+        self.assertIn("Origin", json.loads(body)["error"])
+        st, body = self.post_hook(ev, headers={"Origin": "null"})
+        self.assertEqual(st, 403)
+        st, body = self.post_hook(ev, ctype="text/plain")
+        self.assertEqual(st, 415, "a CORS simple request shape")
+        st, body = self.post_hook(ev, ctype="")
+        self.assertEqual(st, 415)
+        st, body = self.post_hook(ev, host="evil.example")
+        self.assertEqual(st, 403)
+        st, body = self.post_hook(ev, host=f"evil.example:{self.hook_port}")
+        self.assertEqual(st, 403)
+        st, body = self.post_hook(ev, nonce=False)
+        self.assertEqual(st, 403, "no nonce")
+        self.assertIn("X-Zouinify-Hook", json.loads(body)["error"])
+        st, body = self.post_hook(ev, nonce=self.nonce[:-1] + ("A" if self.nonce[-1] != "A" else "B"))
+        self.assertEqual(st, 403, "wrong nonce")
+        self.assertEqual(self.events_file(), [], "nothing refused was stored")
+        s = self.get_json("/api/snapshot?fresh=1")
+        self.assertNotIn("CSRF planted reply", json.dumps(s))
+        self.assertIn("AUDIT hook 403", self.server_log())
+        self.assertIn("AUDIT hook 415", self.server_log())
+        self.assertNotIn(self.nonce, self.server_log())
+        st, body = self.post_hook(ev, ctype="application/json; charset=utf-8", host=f"localhost:{self.hook_port}")
+        self.assertEqual(st, 200, "the script's shape, with a charset and the other loopback name")
+
+    def test_t0182_script_sends_only_to_an_owned_live_panel(self):
+        """M3 and M2: a planted ancestor .ops that this user does not own is ignored; a pid file that is a symlink, not
+        ours, or names a dead or foreign process ends the script silently."""
+        root_owned = "/etc/hostname" if os.path.exists("/etc/hostname") else "/etc/passwd"
+        if os.stat(root_owned).st_uid == os.getuid():
+            self.skipTest("no root-owned file to stand in for another user's plant")
+        shared = os.path.join(self.tmp, "shared")
+        os.makedirs(os.path.join(shared, ".ops", "state"))
+        os.makedirs(os.path.join(shared, "work", "deeper"))
+        os.symlink(root_owned, os.path.join(shared, ".ops", "config.yaml"))                 # planted by "another user"
+        with open(os.path.join(shared, ".ops", "state", "panel.json"), "w") as fh:
+            json.dump({"pid": os.getpid(), "hook_port": self.hook_port, "hook_nonce": self.nonce}, fh)
+        r = self.run_script(payload("Stop", os.path.join(shared, "work", "deeper"), "sid-x", last_assistant_message="VICTIM-REPLY"))
+        self.assertEqual(r.returncode, 0)
+        time.sleep(0.3)
+        self.assertEqual(self.events_file(), [], "a config.yaml this user does not own never names a target")
+        # a config.yaml of ours but a pid file that is a symlink to someone else's file
+        os.remove(os.path.join(shared, ".ops", "config.yaml"))
+        with open(os.path.join(shared, ".ops", "config.yaml"), "w") as fh:
+            fh.write("version: 1\n")
+        os.remove(os.path.join(shared, ".ops", "state", "panel.json"))
+        os.symlink(root_owned, os.path.join(shared, ".ops", "state", "panel.json"))
+        r = self.run_script(payload("Stop", os.path.join(shared, "work"), "sid-x", last_assistant_message="VICTIM-REPLY"))
+        self.assertEqual(r.returncode, 0)
+        time.sleep(0.3)
+        self.assertEqual(self.events_file(), [])
+        # M2: our own project, but the pid file names a dead process, then a process of another user
+        for pid in (2147483000, 1):
+            panelstate.write_panel_json(self.cfg, self.srv.server_address[1], pid, self.srv.started_at, hook_port=self.hook_port, hook_nonce=self.nonce)
+            r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="STALE-PID-REPLY"))
+            self.assertEqual(r.returncode, 0, pid)
+            time.sleep(0.3)
+            self.assertEqual(self.events_file(), [], f"pid {pid}: not a live process of ours, nothing sent")
+        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at, hook_port=self.hook_port, hook_nonce=self.nonce)
+        r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="live again"))
+        self.assertEqual([e["text"] for e in self.wait_events(1)], ["live again"])
+        # a stale nonce (the file was rewritten by a new start) is refused by the listener
+        panelstate.write_panel_json(self.cfg, self.srv.server_address[1], os.getpid(), self.srv.started_at, hook_port=self.hook_port, hook_nonce="stale-" + "x" * 20)
+        st, _ = self.post_hook(payload("Stop", self.root, "sid-desk", last_assistant_message="old nonce"))
+        self.assertEqual(st, 403)
+
+    def test_t0182_lows_fields_size_routing_backlog_hygiene_housekeeping(self):
+        # short fields are identifiers: prose or symbols in them are dropped, even for own events
+        st, _ = self.post_hook(payload("Notification", self.tmp, "sid-other", notification_type="NT SECRET tango!", source="SRC SECRET", reason="RSN;SECRET"))
+        self.assertEqual(st, 200)
+        ev = self.events_file()[-1]
+        self.assertEqual((ev["notification_type"], ev["source"], ev["reason"]), ("", "", ""))
+        self.assertNotIn("SECRET", json.dumps(self.srv.events.recent()) + self.server_log())
+        st, _ = self.post_hook(payload("Notification", self.root, "sid-debug", notification_type="permission_prompt", message="ok?"))
+        self.assertEqual(self.events_file()[-1]["notification_type"], "permission_prompt")
+        self.assertEqual(self.srv.events.state("sid-x-nope"), None)
+        st, _ = self.post_hook(payload("Stop", self.root, "sid x!", last_assistant_message="bad id"))
+        self.assertEqual(self.events_file()[-1]["session_id"], "", "an odd session id is dropped, the event kept")
+        # a long reply (over the old 64 KiB) still arrives through the script and its Stop clears the prompt
+        self.post_hook(payload("Notification", self.root, "sid-worker", notification_type="permission_prompt", message="allow?"))
+        r = self.run_script(payload("Stop", self.root, "sid-worker", last_assistant_message="a long reply line. " * 4000))   # 76 KB of prose
+        self.assertEqual(r.returncode, 0)
+        evs = self.wait_events(5)
+        self.assertEqual(evs[-1]["event"], "Stop")
+        self.assertEqual(len(evs[-1]["text"]), 2000)
+        self.assertFalse(self.srv.events.state("sid-worker")["waiting"], "the Stop cleared it")
+        # the FIRST cwd wins: a nested one later in the payload does not route the event elsewhere
+        r = self.run_script(payload("Stop", self.root, "sid-desk", last_assistant_message="routed by the top-level cwd", background_tasks=[{"cwd": "/nowhere/else"}]))
+        self.assertEqual(self.wait_events(6)[-1]["text"], "routed by the top-level cwd")
+        # a burst: many concurrent posts, none reset by a short listen backlog
+        import threading
+        results = []
+        def one(i):
+            try:
+                results.append(self.post_hook(payload("Stop", self.tmp, f"burst-{i}"))[0])
+            except OSError as e:
+                results.append(repr(e))
+        ts = [threading.Thread(target=one, args=(i,)) for i in range(40)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(30)
+        self.assertEqual(sorted(set(results)), [200], results[:5])
+        # log hygiene: a huge query string is not copied into the log
+        before = len(self.server_log())
+        st, _ = self.post_hook(payload("Stop", self.tmp, "sid-q"), path="/api/hook?" + "q" * 60000)
+        self.assertEqual(st, 200)
+        self.assertLess(len(self.server_log()) - before, 1000, "the request line is capped and its query redacted")
+        self.assertIn("?<query-redacted>", self.server_log())
+        # housekeeping: a planted DIRECTORY with a rotated-file name does not stop the file log
+        os.makedirs(os.path.join(self.root, ".ops", "state", "events.2020-01-01.jsonl"))
+        n = len(self.events_file())
+        self.post_hook(payload("Stop", self.root, "sid-desk", last_assistant_message="still logged"))
+        self.assertEqual(len(self.events_file()), n + 1)
+        # a peer that leaves before the reply: no exception escapes reply()
+        class Gone:
+            def write(self, b):
+                raise BrokenPipeError()
+        h = panel_hooks.HookHandler.__new__(panel_hooks.HookHandler)
+        h.wfile = Gone(); h.request_version = "HTTP/1.1"; h.requestline = "POST /api/hook HTTP/1.1"; h.command = "POST"
+        h.server = self.srv.hooks; h.client_address = ("127.0.0.1", 1); h.close_connection = False
+        h.send_response = lambda *a, **k: None; h.send_header = lambda *a, **k: None
+        h.end_headers = lambda: (_ for _ in ()).throw(BrokenPipeError())
+        h.reply(200, {"ok": True})
+        self.assertTrue(h.close_connection)
 
 
 class TestUpPrintsTheSnippet(World):
@@ -343,9 +504,13 @@ class TestUpPrintsTheSnippet(World):
         d = json.loads(r.stdout)
         self.assertEqual(d["panel"]["hook_port"], d["panel"]["port"] + 2, "port + 1 is the terminal page's")
         cfg_text = open(os.path.join(self.root, ".ops", "config.yaml")).read()
-        self.write(".ops/config.yaml", cfg_text.replace("panel: {", f"panel: {{hook_port: {d['panel']['port']}, ", 1))
+        for bad in (d["panel"]["port"], d["panel"]["port"] + 1):
+            self.write(".ops/config.yaml", cfg_text.replace("panel: {", f"panel: {{hook_port: {bad}, ", 1))
+            r = self.nz("config", "--check")
+            self.assertIn("panel.hook_port", r.stderr + r.stdout, f"{bad}: the hook port may not be the panel port or the terminal port")
+        self.write(".ops/config.yaml", cfg_text.replace(f"port: {d['panel']['port']},", "port: 65534,", 1))
         r = self.nz("config", "--check")
-        self.assertIn("panel.hook_port", r.stderr + r.stdout, "the hook port may not equal the panel port")
+        self.assertIn("set it explicitly", r.stderr + r.stdout, "no silent default when port + 2 is out of range")
 
 
 if __name__ == "__main__":

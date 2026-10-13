@@ -17,6 +17,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import tempfile
 
 from zouinify import __version__
@@ -116,15 +117,18 @@ def _write_json(path: str, obj) -> None:
     os.replace(tmp, path)
 
 
-def write_panel_json(cfg, port: int, pid_: int, started_at: str, hook_port: int | None = None) -> None:
-    """The runtime fields of a running server; the token fields already there are kept. `hook_port` is what the hook
-    script reads to find the loopback listener (T-0163)."""
+def write_panel_json(cfg, port: int, pid_: int, started_at: str, hook_port: int | None = None, hook_nonce: str | None = None) -> None:
+    """The runtime fields of a running server; the token fields already there are kept. `hook_port` and `hook_nonce`
+    are what the hook script reads (T-0163, T-0182): the port of the loopback listener and the per-start secret it
+    sends back as the X-Zouinify-Hook header (the file is 0600, so only this user's processes can read it)."""
     with _locked(cfg):
         cur = read_panel_json(cfg) or {}
         d = {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": cfg.panel.get("bind", "loopback"),
              "url": url(cfg, port), "started_at": started_at, "version": __version__}
         if hook_port:
             d["hook_port"] = int(hook_port)
+        if hook_nonce:
+            d["hook_nonce"] = str(hook_nonce)
         for k in TOKEN_FIELDS:
             if cur.get(k):
                 d[k] = cur[k]
@@ -204,6 +208,21 @@ def hook_installed() -> tuple:
         return False, path
 
 
+def new_hook_nonce() -> str:
+    """The per-start secret of the hook listener (T-0182): written to panel.json (0600) by the server, read by the
+    hook script, sent back as X-Zouinify-Hook. Random, never logged."""
+    return secrets.token_urlsafe(18)
+
+
+def hook_nonce_matches(cfg, presented) -> bool:
+    """Constant-time comparison with the nonce in panel.json; False when none is set or the shape is wrong."""
+    d = read_panel_json(cfg) or {}
+    want = d.get("hook_nonce")
+    if not isinstance(want, str) or not want or not isinstance(presented, str) or not presented:
+        return False
+    return hmac.compare_digest(want, presented)
+
+
 HOOK_SCRIPT = "~/.claude/skills/zouinify/templates/hooks/zouinify-hook.sh"
 HOOK_EVENTS = ("Stop", "Notification", "SessionStart", "SessionEnd")
 
@@ -214,7 +233,7 @@ def hook_snippet() -> str:
     def entry(ev):
         h = {"hooks": [{"type": "command", "command": HOOK_SCRIPT, "timeout": 5}]}
         if ev == "Notification":
-            h = {"matcher": "permission_prompt|idle_prompt", **h}
+            h = {"matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input", **h}
         return [h]
     return json.dumps({"hooks": {ev: entry(ev) for ev in HOOK_EVENTS}}, indent=1)
 
@@ -235,7 +254,7 @@ def append_event(cfg, event: dict) -> None:
         with _locked(cfg):
             path = events_path(cfg)
             today = dt.date.today()
-            try:
+            try:                                        # housekeeping first; a failure here never costs the append
                 st = os.lstat(path)
                 if not os.path.islink(path):
                     day = dt.date.fromtimestamp(st.st_mtime)
@@ -243,16 +262,20 @@ def append_event(cfg, event: dict) -> None:
                         os.replace(path, os.path.join(state_dir(cfg), f"events.{day.isoformat()}.jsonl"))
                 else:
                     os.remove(path)        # never write through a planted symlink
-            except FileNotFoundError:
+            except OSError:
                 pass
-            for name in os.listdir(state_dir(cfg)):
+            try:
+                names = os.listdir(state_dir(cfg))
+            except OSError:
+                names = []
+            for name in names:
                 if name.startswith("events.") and name.endswith(".jsonl") and name != "events.jsonl":
                     try:
                         day = dt.date.fromisoformat(name[len("events."):-len(".jsonl")])
-                    except ValueError:
+                        if (today - day).days > EVENTS_KEEP_DAYS:
+                            os.remove(os.path.join(state_dir(cfg), name))
+                    except (ValueError, OSError):       # not a date, or a planted directory: skip it
                         continue
-                    if (today - day).days > EVENTS_KEEP_DAYS:
-                        os.remove(os.path.join(state_dir(cfg), name))
             line = json.dumps(event, sort_keys=True) + "\n"
             try:
                 if os.lstat(path).st_size + len(line) > EVENTS_MAX_BYTES:

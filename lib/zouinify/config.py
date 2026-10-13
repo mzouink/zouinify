@@ -299,10 +299,14 @@ def load(root: str | None = None) -> Config:
     if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
         errs.append("panel.port: an integer between 1024 and 65535")
         port = 0
-    hook_port = pn.get("hook_port", (port + 2) if port else 0)      # T-0163: the loopback-only hook listener; +1 is the terminal page
-    if isinstance(hook_port, bool) or not isinstance(hook_port, int) or not 1024 <= hook_port <= 65535 or hook_port == port:
+    default_hook = port + 2 if port and port + 2 <= 65535 else 0      # T-0163: the loopback-only hook listener; +1 is the terminal page
+    hook_port = pn.get("hook_port", default_hook)
+    if port and "hook_port" not in pn and not default_hook:
+        errs.append("panel.hook_port: set it explicitly (panel.port + 2 is out of range)")
+    elif isinstance(hook_port, bool) or not isinstance(hook_port, int) or not 1024 <= hook_port <= 65535 or hook_port in (port, port + 1):
         if port:
-            errs.append("panel.hook_port: an integer between 1024 and 65535, not panel.port (default panel.port + 2)")
+            errs.append("panel.hook_port: an integer between 1024 and 65535, not panel.port or panel.port + 1 (the terminal page); "
+                        "default panel.port + 2")
         hook_port = 0
     bind = BIND_ALIASES.get(str(pn.get("bind", "loopback")))
     if bind is None:

@@ -109,7 +109,16 @@ re-reads the snapshot within a second of an event and keeps its 30 s poll as the
 
 Who may post: only a process of the panel's own user. The listener resolves the peer socket of every loopback connection
 in `/proc/net/tcp` and `/proc/net/tcp6` to its owner uid and refuses any other uid with 403 (audited); when the lookup
-fails it fails closed. Events never trigger an action in any case.
+fails it fails closed. A browser page cannot post either: any request carrying an `Origin` header is refused, the body must
+be `application/json` (a page would have to preflight, and `OPTIONS` is 405), `Host` must be the listener's own loopback
+name, and the per-start nonce that the server writes to `panel.json` (mode 0600) must come back as `X-Zouinify-Hook`.
+Events never trigger an action in any case.
+
+Where the script sends: only to a panel that is yours and alive. On its way up from the event's `cwd` it accepts a
+`.ops/config.yaml` only when you own it (another local user could plant one under a shared or world-writable directory);
+`.ops/state/panel.json` must be yours and not a symlink; the `pid` in it must be a live process of yours (a stale file
+after a crash would otherwise send replies to whoever bound the port); and the nonce travels along. Each check that fails
+ends the script silently with exit 0.
 
 ## UX specification
 
@@ -144,8 +153,8 @@ the panel's uid is trusted without a token: another local account of the worksta
 another user, is treated like a LAN peer (token required on an intranet bind, 403 on a loopback bind, audited as
 `other-local-user`); when the lookup fails, the panel fails closed the same way. The check sees the socket's owner, not where
 the bytes came from: a proxy or an `ssh -L` that the panel's OWN user runs and that forwards traffic from elsewhere to
-127.0.0.1 is trusted without a token, so do not run one (other local users also share the loopback address's refusal
-budget, so a noisy neighbour can make your own token-less requests wait a minute). And **cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
+127.0.0.1 is trusted without a token, so do not run one. Other local users share the loopback address's refusal budget
+among themselves; your own requests are exempt from it. And **cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
 panel's host name, on any port, RECEIVES the `zouinify_token` cookie with every request that browser makes to it. `HttpOnly`
 only keeps their page scripts from reading it; a server process under that name that logs its request headers has the
 token. Such a server can also set a junk `zouinify_token`, which the panel then refuses on every request (weighed like a
