@@ -107,9 +107,9 @@ a later `Stop`, `UserPromptSubmit`, `SessionStart` or `SessionEnd`; the screen h
 `GET /api/events` is the page's server-sent-events feed (same Host and token rules as every other request); the page
 re-reads the snapshot within a second of an event and keeps its 30 s poll as the fallback.
 
-Residual, until the loopback peer-uid check (T-0169): any local user of the workstation can post to the hook port and make
-the page show a forged "waiting" or "last reply" for this project. Events never trigger an action, so that is the whole
-exposure.
+Who may post: only a process of the panel's own user. The listener resolves the peer socket of every loopback connection
+in `/proc/net/tcp` and `/proc/net/tcp6` to its owner uid and refuses any other uid with 403 (audited); when the lookup
+fails it fails closed. Events never trigger an action in any case.
 
 ## UX specification
 
@@ -138,16 +138,17 @@ browser token**, the page and its static files included:
    configured `link_host`, the machine's names or its IPv4 addresses, or a foreign `Origin`: 403 (DNS rebinding). Rotate any
    time with the same command; running servers pick the new hash up without a restart, old tokens stop at once.
 
-Two facts to know before you rely on it. **Loopback is token-free in both modes**, and that means any other *local user* of
-the workstation (or anyone with an ssh -L to it) reaches the panel without a token: the read-only panel shows what every
-same-user process could read anyway, but on a shared machine other accounts can read it too (true since the first panel). And
-**cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
+Two facts to know before you rely on it. **Loopback is token-free for the panel's own user only.** Every 127.0.0.1 (or
+::1) connection is resolved to the uid that owns the peer socket (`/proc/net/tcp`, `/proc/net/tcp6`; Linux only) and only
+the panel's uid is trusted without a token: another local account of the workstation, or anyone with an `ssh -L` to it as
+another user, is treated like a LAN peer (token required on an intranet bind, 403 on a loopback bind, audited as
+`other-local-user`); when the lookup fails, the panel fails closed the same way. And **cookies ignore ports**: a browser scopes cookies by host name, not by port, so every web server reachable under the
 panel's host name, on any port, RECEIVES the `zouinify_token` cookie with every request that browser makes to it. `HttpOnly`
 only keeps their page scripts from reading it; a server process under that name that logs its request headers has the
 token. Such a server can also set a junk `zouinify_token`, which the panel then refuses on every request (weighed like a
 missing token, so the unlock address still works). The real fixes are a dedicated host name for the panel that nothing
 else serves under (a DNS alias or a hosts entry), or HTTPS with a `__Host-` cookie; until then keep the LAN name of the
-panel for the panel and run no other service under it. A loopback token or a peer-uid check is a follow-up ticket.
+panel for the panel and run no other service under it.
 
 `zouinify panel start` and `zouinify up` refuse to start an intranet panel without a token and point at the command; neither
 ever prints a token. `zouinify panel url` prints the address without it. Writes stay 405 in both modes; tier-2 items never get

@@ -339,6 +339,20 @@ class TestIntranetToken(IntranetServer):
         self.assertIn("AUDIT 401 no-token ip=127.0.0.1 HEAD /api/snapshot", self.server_log())
         self.assertNotIn(GOOD, self.server_log())
 
+    def test_another_local_user_on_loopback_needs_the_token(self):
+        """T-0169 on an intranet bind: a loopback peer of another uid is a LAN peer in all but address: token required."""
+        from zouinify import webauth
+        with mock.patch.object(webauth, "same_user_peer", return_value=False):
+            st, _, _ = self.req("/api/snapshot", via="loopback")
+            self.assertEqual(st, 401, "another local user without the token")
+            st, _, _ = self.req("/api/snapshot", via="loopback", headers={"Authorization": "Bearer " + GOOD})
+            self.assertEqual(st, 200, "with the token, like any device on the LAN")
+            st, _, _ = self.req("/api/snapshot", via="loopback", headers={"Authorization": "Bearer " + OTHER})
+            self.assertEqual(st, 401)
+        self.assertIn("AUDIT 401 no-token ip=127.0.0.1 GET /api/snapshot", self.server_log())
+        st, _, _ = self.req("/api/snapshot", via="loopback")
+        self.assertEqual(st, 200, "the panel's own user stays token-free on loopback")
+
     def test_keep_alive_does_not_carry_the_token_label(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
         self.fake_remote = True

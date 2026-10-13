@@ -9,12 +9,18 @@ names in __all__ for `from zouinify import webauth`; tests/test_webauth.py keeps
 """
 from __future__ import annotations
 
+import ipaddress
+import os
 import re
 import threading
 import time
 
 __all__ = ["LOOPBACK_PEERS", "TOKEN_RE", "PANEL_COOKIE", "RATE_LIMIT", "RATE_WINDOW_S", "NO_TOKEN_WEIGHT", "CSP",
-           "unlock_csp", "host_allowed", "bearer_token", "presented_token", "RateLimiter", "authorize"]
+           "unlock_csp", "host_allowed", "bearer_token", "presented_token", "RateLimiter", "authorize",
+           "parse_proc_tcp", "peer_uid", "same_user_peer"]
+
+PROC_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
+TCP_ESTABLISHED = 1
 
 LOOPBACK_PEERS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
@@ -139,3 +145,81 @@ def authorize(peer_ip: str, headers, token_required: bool, matcher, limiter: Rat
         return 401, "bad-cookie", source
     limiter.note_failure(peer_ip, limiter.weight("header"))
     return 401, "bad-token", source
+
+
+# -- who is on the other end of a loopback connection (T-0169) -------------------------------------------------
+# A 127.0.0.1 peer is not necessarily the same user: another account on the workstation, or anyone with an
+# `ssh -L` as another user, reaches the port too. Linux lists every TCP socket with its owner's uid in
+# /proc/net/tcp{,6}; the PEER's socket is the row whose local address is the client side of our connection and
+# whose remote address is our side. The lookup is read-only and stdlib only; when it fails (not Linux, a race,
+# an unreadable /proc) the answer is False and the caller fails closed: the peer is treated as a stranger.
+
+def _packed(hexstr: str) -> bytes:
+    """/proc/net/tcp writes each 4-byte word of an address in host byte order: undo it per word."""
+    raw = bytes.fromhex(hexstr)
+    return b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+
+
+def parse_proc_tcp(text: str) -> list:
+    """Rows of /proc/net/tcp or tcp6 as dicts: local (packed address, port), remote (packed address, port), state, uid."""
+    rows = []
+    for line in text.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 8:
+            continue
+        try:
+            la, lp = parts[1].split(":")
+            ra, rp = parts[2].split(":")
+            rows.append({"local": (_packed(la), int(lp, 16)), "remote": (_packed(ra), int(rp, 16)),
+                         "state": int(parts[3], 16), "uid": int(parts[7])})
+        except (ValueError, IndexError):
+            continue
+    return rows
+
+
+def _forms(ip: str) -> set:
+    """The packed forms an address may take in the tables: an IPv4 address also as IPv4-mapped IPv6 and back."""
+    try:
+        a = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return set()
+    out = {a.packed}
+    if a.version == 4:
+        out.add(b"\x00" * 10 + b"\xff\xff" + a.packed)
+    elif a.ipv4_mapped is not None:
+        out.add(a.ipv4_mapped.packed)
+    return out
+
+
+def _read_proc(path: str):
+    try:
+        with open(path, encoding="ascii", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def peer_uid(client_ip: str, client_port: int, server_ip: str, server_port: int, read=_read_proc):
+    """The uid that owns the peer's socket of an established TCP connection, or None when no such row exists."""
+    want_local, want_remote = _forms(client_ip), _forms(server_ip)
+    if not want_local or not want_remote:
+        return None
+    for path in PROC_TCP:
+        text = read(path)
+        if not text:
+            continue
+        for r in parse_proc_tcp(text):
+            if (r["state"] == TCP_ESTABLISHED and r["local"][1] == client_port and r["remote"][1] == server_port
+                    and r["local"][0] in want_local and r["remote"][0] in want_remote):
+                return r["uid"]
+    return None
+
+
+def same_user_peer(conn, read=_read_proc) -> bool:
+    """True only when the connection's peer socket belongs to this process's uid. Any doubt is False (fail closed)."""
+    try:
+        peer, local = conn.getpeername(), conn.getsockname()
+        uid = peer_uid(str(peer[0]), int(peer[1]), str(local[0]), int(local[1]), read)
+    except (OSError, IndexError, TypeError, ValueError):
+        return False
+    return uid is not None and uid == os.getuid()

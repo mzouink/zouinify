@@ -182,6 +182,96 @@ class TestAuthorize(unittest.TestCase):
         self.assertEqual(seen, [GOOD])
 
 
+PROC_TCP4 = """  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:12B6 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:C350 0100007F:12B6 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1 0000000000000000 20 4 30 10 -1
+   2: 0100007F:12B6 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 33333 1 0000000000000000 20 4 30 10 -1
+   3: 0100007F:C351 0100007F:12B6 01 00000000:00000000 00:00000000 00000000  4242        0 44444 1 0000000000000000 20 4 30 10 -1
+   4: 0100007F:C352 0100007F:12B6 06 00000000:00000000 00:00000000 00000000  1000        0 0 3 0000000000000000
+   garbage line
+"""
+PROC_TCP6 = """  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000001000000:C353 00000000000000000000000001000000:12B6 01 00000000:00000000 00:00000000 00000000  1000        0 55555 1 0000000000000000 20 4 30 10 -1
+   1: 0000000000000000FFFF00000100007F:C354 0000000000000000FFFF00000100007F:12B6 01 00000000:00000000 00:00000000 00000000  7777        0 66666 1 0000000000000000 20 4 30 10 -1
+"""
+
+
+class FakeConn:
+    def __init__(self, peer, local):
+        self.peer, self.local = peer, local
+
+    def getpeername(self):
+        return self.peer
+
+    def getsockname(self):
+        return self.local
+
+
+def fake_read(path):
+    return {"/proc/net/tcp": PROC_TCP4, "/proc/net/tcp6": PROC_TCP6}.get(path)
+
+
+class TestPeerUid(unittest.TestCase):
+    """T-0169: the uid behind a loopback connection, from /proc/net/tcp{,6}; any doubt is a stranger."""
+
+    def test_parse_proc_tcp(self):
+        rows = webauth.parse_proc_tcp(PROC_TCP4)
+        self.assertEqual(len(rows), 5, "the header and the garbage line are skipped")
+        self.assertEqual(rows[1]["local"], (bytes([127, 0, 0, 1]), 0xC350))
+        self.assertEqual(rows[1]["remote"], (bytes([127, 0, 0, 1]), 0x12B6))
+        self.assertEqual((rows[1]["state"], rows[1]["uid"]), (1, 1000))
+        rows6 = webauth.parse_proc_tcp(PROC_TCP6)
+        self.assertEqual(rows6[0]["local"][0], bytes(15) + b"\x01", "::1, each 4-byte word byte-swapped")
+        self.assertEqual(rows6[1]["local"][0], bytes(10) + b"\xff\xff" + bytes([127, 0, 0, 1]), "IPv4-mapped")
+
+    def test_peer_uid_finds_the_peer_socket(self):
+        server = ("127.0.0.1", 0x12B6)
+        self.assertEqual(webauth.peer_uid("127.0.0.1", 0xC350, *server, read=fake_read), 1000, "our uid's client socket")
+        self.assertEqual(webauth.peer_uid("127.0.0.1", 0xC351, *server, read=fake_read), 4242, "another user's client socket")
+        self.assertIsNone(webauth.peer_uid("127.0.0.1", 0xC352, *server, read=fake_read), "not ESTABLISHED (TIME_WAIT): no row")
+        self.assertIsNone(webauth.peer_uid("127.0.0.1", 0xBEEF, *server, read=fake_read), "unknown port")
+        self.assertEqual(webauth.peer_uid("127.0.0.1", 0x12B6, "127.0.0.1", 0xC350, read=fake_read), 1000,
+                         "the lookup is by (local, remote): the caller passes the PEER side first (the handler does)")
+        self.assertEqual(webauth.peer_uid("::1", 0xC353, "::1", 0x12B6, read=fake_read), 1000)
+        self.assertEqual(webauth.peer_uid("::ffff:127.0.0.1", 0xC354, "::ffff:127.0.0.1", 0x12B6, read=fake_read), 7777, "a v4-mapped v6 socket")
+        self.assertEqual(webauth.peer_uid("127.0.0.1", 0xC354, "127.0.0.1", 0x12B6, read=fake_read), 7777, "matched across the two forms")
+        self.assertIsNone(webauth.peer_uid("not an ip", 1, "127.0.0.1", 2, read=fake_read))
+        self.assertIsNone(webauth.peer_uid("127.0.0.1", 0xC350, *server, read=lambda p: None), "no /proc: no answer")
+
+    def test_same_user_peer_fails_closed(self):
+        import os
+        me = os.getuid()
+        mine = PROC_TCP4.replace(" 1000 ", f" {me} ")
+        ok = lambda p: {"/proc/net/tcp": mine, "/proc/net/tcp6": ""}.get(p)
+        conn = FakeConn(("127.0.0.1", 0xC350), ("127.0.0.1", 0x12B6))
+        self.assertTrue(webauth.same_user_peer(conn, read=ok))
+        self.assertFalse(webauth.same_user_peer(FakeConn(("127.0.0.1", 0xC351), ("127.0.0.1", 0x12B6)), read=ok), "another uid")
+        self.assertFalse(webauth.same_user_peer(conn, read=lambda p: None), "unreadable /proc: a stranger")
+        self.assertFalse(webauth.same_user_peer(conn, read=lambda p: "garbage\n"), "unparsable: a stranger")
+
+        class Broken:
+            def getpeername(self):
+                raise OSError("gone")
+
+            def getsockname(self):
+                return ("127.0.0.1", 1)
+        self.assertFalse(webauth.same_user_peer(Broken(), read=ok))
+
+    def test_real_loopback_connection_is_ours(self):
+        """A real socket pair on 127.0.0.1 in this process: the peer is us."""
+        import socket
+        srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+        cli = socket.create_connection(srv.getsockname())
+        conn, _ = srv.accept()
+        try:
+            if not os.path.exists("/proc/net/tcp"):
+                self.skipTest("no /proc/net/tcp on this platform")
+            self.assertTrue(webauth.same_user_peer(conn))
+            self.assertEqual(webauth.peer_uid(*cli.getsockname(), *srv.getsockname()), os.getuid())
+        finally:
+            conn.close(); cli.close(); srv.close()
+
+
 class TestPolicyStringsAndGate(unittest.TestCase):
     def test_csp_strings(self):
         self.assertIn("frame-ancestors 'none'", webauth.CSP)

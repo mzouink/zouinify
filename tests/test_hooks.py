@@ -290,6 +290,26 @@ class TestHookListener(HookWorld):
         self.assertEqual(self.events_file()[-1]["event"], "SessionEnd", "$ZOUINIFY_PROJECT names the project explicitly")
         self.assertFalse(self.events_file()[-1]["project"], "but the event's cwd is outside it: no text, as with any foreign event")
 
+    def test_another_local_user_is_refused_everywhere(self):
+        """T-0169: a loopback peer whose socket is not ours (another account, an ssh -L as another user) is a stranger:
+        the hook listener says 403, and so does the loopback-bound panel, both audited; nothing is stored."""
+        from zouinify import webauth
+        with mock.patch.object(webauth, "same_user_peer", return_value=False):
+            st, body = self.post_hook(payload("Stop", self.root, "sid-desk", last_assistant_message="forged by another user"))
+            self.assertEqual(st, 403)
+            self.assertIn("this user", json.loads(body)["error"])
+            st, _, body = self.req("GET", "/api/snapshot")
+            self.assertEqual(st, 403, "loopback bind, another uid: no token exists to offer, so refused outright")
+            self.assertIn("another local user", json.loads(body)["error"])
+            st, _, _ = self.req("GET", "/")
+            self.assertEqual(st, 403)
+        self.assertEqual(self.events_file(), [])
+        self.assertIn("AUDIT hook 403", self.server_log())
+        self.assertIn("AUDIT 403 other-local-user ip=127.0.0.1 GET /api/snapshot", self.server_log())
+        self.assertNotIn("forged by another user", self.server_log())
+        st, _, _ = self.req("GET", "/api/snapshot")
+        self.assertEqual(st, 200, "the real peer (this process) is the panel's user")
+
     def test_snapshot_reports_the_listener(self):
         s = self.get_json("/api/snapshot")
         self.assertEqual(s["hook"]["hook_port"], self.hook_port)

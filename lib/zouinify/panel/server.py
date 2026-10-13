@@ -76,6 +76,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     timeout = SOCKET_TIMEOUT_S       # StreamRequestHandler applies it to the connection: idle or half-open peers are dropped
     auth_label = ""
+    same_user = None                 # the peer-uid verdict of this connection (T-0169), looked up on its first request
 
     # -- plumbing -------------------------------------------------------------------------------------
     def log_message(self, fmt, *args):  # noqa: D401 - one line per request into the server log, never a token
@@ -89,6 +90,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def peer_is_loopback(self) -> bool:
         return self.client_address[0] in LOOPBACK_PEERS
+
+    def peer_is_same_user(self) -> bool:
+        """A loopback peer whose socket belongs to this process's uid (T-0169): the only peer the panel trusts
+        without a token. Looked up once per connection; any doubt is False."""
+        if not self.peer_is_loopback():
+            return False
+        if self.same_user is None:
+            self.same_user = webauth.same_user_peer(self.connection)
+        return self.same_user
 
     def host_allowed(self) -> bool:
         """Only the panel's own names (127.0.0.1 / localhost and the process side's LAN names, with the port) and no
@@ -107,8 +117,11 @@ class Handler(BaseHTTPRequestHandler):
         processes can read everything directly). The log label names the token id on an accepted token."""
         srv = self.server
         self.auth_label = ""              # per request: a keep-alive connection reuses this handler
+        same = self.peer_is_same_user()
+        if self.peer_is_loopback() and not same and not srv.token_required:
+            return 403, "other-local-user"      # loopback bind has no token to offer: another uid is refused outright
         status, reason, _source = webauth.authorize(self.client_address[0], self.headers, srv.token_required, srv.token_matches,
-                                                    srv.limiter, COOKIE, loopback_exempt=True, is_loopback=self.peer_is_loopback())
+                                                    srv.limiter, COOKIE, loopback_exempt=True, is_loopback=same)
         if reason == "token":
             self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
         return status, reason
@@ -137,6 +150,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def deny(self, status: int, reason: str, path: str, head: bool = False) -> None:
         self.audit(status, reason)
+        if status == 403:
+            return self.send_json(HTTPStatus.FORBIDDEN, {"error": "another local user: the panel answers loopback requests of its own "
+                                                                  "user only (the peer socket's uid is not the panel's)"}, head)
         if status == 429:
             return self.send_json(HTTPStatus.TOO_MANY_REQUESTS,
                                   {"error": "too many refused requests from this address: wait a minute (something other than you may be knocking)"},

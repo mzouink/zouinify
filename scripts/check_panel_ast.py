@@ -48,7 +48,8 @@ PANELSTATE_API = {"version", "pid", "now_iso", "url", "state_dir", "panel_json_p
                   "append_event", "hook_snippet"}                     # never set_token (rotation is the process side's)
                                                                     # nor read_panel_json (it returns the token hash)
 WEBAUTH_API = {"LOOPBACK_PEERS", "TOKEN_RE", "PANEL_COOKIE", "RATE_LIMIT", "RATE_WINDOW_S", "NO_TOKEN_WEIGHT", "CSP",
-               "unlock_csp", "host_allowed", "bearer_token", "presented_token", "RateLimiter", "authorize"}   # == webauth.__all__ (T-0174)
+               "unlock_csp", "host_allowed", "bearer_token", "presented_token", "RateLimiter", "authorize",
+               "parse_proc_tcp", "peer_uid", "same_user_peer"}   # == webauth.__all__ (T-0174, T-0169)
 MODULES = {
     "__future__": {"annotations"},
     "http": {"HTTPStatus", "server"},

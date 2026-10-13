@@ -9,9 +9,9 @@ and passed through redact(); an event whose cwd lies outside the project keeps N
 in events.jsonl, not over SSE (the hook fires for every Claude session of the user: desk condition 1, the rule of
 the "Waiting for me" page). The only file write is panelstate.append_event().
 
-Residual, documented: until T-0169 (the peer-uid check) any local user of the workstation can reach the loopback
-port and post an event that shows as this project's "waiting" or "last reply"; events are display-only, so the
-worst case is a misleading line on the page.
+Who may post: a loopback peer whose socket belongs to this process's uid (T-0169, webauth.same_user_peer via
+/proc/net/tcp); another local user of the workstation is refused with 403 and audited. Linux only; when the
+lookup fails the listener fails closed.
 """
 from __future__ import annotations
 
@@ -156,6 +156,10 @@ class HookHandler(BaseHTTPRequestHandler):
     def peer_is_loopback(self) -> bool:
         return self.client_address[0] in webauth.LOOPBACK_PEERS
 
+    def peer_is_same_user(self) -> bool:
+        """The hook comes from one of THIS user's Claude sessions: a loopback peer whose socket is ours (T-0169)."""
+        return self.peer_is_loopback() and webauth.same_user_peer(self.connection)
+
     def reply(self, status, obj: dict, extra: dict | None = None) -> None:
         body = json.dumps(obj).encode("utf-8")
         self.send_response(status)
@@ -174,8 +178,8 @@ class HookHandler(BaseHTTPRequestHandler):
         self.reply(status, {"error": reason}, {"Allow": "POST"} if status == 405 else None)
 
     def do_POST(self):
-        if not self.peer_is_loopback():
-            return self.refuse(HTTPStatus.FORBIDDEN, "hooks are accepted from this machine only")
+        if not self.peer_is_same_user():
+            return self.refuse(HTTPStatus.FORBIDDEN, "hooks are accepted from this user's processes on this machine only")
         if self.path.split("?", 1)[0] != "/api/hook":
             return self.refuse(HTTPStatus.NOT_FOUND, "not found")
         try:
