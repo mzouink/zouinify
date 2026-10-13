@@ -22,7 +22,11 @@ its initials, the checked-out branch, `main`, `fable`, `4700 + crc32(root) % 90`
 writes `.ops/config.yaml` (commented; the terminal block present but `enabled: false`), `.ops/briefs/*.md` from the templates
 and the `.ops/state/` line in `.gitignore`, then runs `config --check` and prints `up --dry-run`'s plan. It never overwrites
 an existing `.ops/` file (a second run lists what exists and exits 0), never writes outside the realpath'd repository root
-(a symlinked `.ops` or `.gitignore` is refused or skipped), never touches `~/.claude` or `CLAUDE.md`. `--dry-run` prints the
+(a directory that is not a git repository, a subdirectory, a symlinked `.ops`, `.ops/briefs` or brief are refused before
+anything is written; a `.gitignore` that is a symlink, a hard link or a directory is skipped), never touches `~/.claude` or
+`CLAUDE.md`. Values are printable text without double quotes or backslashes and go into the file quoted; the rendered file
+is parsed and its top-level keys checked before it is written, and a run that fails after the first write removes what it
+wrote. `--dry-run` prints the
 plan and the config and writes nothing; `--non-interactive` takes the answers from `--name --short --human` (required) and
 `--trunk --prod --model --port` (optional) for a caller without a terminal, such as a session. The tracked protocol files
 (`tickets/`, `scripts/ticket.sh`, the `CLAUDE.md` section) are the second half (T-0185), written only after a plan and the

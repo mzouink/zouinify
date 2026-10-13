@@ -16,6 +16,8 @@ import subprocess
 import sys
 import zlib
 
+import yaml
+
 from zouinify import ZouinifyError
 from zouinify import briefs as briefsmod
 from zouinify import config as cfgmod
@@ -31,6 +33,8 @@ PROMPTS = {"name": "project name", "short": "short tag (1-8 lowercase letters or
            "trunk": "trunk branch", "prod": "production branch (empty for none)", "model": "model for every session",
            "port": "panel port (the terminal page takes +1, the hook listener +2)", "human": "your name (the briefs address you)"}
 SECOND_HALF = "tickets/, scripts/ticket.sh and the CLAUDE.md section are the second half of init (T-0185): a plan first, then your own yes"
+TOP_KEYS = ("version", "project", "repos", "tickets", "human_only", "budget", "model", "sessions", "panel", "terminal", "contact")
+GITIGNORE_COVERS = (".ops/state/", ".ops/state", "/.ops/state/", "/.ops/state", ".ops/", ".ops", "/.ops/", "/.ops")
 
 
 def initials(name: str) -> str:
@@ -84,18 +88,24 @@ def proposals(root: str) -> dict:
 
 
 def validate(field: str, value):
+    """Text fields: printable characters only (str.isprintable rejects every control character and every Unicode line
+    or paragraph separator, so nothing can end a comment or a line of the rendered file), no double quote or backslash
+    (the quoted scalars stay readable). Values go into the file through q(); only the project name appears raw, in
+    a comment, and nothing printable ends a comment."""
     v = str(value).strip() if value is not None else ""
+    if field in ("name", "short", "trunk", "prod", "model", "human") and (not v.isprintable() or '"' in v or "\\" in v):
+        raise ZouinifyError(f"{field}: printable characters only, without double quotes or backslashes")
     if field in ("name", "trunk", "model", "human"):
-        if not v or any(c in v for c in "\n\r\t\"'`$\\"):
-            raise ZouinifyError(f"{field}: a non-empty value without quotes, backslashes or control characters")
+        if not v:
+            raise ZouinifyError(f"{field}: a non-empty value")
         return v
     if field == "short":
         if not (1 <= len(v) <= 8) or not v.isalnum() or not v.isascii() or v != v.lower():
             raise ZouinifyError("short: 1-8 lowercase letters or digits (it prefixes every session name)")
         return v
     if field == "prod":
-        if v and any(c in v for c in "\n\r\t\"'`$\\ "):
-            raise ZouinifyError("prod: a branch name, or empty for no production branch")
+        if v and " " in v:
+            raise ZouinifyError("prod: a branch name (no spaces), or empty for no production branch")
         return v
     if field == "port":
         try:
@@ -147,7 +157,7 @@ def q(s: str) -> str:
 def render_config(v: dict) -> str:
     sh, m = v["short"], v["model"]
     prod = f", prod: {q(v['prod'])}" if v["prod"] else ""
-    prod_rule = (f"  - git push to {v['prod']}; fast-forwarding it (it moves only at a release)" if v["prod"]
+    prod_rule = ("  - " + q(f"git push to {v['prod']}; fast-forwarding it (it moves only at a release)") if v["prod"]
                  else "  - git push to the production branch; fast-forwarding it")
     human_only = "\n".join(f"  - {x}" for x in HUMAN_ONLY_DEFAULT) + "\n" + prod_rule
     return f"""# .ops/config.yaml -- {v['name']}: the zouinify configuration of this repository (schema v1), written by `zouinify init`.
@@ -204,14 +214,20 @@ contact: {{human: {q(v['human'])}}}
 
 
 def gitignore_state(root: str) -> str:
+    """create | append | exists (a line already covers .ops/state/) | symlink | directory | hard link (the last three are
+    skipped: a write through them lands outside the file the repository tracks)."""
     p = os.path.join(root, ".gitignore")
     if os.path.islink(p):
         return "symlink"
     if not os.path.lexists(p):
         return "create"
+    if not os.path.isfile(p):
+        return "directory"
+    if os.stat(p).st_nlink > 1:
+        return "hard link"
     with open(p, encoding="utf-8", errors="replace") as fh:
         lines = [ln.strip() for ln in fh.read().splitlines()]
-    return "exists" if GITIGNORE_LINE in lines or GITIGNORE_LINE.rstrip("/") in lines else "append"
+    return "exists" if any(ln in GITIGNORE_COVERS for ln in lines) else "append"
 
 
 def inside(root: str, path: str) -> bool:
@@ -226,7 +242,10 @@ def write_new(root: str, rel: str, content: str, out) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not inside(root, os.path.dirname(path)):
         raise ZouinifyError(f"refusing to write outside the repository root: {rel} resolves elsewhere")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        raise ZouinifyError(f"{rel} appeared meanwhile (another init running here?); nothing overwritten") from None
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(content)
     print(f"wrote      {rel}", file=out)
@@ -265,8 +284,8 @@ def add_gitignore_line(root: str, state: str, out) -> None:
     if state == "exists":
         print(f"exists     .gitignore already lists `{GITIGNORE_LINE}`", file=out)
         return
-    if state == "symlink":
-        print(f"skipped    .gitignore is a symlink; add the line `{GITIGNORE_LINE}` yourself", file=out)
+    if state in ("symlink", "directory", "hard link"):
+        print(f"skipped    .gitignore is a {state}; add the line `{GITIGNORE_LINE}` yourself", file=out)
         return
     p = os.path.join(root, ".gitignore")
     flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
@@ -277,12 +296,26 @@ def add_gitignore_line(root: str, state: str, out) -> None:
     print(f"{'created' if state == 'create' else 'appended':<10} .gitignore  (`{GITIGNORE_LINE}`)", file=out)
 
 
+def undo(root: str, created: list, out) -> None:
+    """Remove only what this run created (O_EXCL above proves it was ours); errors here are reported, not raised."""
+    for rel in reversed(created):
+        try:
+            os.unlink(os.path.join(root, rel))
+            print(f"removed    {rel}  (this run wrote it; the error below stopped init)", file=out)
+        except OSError as e:
+            print(f"left       {rel}  (could not remove: {e})", file=out)
+
+
 def resolve_root(target: str | None) -> str:
     root = os.path.realpath(os.path.expanduser(target)) if target else os.path.realpath(os.getcwd())
     if not os.path.isdir(root):
         raise ZouinifyError(f"not a directory: {root}")
     top = git_toplevel(root)
-    if top and top != root:
+    if top is None:
+        raise ZouinifyError(f"{root} is not a git repository: init runs at a repository's root (.ops/ belongs next to .git, and "
+                            "find_root would make this directory the project of every command under it); `git init` first, or "
+                            "pass --project <repo>")
+    if top != root:
         raise ZouinifyError(f"run init at the repository root ({top}), or pass --project {top}")
     ops = os.path.join(root, ".ops")
     if os.path.islink(ops):
@@ -292,8 +325,41 @@ def resolve_root(target: str | None) -> str:
     return root
 
 
+def check_rendered(config_text: str) -> None:
+    """The rendered file must parse and have exactly the top-level keys init writes: a value that still managed to
+    open a new key is refused before anything is written."""
+    try:
+        doc = yaml.safe_load(config_text)
+    except yaml.YAMLError as e:
+        raise ZouinifyError(f"the rendered config is not valid YAML ({e}); check the values given") from None
+    if not isinstance(doc, dict) or tuple(doc) != TOP_KEYS:
+        raise ZouinifyError("the rendered config does not have exactly the expected top-level keys; check the values given")
+
+
+def check_targets(root: str, briefs: list) -> None:
+    """Before the first write: every path init will create or leave alone must be a plain path inside root, so no
+    failure can come after .ops/config.yaml exists (a second run would only report it)."""
+    bd = os.path.join(root, ".ops", "briefs")
+    if os.path.islink(bd):
+        raise ZouinifyError(".ops/briefs is a symlink; init writes under the repository root only")
+    if os.path.lexists(bd) and not os.path.isdir(bd):
+        raise ZouinifyError(".ops/briefs exists and is not a directory")
+    for _name, rel in briefs:
+        p = os.path.join(root, rel)
+        if os.path.islink(p):
+            raise ZouinifyError(f"{rel} is a symlink; the config would point at a brief outside the project")
+        if os.path.lexists(p) and not os.path.isfile(p):
+            raise ZouinifyError(f"{rel} exists and is not a regular file")
+
+
 def cmd_init(target: str | None, flags: dict, dry_run: bool = False, non_interactive: bool = False, out=None) -> int:
-    out = out or sys.stdout
+    try:
+        return _cmd_init(target, flags, dry_run, non_interactive, out or sys.stdout)
+    except OSError as e:
+        raise ZouinifyError(f"init: {e}") from None
+
+
+def _cmd_init(target, flags, dry_run, non_interactive, out) -> int:
     root = resolve_root(target)
     if os.path.lexists(os.path.join(root, cfgmod.CONFIG_REL)):
         return report_existing(root, out)
@@ -303,7 +369,9 @@ def cmd_init(target: str | None, flags: dict, dry_run: bool = False, non_interac
                             "and --human (--trunk --prod --model --port override the proposals)")
     values = collect(root, flags, interactive, out)
     config_text = render_config(values)
+    check_rendered(config_text)
     briefs = [(name, os.path.join(".ops", "briefs", name + ".md")) for name in briefsmod.list_templates()]
+    check_targets(root, briefs)
     gi = gitignore_state(root)
 
     print(f"init plan for {root}:", file=out)
@@ -318,19 +386,28 @@ def cmd_init(target: str | None, flags: dict, dry_run: bool = False, non_interac
         out.write(config_text)
         return 0
 
-    write_new(root, cfgmod.CONFIG_REL, config_text, out)
-    cfg = cfgmod.load(root)                                   # the validator judges what was written
-    ctx = briefsmod.context(cfg)
-    for name, rel in briefs:
-        if os.path.lexists(os.path.join(root, rel)):
-            print(f"exists     {rel}  (left as is)", file=out)
-            continue
-        with open(os.path.join(briefsmod.TEMPLATES, name + briefsmod.SUFFIX), encoding="utf-8") as fh:
-            text, missing = briefsmod.render(fh.read(), ctx)
-        if missing:
-            raise ZouinifyError(f"{name}{briefsmod.SUFFIX}: unknown placeholder(s) {', '.join(missing)}")
-        write_new(root, rel, text, out)
-    add_gitignore_line(root, gi, out)
+    created = []
+    try:
+        write_new(root, cfgmod.CONFIG_REL, config_text, out)
+        created.append(cfgmod.CONFIG_REL)
+        cfg = cfgmod.load(root)                               # the validator judges what was written
+        ctx = briefsmod.context(cfg)
+        for name, rel in briefs:
+            if os.path.lexists(os.path.join(root, rel)):
+                print(f"exists     {rel}  (left as is)", file=out)
+                continue
+            with open(os.path.join(briefsmod.TEMPLATES, name + briefsmod.SUFFIX), encoding="utf-8") as fh:
+                text, missing = briefsmod.render(fh.read(), ctx)
+            if missing:                                        # a template defect: keep going, the config is already right
+                print(f"skipped    {rel}: unknown placeholder(s) {', '.join(missing)} in the template; `zouinify briefs render` later",
+                      file=out)
+                continue
+            write_new(root, rel, text, out)
+            created.append(rel)
+        add_gitignore_line(root, gi, out)
+    except Exception:
+        undo(root, created, out)                               # a rerun must not find a half-written .ops/
+        raise
 
     cfg = cfgmod.load(root)                                   # again, now that the briefs exist
     print(f"\nconfig     ok: {cfgmod.summary(cfg)}", file=out)

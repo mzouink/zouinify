@@ -13,8 +13,8 @@ directory under it) and relay its output verbatim. Commands today: `config`, `up
 `panel start|stop|status|url|token rotate` (the read-only control panel: loopback by default, `panel.bind: intranet` with
 the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`, `init` (bootstraps a repository: `.ops/config.yaml`,
 `.ops/briefs/*.md`, the `.ops/state/` line in `.gitignore`; it asks its questions on the human's terminal, so from a session
-run `init --non-interactive --name N --short S --human H` with values the human gave, or `init --dry-run` to show the plan;
-it never overwrites an `.ops/` file and never touches `~/.claude` or `CLAUDE.md`). Receipts (`poll`) are a later step and
+run `init --non-interactive --name N --short S --human H` with values the human gave, adding `--dry-run` to show the plan
+first; it never overwrites an `.ops/` file and never touches `~/.claude` or `CLAUDE.md`). Receipts (`poll`) are a later step and
 are not available yet. `term` is the terminal page (T-0181): typing into one of this project's WORKER panes from the
 browser, after a passphrase of its own; the desk, manager and debug windows are never reachable from it.
 

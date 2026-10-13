@@ -12,7 +12,9 @@ import time
 import unittest
 import zlib
 
-from test_core import FAKES, ZOUINIFY, World, _chmod_x
+from test_core import FAKES, HERE, ZOUINIFY, World, _chmod_x
+
+LIB = os.path.join(os.environ.get("ZOUINIFY_REPO_UNDER_TEST") or os.path.dirname(HERE), "lib")   # the repo under test, as test_term
 
 IDENTITY = ("--name", "demo", "--short", "dm", "--human", "pat")
 
@@ -54,6 +56,7 @@ class InitWorld(World):
         self.outside_before = sorted(os.listdir(self.tmp))
 
     def tearDown(self):
+        self.assertFalse([c for c in self.tmux_calls() if c and c[0] == "send-keys"], "the CLI must never run tmux send-keys")
         self.assertEqual(sorted(os.listdir(self.tmp)), self.outside_before, "init wrote next to the repository")
         self.assertEqual(os.listdir(self.home), [], "init touched $HOME")
         self.assertFalse(os.path.exists(os.path.join(self.root, "CLAUDE.md")), "init wrote CLAUDE.md")
@@ -67,7 +70,22 @@ class InitWorld(World):
         return self.ok("init", "--non-interactive", *IDENTITY, *more, **kw)
 
     def proposed_port(self):
-        return 4700 + zlib.crc32(self.root.encode()) % 90
+        """The formula, then the same skip loop init runs (checked here, right before init runs)."""
+        start = 4700 + zlib.crc32(self.root.encode()) % 90
+        for i in range(90):
+            p = 4700 + (start - 4700 + i) % 90
+            if all(self._free(p + k) for k in (0, 1, 2)):
+                return p
+        return start
+
+    @staticmethod
+    def _free(port):
+        try:
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
 
 
 class TestInit(InitWorld):
@@ -80,10 +98,13 @@ class TestInit(InitWorld):
         r = self.nz("init", "--non-interactive", "--name", "demo")
         self.assertIn("--short", r.stderr)
         for bad in (("--short", "ABC"), ("--short", "toolongtag"), ("--port", "80"), ("--port", "x"), ("--name", 'a"b'),
-                    ("--prod", "two words")):
+                    ("--prod", "two words"), ("--name", "foo\u2028model_re: x"), ("--human", "a\x0bb"), ("--model", "a\\b")):
             r = self.nz("init", "--non-interactive", *IDENTITY, *bad)
-            self.assertIn(bad[0].lstrip("-"), r.stderr, bad)
+            self.assertIn(f"zouinify: {bad[0].lstrip('-')}:", r.stderr, bad)
         self.assertFalse(os.path.exists(os.path.join(self.root, ".ops")), "a refused init writes nothing")
+        r = self.ok("init", "--dry-run", "--non-interactive", "--name", "demo", "--short", "dm", "--human", "Pat O'Brien", "--prod", "rel#1")
+        self.assertIn("contact: {human: \"Pat O'Brien\"}", r.stdout, "an apostrophe is fine: the scalars are quoted")
+        self.assertIn('  - "git push to rel#1; fast-forwarding it', r.stdout, "a # in a branch name cannot start a comment")
 
     def test_dry_run_prints_the_plan_and_the_config_and_writes_nothing(self):
         before = snapshot(self.root)
@@ -107,8 +128,7 @@ class TestInit(InitWorld):
         cfg = self.read(".ops/config.yaml")
         port = self.proposed_port()
         self.assertIn('trunk: "dev", prod: "main"', cfg, "trunk from the checked-out branch, prod main when trunk is not")
-        if all(self._free(port + k) for k in (0, 1, 2)):                 # else another base was chosen; checked below
-            self.assertIn(f"\n  port: {port} ", cfg, "4700 + crc32(root) % 90")
+        self.assertIn(f"\n  port: {port} ", cfg, "4700 + crc32(root) % 90, the first base with its three ports free")
         m = re.search(r"^  port: (\d+)", cfg, re.M)
         p = int(m.group(1))
         self.assertIn(f"hook_port: {p + 2}", cfg)
@@ -133,15 +153,6 @@ class TestInit(InitWorld):
         self.assertIn("would launch:", r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.root, "tickets")), "the protocol files are T-0185's")
         self.assertFalse(os.path.exists(os.path.join(self.root, "scripts")))
-
-    @staticmethod
-    def _free(port):
-        try:
-            with socket.socket() as s:
-                s.bind(("127.0.0.1", port))
-            return True
-        except OSError:
-            return False
 
     def test_second_run_reports_and_changes_nothing(self):
         self.init()
@@ -171,6 +182,33 @@ class TestInit(InitWorld):
         self.assertIn("already lists", r.stdout)
         self.assertEqual(self.read(".gitignore"), "# mine\n.ops/state/\n")
 
+    def test_gitignore_directory_is_skipped(self):
+        os.makedirs(os.path.join(self.root, ".gitignore"))
+        r = self.init()
+        self.assertIn("skipped    .gitignore is a directory", r.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, ".ops", "config.yaml")))
+
+    def test_a_brief_symlink_is_refused_before_anything_is_written(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere.md")
+        with open(elsewhere, "w") as fh:
+            fh.write("x\n")
+        self.outside_before = sorted(os.listdir(self.tmp))
+        os.makedirs(os.path.join(self.root, ".ops", "briefs"))
+        os.symlink(elsewhere, os.path.join(self.root, ".ops", "briefs", "desk.md"))
+        r = self.nz("init", "--non-interactive", *IDENTITY)
+        self.assertIn("desk.md is a symlink", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "config.yaml")), "refused before the first write")
+        os.unlink(os.path.join(self.root, ".ops", "briefs", "desk.md"))
+        os.symlink(os.path.join(self.tmp, "nowhere.md"), os.path.join(self.root, ".ops", "briefs", "desk.md"))   # dangling
+        r = self.nz("init", "--non-interactive", *IDENTITY)
+        self.assertIn("desk.md is a symlink", r.stderr)
+        os.unlink(os.path.join(self.root, ".ops", "briefs", "desk.md"))
+        os.rmdir(os.path.join(self.root, ".ops", "briefs"))
+        os.symlink(self.tmp, os.path.join(self.root, ".ops", "briefs"))
+        r = self.nz("init", "--non-interactive", *IDENTITY)
+        self.assertIn(".ops/briefs is a symlink", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "config.yaml")))
+
     def test_gitignore_symlink_is_skipped_not_followed(self):
         target = os.path.join(self.root, "real-ignore")
         self.write("real-ignore", "a\n")
@@ -184,10 +222,12 @@ class TestInit(InitWorld):
         with socket.socket() as held:
             held.bind(("127.0.0.1", p))
             held.listen(1)
+            expected = self.proposed_port()                               # the same loop, now skipping p
+            self.assertNotEqual(expected, p)
             r = self.init("--dry-run")
             m = re.search(r"^  port: (\d+)", r.stdout, re.M)
             chosen = int(m.group(1))
-            self.assertNotEqual(chosen, p, "a held port is never proposed")
+            self.assertEqual(chosen, expected, "a held port is skipped to the next base with three free ports")
             self.assertTrue(4700 <= chosen < 4790, chosen)
         r = self.init("--dry-run", "--port", "5555")
         self.assertIn("\n  port: 5555 ", r.stdout)
@@ -212,12 +252,50 @@ class TestInit(InitWorld):
         r = self.ok("--project", self.root, "init", "--non-interactive", *IDENTITY, cwd=sub)
         self.assertTrue(os.path.isfile(os.path.join(self.root, ".ops", "config.yaml")), "--project names the root")
 
-    def test_a_plain_directory_without_git_proposes_main_and_no_prod(self):
-        shutil.rmtree(os.path.join(self.root, ".git"))
+    def test_a_repository_on_main_proposes_main_and_no_prod(self):
+        subprocess.run(["git", "-C", self.root, "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
         r = self.init("--dry-run")
         self.assertIn('trunk: "main", default: true}', r.stdout)
         self.assertNotIn("prod:", r.stdout)
         self.assertIn("git push to the production branch", r.stdout)
+
+    def test_a_directory_without_git_is_refused(self):
+        shutil.rmtree(os.path.join(self.root, ".git"))
+        r = self.nz("init", "--non-interactive", *IDENTITY)
+        self.assertIn("not a git repository", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".ops")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".gitignore")))
+        r = self.nz("--project", self.home, "init", "--non-interactive", *IDENTITY)   # $HOME is the classic footgun
+        self.assertIn("not a git repository", r.stderr)
+
+    def test_gitignore_hard_link_is_skipped_not_written_through(self):
+        outside = os.path.join(self.tmp, "outside-ignore")
+        with open(outside, "w") as fh:
+            fh.write("theirs\n")
+        self.outside_before = sorted(os.listdir(self.tmp))
+        os.link(outside, os.path.join(self.root, ".gitignore"))
+        r = self.init()
+        self.assertIn("skipped    .gitignore is a hard link", r.stdout)
+        with open(outside) as fh:
+            self.assertEqual(fh.read(), "theirs\n")
+
+    def test_a_file_appearing_between_plan_and_write_is_reported_and_the_run_undone(self):
+        import io
+        import sys
+        if LIB not in sys.path:
+            sys.path.insert(0, LIB)
+        from zouinify import ZouinifyError, initcmd
+        self.write(".ops/briefs/manager.md", "theirs\n")
+        out = io.StringIO()
+        with self.assertRaises(ZouinifyError) as cm:
+            initcmd.write_new(self.root, os.path.join(".ops", "briefs", "manager.md"), "mine\n", out)
+        self.assertIn("appeared meanwhile", str(cm.exception))
+        self.assertEqual(self.read(".ops/briefs/manager.md"), "theirs\n")
+        created = [os.path.join(".ops", "config.yaml")]
+        self.write(".ops/config.yaml", "half\n")
+        initcmd.undo(self.root, created, out)
+        self.assertIn("removed    .ops/config.yaml", out.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "config.yaml")))
 
     def test_questions_on_a_terminal_take_enter_as_the_proposal_and_ask_again_on_a_bad_value(self):
         pid, fd = pty.fork()
@@ -244,7 +322,14 @@ class TestInit(InitWorld):
             else:
                 wpid, _status = os.waitpid(pid, os.WNOHANG)
                 if wpid == pid:
+                    pid = None
                     break
+        if pid is not None:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        os.close(fd)
         text = out.decode("utf-8", "replace")
         self.assertEqual(asked, 8, text)
         self.assertIn("project name [proj]:", text)
