@@ -1,7 +1,7 @@
 ---
 name: zouinify
 description: Project management pipeline for multi-session Claude Code work -- tickets (backlog -> done via scripts/ticket.sh), a tmux session set (desk, manager, debug, chrome_debug, workers) and a local read-only control panel. Use for `/zouinify config|up|launch|status|down|briefs|panel|board|human` or when asked to launch a worker, start the standard sessions, start or find the panel, show the board or the human inbox, or set up ticket-based management in a repo.
-argument-hint: config [--check|--json] | up [role...] [--dry-run] [--no-panel] | launch <worker T-xxxx|desk|manager|debug|chrome_debug> [--receipt ID] [--dry-run] | status [--line|--json] | down [name...] [--dry-run] | briefs render [--out DIR] | panel start|stop|status|url|token rotate | board | human [--count|--json]
+argument-hint: config [--check|--json] | up [role...] [--dry-run] [--no-panel] | launch <worker T-xxxx|desk|manager|debug|chrome_debug> [--receipt ID] [--dry-run] | status [--line|--json] | down [name...] [--dry-run] | briefs render [--out DIR] | panel start|stop|status|url|token rotate | term start|stop|status|set-password | board | human [--count|--json]
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/bin/zouinify *), Bash(scripts/ticket.sh board), Bash(scripts/ticket.sh human *), Bash(tmux list-*), Bash(tmux has-session *), Bash(claude agents *)
 disable-model-invocation: false
 ---
@@ -12,7 +12,8 @@ Run `${CLAUDE_SKILL_DIR}/bin/zouinify $ARGUMENTS` from the project root (the dir
 directory under it) and relay its output verbatim. Commands today: `config`, `up`, `launch`, `status`, `down`, `briefs`,
 `panel start|stop|status|url|token rotate` (the read-only control panel: loopback by default, `panel.bind: intranet` with
 the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`. Receipts (`poll`) and `init` are later steps and
-are not available yet.
+are not available yet; `term` (the terminal page: typing into one of this project's Claude panes from the browser, after a
+password) is the next step.
 
 Rules this skill never bends (they come from `.ops/config.yaml` and the project's `tickets/README.md`):
 
@@ -32,6 +33,9 @@ Rules this skill never bends (they come from `.ops/config.yaml` and the project'
   the desk verifies, never the human's word; tier-2 items (paid budget, `CLAUDE.md`/settings changes, production apply,
   permission prompts) are typed by the human in the desk's window, never clicked. The panel process never starts, stops or
   types into a session and never runs a mutating `ticket.sh` command: `panel start|stop` is run by the human or the desk.
+- The terminal page (`zouinify term`, a separate process outside the guarded panel package) is the one way keystrokes reach a
+  Claude pane from the browser: it forwards what the human types, after a password set in the human's own terminal, into
+  Claude panes of this project only, with an audit line per batch of keys; no button, receipt or script ever produces a keystroke.
 - If a command here is refused by the permission classifier, file it with `scripts/ticket.sh ask` (one line) and continue;
   never ask a peer session to run it.
 - `init` (later) writes tracked files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` section): show the plan first and wait

@@ -38,5 +38,13 @@ panel:
   redact: default
   logs: []                              # log tails on the dashboard, e.g. [{label: "terraform apply", glob: "terraform/*.apply.log"}, {label: "site deploy", glob: ".deploy_site.log"}]
   plans_glob: ""                        # e.g. "terraform/*.tfplan": the newest file matching it is the only applicable plan, older ones are shown VOID; empty = no plan rule
+terminal:                               # the terminal page: type into one of this project's Claude panes from the browser (user decision 2026-10-13)
+  enabled: false                        # `zouinify term set-password` once in your own terminal, then `zouinify term start` (or `up` when autostart)
+  port: 4791                            # default panel.port + 1; the bind mode follows panel.bind
+  autostart: false
+  targets: all                          # all | workers   (all = the desk and the role sessions too)
+  exclude: []                           # session names never offered as a target
+  idle_close_s: 300                     # an open terminal closes after this long without a keystroke
+  max_open_s: 1800                      # and after this long regardless
 aws:   {profile: default, sso_cache: ~/.aws/sso/cache, assumed_token_hours: 2}   # omit the block if the project has no cloud credentials to show
 contact: {human: your-name}

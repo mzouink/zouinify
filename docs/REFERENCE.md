@@ -159,6 +159,20 @@ a button. **HTTP on the LAN is clear text**: use it on the lab network only; fro
 <workstation>` to the loopback panel. Worst case of a stolen token: reading the board, the inbox and the redacted pane
 captures; never a launch, a kill, a keystroke, a ticket move or a deploy, because no endpoint does those.
 
+## Typing into a pane: the terminal page (planned, Z-11)
+
+The panel itself never produces a keystroke: that gate (`check_panel_guard.sh`, `check_panel_ast.py`) stays. The user asked on
+2026-10-13 to answer waiting sessions from the website directly, so a second, separate process, `zouinify term`, will serve a
+**terminal page**: one Claude pane of this project, its screen refreshed every 300 ms (redacted), a text field and a key bar;
+what you type goes to the pane with `tmux send-keys`, like typing after `tmux attach`, without attaching a client. Opening it
+needs a password you set once in your own terminal (`zouinify term set-password`; a PBKDF2 hash in `.ops/state/term.json`,
+never kept by the browser), plus the browser token on `intranet`; it closes after 5 idle minutes and after 30 minutes
+regardless; only panes whose process is `claude` and whose session belongs to this project are offered; keys are an
+allowlist (no `Ctrl-D`); every open and every batch of keys is audited in `.ops/state/term_audit.jsonl`. What it cannot
+prevent: a Claude session that drives your Chrome can type into a terminal tab that you left open and unlocked in that same
+browser profile (use the phone or a profile without the extension for anything sensitive), and on `intranet` the password
+crosses the LAN in clear like the token. Specification: `docs/UX_SPEC.md` 2.5a.
+
 ## Layout
 
 ```

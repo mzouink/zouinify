@@ -3,7 +3,7 @@
 Source: a UX expert's draft written from the `zouinify` hero image, refined here against the functional design (the
 receipts channel, the ticket lifecycle in `scripts/ticket.sh`, the one-voice rule). Where the two disagree, **this file wins**;
 the design document in the first consumer's repo wins over this file. Implemented by the panel tickets: v1 read-only
-(T-0160), receipts (T-0162), hooks (T-0163); referenced by T-0159 (`up` starts the panel).
+(T-0160), receipts (T-0162), hooks (T-0163), the terminal page (Z-11 draft, ticket to be filed by the desk); referenced by T-0159 (`up` starts the panel).
 
 Rules the UI can never violate, in one place:
 
@@ -11,15 +11,21 @@ Rules the UI can never violate, in one place:
    matter until T-0158 lands), `claude agents --json`, the launcher registry, `tmux capture-pane` (redacted), hook events,
    the config, and the log tails and plan files named by `panel.logs` / `panel.plans_glob` (empty by default; the consumer sets them). The page never remembers "clicked", "read" or "done"; an item disappears when its source stops
    printing it. The only persisted things are the token hash and the receipt/audit log, and those are the server's.
-2. **The page never types into a Claude pane, never launches or kills a session, never runs a mutating `ticket.sh`
+2. **The panel never produces a keystroke into a Claude pane on its own, never launches or kills a session, never runs a mutating `ticket.sh`
    command, never `aws`/`terraform`/`docker`/`git`.** A click is a *receipt* (T-0162) that the desk session verifies before
    acting. v1 (T-0160) has **no write path at all**: every button described below renders disabled with the tooltip
-   "available after receipts (T-0162)" or is hidden.
+   "available after receipts (T-0162)" or is hidden. The one way keystrokes reach a pane from the browser is the **terminal
+   page** (2.5a; user decision 2026-10-13 afternoon): a separate process, `zouinify term`, outside the guarded panel package,
+   that forwards what the human types after a password. No button, receipt or script ever produces a keystroke.
 3. **Tiers.** Tier 1, clickable after T-0162: `ok` after a command the human ran in their terminal, an answer among offered
    options, "send to desk" (file a ticket, ask a question), "launch worker" (on a `ready` card), "kill" (on a session whose
    ticket is `done`). Tier 2, **never clickable**: a paid budget, a `CLAUDE.md`/settings yes, a prod apply/deploy/push, a worker's
-   permission prompt. Tier-2 items show the exact text to type in the desk's tmux window, with a copy button.
-4. **One voice.** Receipts and chat go to the desk only. Nothing on the page addresses a worker.
+   permission prompt. Tier-2 items show the exact text to type, with a copy button and, when the terminal page is enabled
+   (2.5a), a **[type it]** link that opens the desk's pane there with the text pre-filled; nothing is sent until the human
+   presses Enter in that page. Tier 2 is typed, never clicked, wherever it is typed.
+4. **One voice.** Receipts and chat go to the desk only. Nothing on the page addresses a worker. The terminal page (2.5a)
+   is the exception the user chose on 2026-10-13: it reaches any Claude pane of the project because the human is typing,
+   exactly as from `tmux attach`.
 5. **No secrets.** Pane captures are redacted server-side; the UI never renders env, credentials, tfvars or tokens; the
    credential tile shows time left and the identity ARN's role name only.
 
@@ -170,8 +176,65 @@ full-width with the drawer on the right.
 Sessions of this project whose state is `waiting` (`claude agents --json` status, or a `Notification(permission_prompt |
 idle_prompt)` hook without a later `Stop`/`UserPromptSubmit`, or the prompt heuristics on the captured screen). Row: name,
 role, what it waits for (first line of the prompt, redacted), **since HH:MM (age)**, ticket, **[show pane]** (the redacted
-visible screen in a drawer). No answer button in v1 or v2: permission prompts are tier 2 (the human answers in that window;
-decision 2026-10-13, revisit after a week).
+visible screen in a drawer) and, when `terminal.enabled` is true, **[type]**: a link to the terminal page for that pane
+(2.5a). No answer *button*, in any version: a permission prompt or an option dialog is answered by the human's own keystrokes,
+in the terminal page or in tmux, never by a click the page turns into keys. (Decision 2026-10-13 morning: "never from the page";
+revised by the user the same afternoon: "enable the option to answer sessions from the website directly, e.g. a terminal
+session". The revision adds the terminal page; it does not add buttons.)
+
+### 2.5a The terminal page (`zouinify term`; user decision 2026-10-13)
+
+**What it is.** A browser page attached to one tmux pane of this project: the pane's visible screen (refreshed every 300 ms,
+redacted like every capture), a text field and a key bar (`1`-`5`, `y`, `n`, Enter, Esc, arrows, Tab, Backspace, Ctrl-C).
+What the human types goes to that pane with `tmux send-keys`; the screen is `tmux capture-pane`. No tmux client is attached, so
+the human's own attached terminal is never resized or disturbed. It is the browser equivalent of `ssh` + `tmux attach`: the
+keystrokes are the human's, and every session treats them as such, the desk included.
+
+**Where it lives.** A separate process and package, `lib/zouinify/term/`, started with `zouinify term start|stop|status`, on
+`terminal.port` (default `panel.port + 1`) with the panel's bind mode. The guarded panel package (`lib/zouinify/panel/`) keeps
+its gates exactly as merged (no spawn, no tmux, no write); its only change is the `[type]` link, a plain `<a href>` to the
+terminal page. The terminal package gets its own CI allowlist (`scripts/check_term_guard.sh`): it may run `tmux send-keys`,
+`capture-pane`, `list-panes`, `has-session` and nothing else (no `new-session`/`kill-session`, no `ticket.sh`, no
+`aws`/`terraform`/`git`/deploy verbs). No xterm.js, no websocket, no CDN: plain polling of the screen endpoint.
+
+**Who may type (the same-user problem).** Every Claude session on the workstation runs as the human's user and can reach
+loopback ports; a `--chrome` session can drive the human's own browser. Hence:
+
+- **a password at every open**, set once in the human's own terminal with `zouinify term set-password` (refused with
+  `CLAUDECODE` set or without a TTY, like the token), kept as a PBKDF2-HMAC-SHA256 hash (600k rounds, 16-byte salt) in
+  `.ops/state/term.json` (0600); the browser never stores it; wrong passwords are budgeted per address (5 per minute, then 429)
+  and audited;
+- the browser token too when the bind is `intranet` (the panel's `HttpOnly` cookie reaches the terminal port under the same
+  host name); the Host/Origin check of the panel applies;
+- an opened terminal is a server-side session id (32 random bytes) kept in page memory only, bound to one target, closed after
+  `terminal.idle_close_s` (300) without a keystroke and after `terminal.max_open_s` (1800) regardless; the close is a toast and
+  the field goes disabled;
+- targets are only Claude panes of this project: the pane's process must be `claude` (the launcher registry or `claude agents
+  --json`, mapped to panes through `/proc`); a human shell pane, a session of another project or an arbitrary tmux target is
+  refused. `terminal.targets: all | workers` (default `all`: the desk and the role sessions too, the user's decision) and
+  `terminal.exclude: [names]`;
+- keys are an allowlist: printable text (at most 2000 characters per batch, no control characters) and the named keys
+  `Enter Escape Up Down Left Right Tab BSpace Home End PageUp PageDown Space C-c C-u`; never `C-d`, `C-z`, `C-\`, never a tmux
+  prefix, never a raw escape sequence; a batch is an ordered list of `{t: "text"}` and `{k: "Name"}` items;
+- every open, batch of keys and close is one line in `.ops/state/term_audit.jsonl`
+  (`at, event, tid8, target, token_id, ip, user_agent, text, keys`); the page shows "typing goes straight into `<name>`" in red
+  above the field.
+
+**Residual risks the human accepts** (stated in REFERENCE.md): a Claude session that drives the human's Chrome can type into a
+terminal tab that is open and unlocked in that same browser profile (open the terminal page from the phone or from a browser
+profile without the Claude extension for anything sensitive; the idle close bounds the window); on `intranet` the password
+crosses the LAN in clear like the token (`ssh -L` from off-LAN); and keystrokes typed here are indistinguishable from the
+human's at the keyboard, which is the point.
+
+**UI.** A full page on its own origin, opened in a new tab from `[type]` (on the phone it is the whole screen): a header with
+the target's name, role, ticket and state; the screen in mono (`pre`, redacted; the pane has no scrollback, so none is shown);
+the key bar with 44 px targets; the text field (Enter sends the text and Enter, Shift+Enter sends the text only, empty field
+and Enter sends Enter alone); a close button; the red banner. `?text=` pre-fills the field from a tier-2 inbox item
+(**[type it]**); nothing is sent until the human presses Enter. The password prompt is the first screen of every open.
+
+A later refinement, not in the first version: a `PermissionRequest` hook that lets the human allow or deny a worker's tool call
+from the panel without any keystroke (documented Claude Code hook; it would wait only while a dashboard tab is connected and
+never for a command on the human-only list).
 
 ### 2.5b Waiting for me (every session of the user; T-0175)
 
@@ -271,6 +334,11 @@ sessions, waiting, creds, logs, releases; each with `age_s`), `GET /api/tickets/
 (detail with the redacted screen), `GET /api/logs?label=<a panel.logs label>` (404 for an unknown label; the dashboard shows one tail per configured entry, none when the list is empty). Any `POST` -> 405.
 v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/poll` (desk only), `GET /api/events` (SSE),
 `POST /api/hook` (loopback listener only).
+Terminal page (separate service, `zouinify term`, Z-11): `GET /term/?target=<name>[&text=...]` (the page), `GET /term/targets`,
+`POST /term/open {target, password}` -> `{tid}` (401 wrong password, 429 over budget, 404 target not offered),
+`GET /term/<tid>/screen` -> `{text, at, closes_in_s}`, `POST /term/<tid>/keys {ops: [{t: "text"} | {k: "Enter"}]}` (400 for a
+key outside the allowlist), `POST /term/<tid>/close`. The password is required on every open; the token too on `intranet`;
+Host/Origin as the panel; a `tid` is unknown after the idle or maximum time (410).
 
 ## 6. Acceptance (UI part; the ticket's functional acceptance applies too)
 
@@ -284,10 +352,14 @@ v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/po
 6. v1 has no enabled write control; `POST /api/anything` returns 405; no request leaves the host (no CDN, no fonts fetched).
 7. Keyboard-only navigation reaches every control; focus visible; contrast AA on badges.
 8. A pane capture containing `aws_secret_access_key = x` renders as `<redacted>`.
+9. Terminal page (Z-11): a waiting pane's **[type]** opens the page for that pane; after the password, typing `2` and Enter
+   answers the dialog in the real pane and the audit log has the open and the keys; a wrong password sends nothing; after
+   five idle minutes the next key is refused and the field is disabled; a shell pane and another project's session are not
+   offered; `Ctrl-D` is not in the key bar and is refused by the server; the panel's CI gates are unchanged and green.
 
 ## 7. What to avoid (the draft's list, plus the functional ones)
 
 No neon/cyberpunk, no permanent fake terminals, no placeholder data once wired, no five crushed lanes on mobile, no
 hover-only actions, no excessive shadows or decorative charts. **No drag-and-drop, no per-lane add, no stage buttons, no
-"Acknowledge all", no generic OK, no OK that executes, no test pass-rates, no answer button on permission prompts, no chat to
+"Acknowledge all", no generic OK, no OK that executes, no test pass-rates, no button that turns a click into a keystroke (the terminal page forwards typed keys only), no chat to
 workers, no CDN or third-party request, no token or credential ever rendered, no client-side re-sorting of the inbox.**
