@@ -1,0 +1,8 @@
+# per-project runtime state when this repo is itself a zouinify consumer
+.ops/state/
+# python
+__pycache__/
+*.pyc
+.venv/
+# editors
+.DS_Store

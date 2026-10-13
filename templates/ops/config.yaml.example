@@ -1,0 +1,39 @@
+# .ops/config.yaml -- one per project (schema v1). Copy to <repo>/.ops/config.yaml; `zouinify init` asks for the missing fields.
+# Holds no secret: names, paths, branch names, window names, sitting times, a budget number.
+version: 1
+project: {name: my-project, short: mp, root: /abs/path/to/my-project}
+repos:
+  - {name: backend,  path: .,            trunk: dev, prod: main, default: true}
+  - {name: frontend, path: ../my-frontend, trunk: dev, prod: main}      # optional second repo
+tickets:
+  dir: tickets
+  worktrees: .claude/worktrees
+  states: default                       # the 11 states of the core; `custom:` is a later version
+  deploy_kinds: [none, terraform, image+terraform, frontend, manual-aws]
+  deploy_plugin: aws-terraform          # tickets/plugins/<plugin>.sh provides `apply`, `deploy-check` and the evidence regexes; `none` for a repo with no deploys
+  ask_verbs: [APPLY, DEPLOY, PUSH, RUN, DECIDE, CHECK, APPROVE, SSO]
+human_only:                             # printed into every brief and the CLAUDE.md section; the panel never runs them
+  - terraform apply (production)
+  - image pushes to the registry
+  - the deploy script
+  - any cloud write against the production account
+  - git push to the prod branch; ff-merge into it
+sittings: {tz: America/New_York, times: ["09:30", "16:00"], freeze_before_min: 10, push_before_min: 10}
+budget: {paid_usd_per_day: 10, approval_text: "T-{id} budget ok"}
+model: fable
+sessions:
+  desk:         {name: mp-desk,         tmux: mp-desk,         model: fable, permission_mode: auto, brief: .ops/briefs/desk.md,         always: true}
+  manager:      {name: mp-manager,      tmux: mp-manager,      model: fable, permission_mode: auto, brief: .ops/briefs/manager.md,      always: true}
+  debug:        {name: mp-debug,        tmux: mp-debug,        model: fable, permission_mode: auto, brief: .ops/briefs/debug.md,        always: true}
+  chrome_debug: {name: mp-chrome-debug, tmux: mp-chrome-debug, model: fable, permission_mode: auto, brief: .ops/briefs/chrome_debug.md, flags: [--chrome], optional: true}
+  worker:       {name: "t{num}-{slug}", tmux: "t{num}-{slug}", model: fable, permission_mode: auto,
+                 prompt: "Read tickets/WORKER_BRIEF.md, then claim {id}."}
+panel:
+  port: 4790                            # `init` proposes 4700 + (crc32(root) % 90); `up` refuses a port held by anything else
+  bind: loopback                        # loopback | intranet  (intranet = 0.0.0.0, token mandatory on every request, link_host below)
+  link_host: auto
+  state_dir: .ops/state                 # gitignored: panel.json (port, pid, token hash), sessions.json, events.jsonl, audit.jsonl
+  refresh_s: 30
+  redact: default
+aws:   {profile: default, sso_cache: ~/.aws/sso/cache, assumed_token_hours: 2}   # omit the block if the project has no cloud credentials to show
+contact: {human: your-name}
