@@ -135,8 +135,9 @@ def main(argv):
             return 1
         planted = os.path.join(STATE, f"screen-{t}.txt")
         if os.path.exists(planted):
-            with open(planted) as fh:
-                sys.stdout.write(fh.read())
+            with open(planted, "rb") as fh:          # bytes through, like tmux: a test may plant non-UTF-8 output
+                sys.stdout.buffer.write(fh.read())
+            sys.stdout.flush()
             return 0
         s = d[t]
         a = s["argv"]

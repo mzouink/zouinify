@@ -570,7 +570,7 @@ class TestStatus(World):
         self.assertEqual(m.group(6), "1")            # T-0002 in-dev
         self.assertEqual(m.group(7), "1")            # T-0008 in-review
         self.assertEqual(m.group(8), "1")            # T-0009 ready-to-merge
-        self.assertEqual(m.group(9), "1")            # T-0010 deployed
+        self.assertEqual(m.group(9), "2")            # T-0010 and T-0011 deployed
 
     def test_status_creds_sources(self):
         with open(os.path.join(self.sso, "abc.json"), "w") as fh:

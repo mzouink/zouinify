@@ -314,7 +314,11 @@ class TestApi(PanelWorld):
         d = self.get_json("/api/tickets/T-0010")
         self.assertEqual(d["front_matter"]["status"], "deployed")
         self.assertEqual(d["log"][0]["text"].split(": ", 1)[1][:9], "deployed:")
-        self.assertIn("none", d["handoff"].lower())
+        self.assertEqual(d["handoff"], "", "the fixture ticket has no handoff section")
+        with open(os.path.join(self.root, "tickets", "T-0010-deployed-one.md"), "a", encoding="utf-8") as fh:
+            fh.write("\n## Deploy handoff\nDeploy: none (no infrastructure change). Verify: the page renders.\n")
+        d = self.get_json("/api/tickets/T-0010")
+        self.assertIn("deploy: none", d["handoff"].lower(), "the handoff block is read from the ticket file")
         for bad in ("/api/tickets/T-9999", "/api/tickets/../x", "/api/tickets/..%2F..%2Fetc", "/api/sessions/no-such"):
             st, _, _ = self.req("GET", bad)
             self.assertEqual(st, 404, bad)
