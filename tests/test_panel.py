@@ -382,7 +382,7 @@ class TestPinnedState(World):
         cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
         for bad in ("~/.claude", "/tmp/elsewhere", "../outside", ".ops/other"):
             self.write(".ops/config.yaml", cfg.replace("state_dir: .ops/state", f"state_dir: {bad}"))
-            r = self.fail("config", "--check")
+            r = self.nz("config", "--check")
             self.assertIn("fixed at .ops/state", r.stderr, bad)
         self.write(".ops/config.yaml", cfg)
         self.assertEqual(self.cfg.state_dir, os.path.join(self.root, ".ops", "state"))
@@ -575,7 +575,7 @@ class TestControl(World):
 
     def test_intranet_bind_refused_in_v1(self):
         self.set_panel(f"port: {self.port}, autostart: false, bind: intranet")
-        r = self.fail("panel", "start")
+        r = self.nz("panel", "start")
         self.assertIn("T-0162", r.stderr)
         self.assertIsNone(self.health(self.port)[0])
 
@@ -590,11 +590,11 @@ class TestControl(World):
         r = self.ok("panel", "start", cwd=other, env=dict(self.env, ZOUINIFY_PROJECT=other))
         self.assertIn("http://", r.stdout)
         try:
-            r = self.fail("panel", "start")
+            r = self.nz("panel", "start")
             self.assertIn("another project", r.stderr)
             self.assertIn(other, r.stderr)
             self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "state", "panel.json")))
-            r = self.fail("panel", "stop")
+            r = self.nz("panel", "stop")
             self.assertIn("another project", r.stderr)
             self.assertEqual(self.health(self.port)[0], 200, "the other project's server is left alone")
         finally:
@@ -605,7 +605,7 @@ class TestControl(World):
         s.bind(("127.0.0.1", self.port))
         s.listen(1)
         try:
-            r = self.fail("panel", "start")
+            r = self.nz("panel", "start")
             self.assertIn("foreign", r.stderr.lower())
         finally:
             s.close()

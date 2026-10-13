@@ -181,9 +181,12 @@ class World(unittest.TestCase):
         self.assertEqual(r.returncode, 0, f"{args}: rc={r.returncode}\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
         return r
 
-    def fail(self, *args, **kw):
+    def nz(self, *args, **kw):
+        """Run the CLI and require a non-zero exit. (Never name a helper `fail`: it shadows TestCase.fail, which
+        assertIn/assertNotIn/assertIsNone/assertLess/assertMultiLineEqual and friends call on failure, so their
+        failures became a CLI run that "failed as expected" -- the suite was green that way from T-0159 to T-0170.)"""
         r = self.z(*args, **kw)
-        self.assertNotEqual(r.returncode, 0, f"{args} should fail\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
+        self.assertNotEqual(r.returncode, 0, f"{args} should exit non-zero\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
         return r
 
     def tmux_calls(self):
@@ -277,7 +280,7 @@ class TestEntryAndConfig(World):
         self.ok("config", "--check", cwd=sub)
         env = dict(self.env, ZOUINIFY_PROJECT=self.root)
         self.ok("config", "--check", cwd=self.tmp, env=env)
-        r = self.fail("config", "--check", cwd=self.tmp)
+        r = self.nz("config", "--check", cwd=self.tmp)
         self.assertIn("config.yaml", r.stderr)
 
     def test_config_json_is_normalized(self):
@@ -290,14 +293,14 @@ class TestEntryAndConfig(World):
 
     def test_config_check_rejects_broken_files(self):
         self.write(".ops/config.yaml", "version: 2\nproject: {name: x, short: x}\nsessions: {}\n")
-        r = self.fail("config", "--check")
+        r = self.nz("config", "--check")
         self.assertIn("version", r.stderr)
         self.assertIn("sessions", r.stderr)
         self.write(".ops/config.yaml", CONFIG.format(desk_pm="", worker_pm="", sso=self.sso).replace("desk:", "dsk:", 1))
-        r = self.fail("config", "--check")
+        r = self.nz("config", "--check")
         self.assertIn("desk", r.stderr)
         self.write(".ops/config.yaml", CONFIG.format(desk_pm="", worker_pm="", sso=self.sso).replace("tmux: tp-manager", "tmux: tp-desk"))
-        r = self.fail("config", "--check")
+        r = self.nz("config", "--check")
         self.assertIn("tp-desk", r.stderr)
 
 
@@ -373,9 +376,9 @@ class TestUp(World):
         self.assertTrue(a[-1].startswith("# chrome_debug brief"))
 
     def test_up_refuses_unknown_role_and_worker(self):
-        r = self.fail("up", "nosuchrole")
+        r = self.nz("up", "nosuchrole")
         self.assertIn("nosuchrole", r.stderr)
-        r = self.fail("up", "worker")
+        r = self.nz("up", "worker")
         self.assertIn("launch worker", r.stderr)
         self.assertEqual(self.new_sessions(), [])
 
@@ -383,7 +386,7 @@ class TestUp(World):
         self.ok("up", "desk")
         with open(os.path.join(self.state, "screen-tp-manager.txt"), "w") as fh:
             fh.write("> hi\n   [Sonnet 5.5] x | dev\n")
-        r = self.fail("up", "manager", "--wait", "1")
+        r = self.nz("up", "manager", "--wait", "1")
         self.assertIn("Sonnet 5.5", r.stdout + r.stderr)
         self.assertIn("fable", (r.stdout + r.stderr).lower())
 
@@ -438,14 +441,14 @@ class TestLaunchWorker(World):
             "T-01": "T-xxxx",                # malformed id
         }
         for tid, needle in cases.items():
-            r = self.fail("launch", "worker", tid)
+            r = self.nz("launch", "worker", tid)
             self.assertIn(needle, r.stderr, f"{tid}: {r.stderr}")
         self.assertEqual(self.new_sessions(), [])
         self.assertEqual(self.registry(), [])
 
     def test_launch_worker_freeze(self):
         self.write("tickets/FREEZE", "# hotfix only\nT-0005\n")
-        r = self.fail("launch", "worker", "T-0001")
+        r = self.nz("launch", "worker", "T-0001")
         self.assertIn("FREEZE", r.stderr)
         self.assertIn("T-0005", r.stderr)
         self.assertEqual(self.new_sessions(), [])
@@ -454,7 +457,7 @@ class TestLaunchWorker(World):
 
     def test_launch_worker_duplicate_name(self):
         self.ok("launch", "worker", "T-0001")
-        r = self.fail("launch", "worker", "T-0001")
+        r = self.nz("launch", "worker", "T-0001")
         self.assertIn("already", r.stderr)
         self.assertEqual(len(self.new_sessions()), 1)
 
@@ -476,7 +479,7 @@ class TestLaunchWorker(World):
     def test_launch_worker_receipt_needs_ticket_as(self):
         env = dict(self.env)
         env.pop("TICKET_AS")
-        r = self.fail("launch", "worker", "T-0001", "--receipt", "zz", env=env)
+        r = self.nz("launch", "worker", "T-0001", "--receipt", "zz", env=env)
         self.assertIn("TICKET_AS", r.stderr)
         self.assertEqual(self.new_sessions(), [], "refuse before launching")
 
@@ -488,7 +491,7 @@ class TestLaunchWorker(World):
         r = self.ok("launch", "chrome_debug")
         self.assertIn("attached", r.stdout)
         self.assertEqual(len(self.new_sessions()), 1)
-        r = self.fail("launch", "worker")
+        r = self.nz("launch", "worker")
         self.assertIn("T-xxxx", r.stderr)
 
 
@@ -518,11 +521,11 @@ class TestDown(World):
         self.assertIn("killed", r.stdout)
 
     def test_down_refuses_open_ticket_role_and_unregistered(self):
-        r = self.fail("down", "t0001-first-ready-ticket")       # T-0001 is still ready
+        r = self.nz("down", "t0001-first-ready-ticket")       # T-0001 is still ready
         self.assertIn("ready", r.stdout + r.stderr)
-        r = self.fail("down", "tp-desk")
+        r = self.nz("down", "tp-desk")
         self.assertIn("role", r.stdout + r.stderr)
-        r = self.fail("down", "some-foreign-session")
+        r = self.nz("down", "some-foreign-session")
         self.assertIn("not launcher-registered", r.stdout + r.stderr)
         self.assertEqual(self.kills(), [])
         self.assertEqual(len(self.sessions()), 5)
@@ -532,6 +535,23 @@ class TestDown(World):
         self.assertEqual(self.kills(), [])
         self.assertIn("refused", r.stdout)
         self.assertIn("nothing to kill", r.stdout)
+
+
+class TestHarness(World):
+    """T-0170: nothing the World adds may shadow a unittest.TestCase attribute, and assertions must really fail."""
+
+    def test_no_helper_shadows_testcase(self):
+        inherited = set(dir(unittest.TestCase)) - {"setUp", "tearDown", "setUpClass", "tearDownClass", "__doc__", "__module__"}
+        for cls in (World, *World.__subclasses__()):
+            shadowed = sorted(set(vars(cls)) & inherited)
+            self.assertFalse(shadowed, f"{cls.__name__} redefines unittest.TestCase attribute(s) {shadowed}")
+        self.assertIs(type(self).fail, unittest.TestCase.fail)
+
+    def test_assertions_really_fail(self):
+        for check in (lambda: self.assertIn("a", "b"), lambda: self.assertNotIn("a", "a"), lambda: self.assertEqual("x", "y"),
+                      lambda: self.assertIsNone(1), lambda: self.assertLess(2, 1), lambda: self.assertDictEqual({}, {"k": 1})):
+            with self.assertRaises(AssertionError):
+                check()
 
 
 class TestStatus(World):
@@ -614,7 +634,7 @@ class TestBriefs(World):
         # refuses to overwrite a changed file without --force
         with open(os.path.join(out, "desk.md"), "a") as fh:
             fh.write("\nlocal edit\n")
-        r = self.fail("briefs", "render", "--out", out)
+        r = self.nz("briefs", "render", "--out", out)
         self.assertIn("desk.md", r.stderr)
         self.ok("briefs", "render", "--out", out, "--force")
 
@@ -667,7 +687,7 @@ class TestReviewFixes(World):
         r = self.ok("up", "desk")
         self.assertIn("model Fable", r.stdout)
         self.write(".ops/config.yaml", cfg.replace("model: fable\n", "model: fable\nmodel_re: '(['\n"))
-        r = self.fail("config", "--check")
+        r = self.nz("config", "--check")
         self.assertIn("model_re", r.stderr)
 
     def test_down_refuses_tampered_registry(self):
@@ -677,7 +697,7 @@ class TestReviewFixes(World):
         reg = json.load(open(reg_path))
         reg.append({"name": "t0003-finished-ticket", "tmux": "tp-desk", "role": "worker", "ticket": "T-0003"})
         json.dump(reg, open(reg_path, "w"))
-        r = self.fail("down", "t0003-finished-ticket")
+        r = self.nz("down", "t0003-finished-ticket")
         self.assertIn("desk", r.stdout + r.stderr)
         self.assertEqual(self.kills(), [])
         self.assertIn("tp-desk", self.sessions())
@@ -688,9 +708,9 @@ class TestReviewFixes(World):
         cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
         for bad in ("~/.aws/credentials", "/etc/passwd", "../outside.md"):
             self.write(".ops/config.yaml", cfg.replace("brief: .ops/briefs/desk.md", f"brief: {bad}"))
-            r = self.fail("config", "--check")
+            r = self.nz("config", "--check")
             self.assertIn("inside the project", r.stderr, bad)
-            r = self.fail("up", "desk")
+            r = self.nz("up", "desk")
             self.assertEqual(self.new_sessions(), [], bad)
 
     def test_empty_permission_mode_is_unset(self):
