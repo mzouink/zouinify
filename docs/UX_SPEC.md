@@ -181,12 +181,14 @@ from `~/.zouinify/projects.json`, else the directory name of that session, never
 window, the prompt's first line (redacted capture), since (first seen waiting by this panel), and "answer from your terminal:
 attach to tmux window `<name>`" with a copy button for the window name (the panel names no tmux command: its guard forbids
 the verb; the command is in REFERENCE.md). **[show pane]** opens `GET /api/waiting/<name>`: this project's sessions show
-their whole redacted screen as on the Sessions page; another project's session shows **the dialog only** (from the
-question above the first option, or the first prompt line, to the bottom; chrome and status line dropped), through the
-full redaction suite plus e-mail addresses other than `panel.keep_emails`, absolute and `~` paths, host names and IPv4
-addresses; when no prompt or dialog is on the visible screen, or a secret-shaped string survives redaction, the row says
-"waiting (screen withheld)" and the drawer shows the reason instead of text. The capture is the last visible screen,
-never scrollback. A session started in the home directory, or under a directory named like a login, is labelled `~`. The dashboard's "Panes waiting for you" keeps this project's rows and links "+ n elsewhere"; the
+their whole redacted screen as on the Sessions page; another project's session shows **an allowlist, not a redaction**
+(desk + security review, 2026-10-13): only the question block right above the first option line and the option lines
+with their continuation lines, each NFKC-normalised, zero-width characters stripped, checked whole (withheld over 400
+characters, shown to 160) and accepted only as printable text with no `/`, `\`, `~` or `@`, no alphanumeric run of 8+ mixing letters and digits, no token-shaped
+run of 16+, no 9+ digit number, no dotted host name, no cookie text and nothing the redactor would change; with no option
+list, the first prompt line alone. One failing line withholds the whole dialog: the row says "waiting (screen withheld)"
+and the drawer shows name, project, since and the reason. The capture is the last visible screen, never scrollback.
+A session started in the home directory, or under a directory named like a login, is labelled `~`. The dashboard's "Panes waiting for you" keeps this project's rows and links "+ n elsewhere"; the
 Sessions KPI shows "n elsewhere". No `[type]` until Z-11 is decided; whether the terminal page may reach sessions outside
 this project's config is a separate decision. Zero own state; the panel's gates unchanged; a foreign capture is redacted
 exactly like this project's (merge gate: the panel may serve the LAN).

@@ -81,9 +81,10 @@ dynamically or write, a click cannot become a launch, a kill, a keystroke, a tic
 projects, this project first. Each row names the tmux window; answer from your own terminal with
 `tmux attach -t <window>` (the page copies the window name; the panel itself never names or runs a tmux command). Rows
 of other projects show the project name from `~/.zouinify/projects.json`, or the directory name (`~` for your home
-directory), never a path. Their drawer shows the dialog only (question, options, footer), through the full redaction
-suite plus paths, host names, addresses and every e-mail address not listed in `panel.keep_emails` (put your own there);
-when no dialog is visible or a secret-shaped string survives, the row says "waiting (screen withheld)". The capture is
+directory), never a path. Their drawer shows an allowlist, not a redaction: the question and option lines of the
+dialog, and only when every line is plain printable text (no path, address, host name, key- or id-shaped string, long
+number, cookie or credential text); otherwise the row says "waiting (screen withheld)" with the reason, and you attach
+to the window to read it. The capture is
 the last visible screen only, never scrollback.
 
 ## UX specification

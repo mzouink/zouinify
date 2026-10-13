@@ -61,6 +61,7 @@ MODULES = {
     "threading": {"Thread", "Lock", "RLock", "Event", "current_thread", "Timer"},
     "urllib": {"parse"},
     "urllib.parse": {"urlsplit", "urlparse", "unquote", "unquote_plus", "quote", "parse_qs", "parse_qsl", "urlencode", "urljoin"},
+    "unicodedata": {"normalize"},          # T-0175: NFKC before the foreign-dialog allowlist
     "zouinify.readonly": READONLY_API,
     "zouinify.panelstate": PANELSTATE_API,
     "zouinify.webauth": WEBAUTH_API,

@@ -29,6 +29,7 @@ try:
     from zouinify import config as cfgmod
     from zouinify.panel import server as panel_server
     from zouinify.panel import redact as panel_redact
+    from zouinify.panel import sources as panel_sources
     PANEL_IMPORT_ERROR = None
 except Exception as e:  # noqa: BLE001 - the RED case: no panel package on the base tree
     PANEL_IMPORT_ERROR = e
@@ -85,7 +86,7 @@ class PanelWorld(World):
         self.port = free_port()
         self.write(".ops/config.yaml", open(os.path.join(self.root, ".ops", "config.yaml")).read()
                    .replace("port: 4799", f"port: {self.port}")
-                   .replace("panel: {", "panel: {autostart: false, logs: [{label: apply, glob: 'deploy/*.apply.log'}], plans_glob: 'deploy/*.plan', keep_emails: [keeper@example.org], "))
+                   .replace("panel: {", "panel: {autostart: false, logs: [{label: apply, glob: 'deploy/*.apply.log'}], plans_glob: 'deploy/*.plan', "))
         os.makedirs(os.path.join(self.root, "deploy"))
         self.write("deploy/old.plan", "old")
         time.sleep(0.02)
@@ -341,7 +342,7 @@ class TestApi(PanelWorld):
         self.assertEqual((by["home-session"]["project"], by["home-session"]["registered"]), ("~", False),
                          "a session started in the home directory is labelled ~, never the login")
         self.assertEqual(by["withheld-zz"]["waiting_for"], "waiting (screen withheld)")
-        self.assertIn("token-shaped", by["withheld-zz"]["withheld"])
+        self.assertIn("identifier-shaped", by["withheld-zz"]["withheld"])
         self.assertEqual(by["nodialog-qq"]["waiting_for"], "waiting (screen withheld)")
         self.assertIn("no prompt or dialog", by["nodialog-qq"]["withheld"])
         self.assertEqual(e["withheld"], "")
@@ -351,30 +352,17 @@ class TestApi(PanelWorld):
         d = self.get_json("/api/waiting/elsewhere-bf")
         scr = d["screen"]
         self.assertEqual(d["withheld"], "")
-        self.assertIn("Do you want to proceed?", scr, "the dialog is shown, from the question")
-        self.assertIn("Bash(git push origin dev)", scr, "the command the permission box asks about is part of the dialog")
-        self.assertNotIn("[Fable 5.1]", scr, "another project's status line (cwd, branch) is never shown")
-        self.assertNotIn("x | dev", scr)
-        self.assertIn("aws_secret_access_key = <redacted>", scr, "a foreign capture is redacted like every other")
-        self.assertNotIn(FAKE_SESSION_TOKEN, scr)
-        self.assertIn("Bearer <redacted>", scr)
-        self.assertIn("mysql -p<redacted> db", scr, "glued -p")
-        self.assertIn("Cookie: sid=<redacted>; zouinify_token=<redacted>", scr)
-        self.assertNotIn("sid=abc", scr)
-        self.assertIn("<redacted-email>", scr)
-        self.assertNotIn("alice@", scr)
-        self.assertIn("keeper@example.org", scr, "the human's own address (panel.keep_emails) stays readable")
-        self.assertIn("<path>", scr)
-        self.assertNotIn("/groups/lab", scr)
-        self.assertIn("<host>", scr)
-        self.assertNotIn("node7", scr)
-        self.assertIn("<ip>", scr)
-        self.assertNotIn("10.1.2.3", scr)
+        self.assertEqual(scr, "Bash(git push origin dev)\nDo you want to proceed?\n> 1. Yes\n2. Yes, and don't ask again\n"
+                              "3. No, and tell Claude what to do differently (esc)",
+                         "another project's drawer is an allowlist: the question block and the option lines, nothing else")
+        for leak in ("[Fable 5.1]", "x | dev", "aws_", FAKE_SESSION_TOKEN, "Bearer", "<redacted", "mysql", "Cookie", "sid=abc",
+                     "alice@", "keeper@", "/groups", "node7", "10.1.2.3", "S3cret", "fine line"):
+            self.assertNotIn(leak, scr, f"{leak!r} must not reach another project's drawer, not even redacted")
         self.assertNotIn(self.tmp, json.dumps(d))
         self.assertNotIn("cwd", d)
         wd = self.get_json("/api/waiting/withheld-zz")
         self.assertEqual(wd["screen"], "")
-        self.assertIn("token-shaped", wd["withheld"])
+        self.assertIn("identifier-shaped", wd["withheld"])
         nd = self.get_json("/api/waiting/nodialog-qq")
         self.assertEqual((nd["screen"], nd["withheld"]), ("", "no prompt or dialog on the visible screen"))
         md = self.get_json("/api/waiting/t0001-first-ready-ticket")
@@ -630,23 +618,76 @@ class TestRedact(unittest.TestCase):
                          "Set-Cookie: sid=<redacted>; Path=/; Max-Age=3600; SameSite=Strict; HttpOnly", "names and attributes stay, values go")
         self.assertEqual(r("curl --cookie 'a=b' h"), "curl --cookie <redacted> h")
         self.assertEqual(r("cookies are fine words"), "cookies are fine words")
-        # another project's screen: e-mails except the human's, paths, hosts, addresses
-        rf = panel_redact.redact_foreign
-        self.assertEqual(rf("mail alice@example.org now"), "mail <redacted-email> now")
-        self.assertEqual(rf("mail Me@Lab.org now", keep_emails=("me@lab.org",)), "mail Me@Lab.org now")
-        self.assertEqual(rf("Message from @rna-desk-6b: hi"), "Message from @rna-desk-6b: hi", "a session mention is not an address")
-        self.assertEqual(rf("Password for 'https://alice@github.test': x"), "Password for 'https://alice@github.test': <redacted>", "a URL user is not an address")
-        self.assertEqual(rf("see /groups/lab/user/proj/file.txt and ~/x/y"), "see <path> and <path>")
-        self.assertEqual(rf("GET /status 200"), "GET /status 200", "a one-segment path is not a path")
-        self.assertEqual(rf("on node7.lab.example.org and 10.1.2.3"), "on <host> and <ip>")
-        self.assertEqual(rf("app.min.js stays, example.test stays, v3.12.1 stays"), "app.min.js stays, example.test stays, v3.12.1 stays")
-        self.assertEqual(rf("mysql -pS3cret alice@example.org"), "mysql -p<redacted> <redacted-email>", "the plain suite runs too")
-        sus = panel_redact.suspicious
-        self.assertEqual(sus("plain words and a sha " + "a" * 40), "")
-        self.assertEqual(sus("x = <redacted>"), "")
-        self.assertEqual(sus(""), "")
-        self.assertIn("token-shaped", sus("key " + "Ab1" * 12))
-        self.assertIn("credential label", sus("password: still-here"))
+        self.assertEqual(r("sshpass -p S3cret ssh h; mkdir -p dir; mysql -p hunter2"), "sshpass -p <redacted> ssh h; mkdir -p dir; mysql -p <redacted>",
+                         "a space-separated -p is a password for tools whose -p means one, a directory for mkdir")
+        self.assertEqual(r("pass=x pwd=y PASS=z tests pass: 3 credentials: abc"), "pass=<redacted> pwd=<redacted> PASS=<redacted> tests pass: 3 credentials: <redacted>")
+
+
+class TestForeignDialog(unittest.TestCase):
+    """T-0175 re-review: another project's dialog is an ALLOWLIST. Every probe of the security review is withheld or clean."""
+
+    def setUp(self):
+        if PANEL_IMPORT_ERROR:
+            self.fail(f"panel package not importable: {PANEL_IMPORT_ERROR!r}")
+
+    def test_clean_dialog_shows_question_and_options_only(self):
+        text, why = panel_sources.foreign_dialog(PROMPT_SCREEN + SECRET_SCREEN)
+        self.assertEqual(why, "")
+        self.assertEqual(text, "Bash(git push origin dev)\nDo you want to proceed?\n> 1. Yes\n2. Yes, and don't ask again\n3. No, and tell Claude what to do differently (esc)")
+        ask = "│ T-0140 is live. Want me to fix deploy.sh and push the file now?\n❯ 1. Yes, fix and push now\n     Add tertiary_spans to push_data()'s list, upload the file, invalidate the path.\n  2. Just log it, not now\n  3. Type something.\n──────────\n  4. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel\n"
+        text, why = panel_sources.foreign_dialog(ask)
+        self.assertEqual(why, "")
+        self.assertTrue(text.startswith("T-0140 is live. Want me to fix deploy.sh and push the file now?\n❯ 1. Yes, fix and push now\n"), text)
+        self.assertNotIn("Chat about this", text, "lines after a separator are not part of the option block")
+        for ok in ("edit deploy.sh and config.py?", "on 2026-10-13 at 09:30?", "close T-0140 and t0119?", "a misconfiguration internationalization?"):
+            self.assertEqual(panel_sources.foreign_dialog(ok + "\n > 1. Yes\n")[1], "", ok)
+
+    def test_every_probe_is_withheld(self):
+        fd = panel_sources.foreign_dialog
+        probes = [
+            ("Do you want to proceed?\n > 1. AKIAIOSF\nODNN7EXAMPLE\n", "identifier-shaped", "a secret split across lines"),
+            ("key " + "0123456789abcdef" * 4 + "?\n > 1. Yes\n", "identifier-shaped", "a bare 64-hex key"),
+            ("copy host:/home/a/b now?\n > 1. Yes\n", "path", "a path after a colon"),
+            ("open file:/etc/shadow?\n > 1. Yes\n", "path", "a file: path"),
+            ("read home/alice/.aws/credentials?\n > 1. Yes\n", "path", "a relative path"),
+            ("read ./alice/.ssh/id_rsa?\n > 1. Yes\n", "path", "a ./ path"),
+            ("read /tmp/my file/x?\n > 1. Yes\n", "path", "a path with a space"),
+            ("read /donn\u00e9es/\u00e9t\u00e9?\n > 1. Yes\n", "path", "a non-ASCII path"),
+            ("read C:\\Users\\a?\n > 1. Yes\n", "path", "a backslash path"),
+            ("read ~ now?\n > 1. Yes\n", "path", "the home marker"),
+            ("run sshpass -p S3cret ssh h?\n > 1. Yes\n", "credential", "a space-separated password"),
+            ("run mysql -p hunter2?\n > 1. Yes\n", "credential", "mysql -p value"),
+            ("set pass=x?\n > 1. Yes\n", "credential", "pass="),
+            ("set pwd=x?\n > 1. Yes\n", "credential", "pwd="),
+            ("set PASS=x?\n > 1. Yes\n", "credential", "PASS="),
+            ("credentials: abc\n > 1. Yes\n", "credential", "credentials:"),
+            ("permission denied: /etc/shadow\n", "path", "a prompt-like output line with a path"),
+            ("mail alice\uff20example.org?\n > 1. Yes\n", "path, address", "a fullwidth @"),
+            ("pass\u200bword=x?\n > 1. Yes\n", "credential", "a zero-width character inside a label"),
+            ("Cookie: abc123\n > 1. Yes\n", "cookie", "a cookie value without ="),
+            ("Set-Cookie: Path=x\n > 1. Yes\n", "cookie", "a cookie under an attribute name"),
+            ("send the cookie?\n > 1. Yes\n", "cookie", "the word cookie"),
+            ("deploy to lab.example.org?\n > 1. Yes\n", "host", "a two-label host"),
+            ("account 123456789012?\n > 1. Yes\n", "long number", "a 12-digit account id"),
+            ("ask t0070-extract-shared-cognito-auth-edge-g-c8?\n > 1. Yes\n", "token-shaped", "a long dashed name"),
+            ("x" * 401 + "\n > 1. Yes\n", "longer than 400", "an over-long line"),
+            ("just text\n> \n   [Fable 5.1] x | dev\n", "no prompt or dialog", "no dialog at all"),
+        ]
+        for screen, reason, label in probes:
+            text, why = fd(screen)
+            self.assertEqual(text, "", label)
+            self.assertIn(reason, why, label)
+
+    def test_fake_prompt_lines_do_not_widen_the_dialog(self):
+        fd = panel_sources.foreign_dialog
+        text, why = fd("Do you want to proceed?\nsecret=abc\n\n\nreal question?\n > 1. Yes\n")
+        self.assertEqual((text, why), ("real question?\n> 1. Yes", ""), "only the block adjacent to the options is shown")
+        self.assertEqual(fd("ls: permission denied\n"), ("ls: permission denied", ""), "without options, the one prompt-like line and nothing else")
+        self.assertEqual(fd("Do you want to proceed?\nsecret=abc\n")[0], "Do you want to proceed?")
+        long = "is this the question you wanted answered " * 5          # 205 clean characters, as on a wide pane
+        text, why = fd(long.strip() + "?\n > 1. Yes\n")
+        self.assertEqual(why, "")
+        self.assertEqual(text.split("\n")[0], long[:159] + "\u2026", "the content rules see the whole line; the drawer shows 160 characters")
 
 
 class TestControl(World):

@@ -9,7 +9,7 @@ import re
 
 LABELS = (r"aws_secret_access_key|secret_access_key|aws_session_token|session_token|aws_access_key_id|access_key_id|"
           r"SecretAccessKey|SessionToken|AccessKeyId|web_token|api[_-]?key|access[_-]?token|refresh[_-]?token|"
-          r"client[_-]?secret|secret|passcode|password|passwd|authorization|token")
+          r"client[_-]?secret|secret|passcode|password|passwd|credentials?|authorization|token")
 VALUE = r"\"[^\"]*\"|'[^']*'|\S+"
 SCHEMES = r"bearer|basic|digest|negotiate|ntlm|hoba|mutual|aws4-hmac-sha256"
 # `label = value`, `label: value`, `"label": "value"`, `label='value'` (an auth scheme word is left to SCHEME_RE)
@@ -19,24 +19,18 @@ FLAG_RE = re.compile(rf"(?i)(--?[a-z_-]*(?:password|passcode|token|secret|cookie
 # `mysql -pS3cret`: a value glued to a lowercase -p (combined short flags such as `-pv` are shorter than 4 characters;
 # a glued path or option such as `-p/tmp` is left alone)
 GLUED_P_RE = re.compile(r"(?<![\w/.~-])-p(?![/~.-])(\S{4,})")
+# `pass=x`, `pwd=x`, `PASS=x` (only with `=`: "tests pass: 3" and `pwd` output are prose)
+PASS_EQ_RE = re.compile(rf"(?i)\b(pass|pwd)=({VALUE})")
+# `sshpass -p S3cret`, `mysql -p hunter2`: a space-separated -p value of a tool whose -p means password
+TOOL_P_RE = re.compile(r"(?i)\b(sshpass|mysql|mysqladmin|mysqldump|mariadb|psql|pg_dump|pg_restore|mongo|mongosh|redis-cli|smbclient|lftp|sqlplus|isql|rclone)"
+                       r"\b([^\n]*?\s-p)\s+(?!-)(\S+)")
 # `Cookie: a=b; c=d`, `Set-Cookie: sid=...; Path=/; HttpOnly`: every cookie VALUE goes, the names and the standard
 # attributes stay (so `zouinify_token=<redacted>` still says which cookie it was, as T-0165's test pins)
 COOKIE_RE = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)([^\n]+)")
 COOKIE_PAIR_RE = re.compile(r"([^=;\s]+)=([^;]*)")
 COOKIE_ATTRS = {"path", "domain", "expires", "max-age", "samesite", "priority"}
-# another project's screen (T-0175): e-mail addresses (a URL's user part, `//alice@host`, is not one), absolute or
-# `~` paths of two or more segments, dotted host names of three or more labels that do not end in a file extension,
-# IPv4 addresses
-EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+/-])[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b")
-PATH_RE = re.compile(r"(?<![\w.:/~-])(?:~|/[A-Za-z0-9._@+%-]+)(?:/[A-Za-z0-9._@+%-]+)+/?")
+# file extensions a dotted name may end in without being a host name (the foreign-dialog allowlist in sources uses it)
 FILE_EXT = r"(?:js|mjs|cjs|py|md|txt|json|ya?ml|html?|css|sh|log|csv|pem|tf|tfvars|tsx?|jsx|lock|toml|ini|cfg|conf|xml|svg|png|jpe?g|gif|pdf|zip|tar|gz|whl|egg|so|example|tmpl|bak|orig)"
-HOST_RE = re.compile(rf"(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.){{2,}}(?!{FILE_EXT}\b)[a-z]{{2,}}\b")
-IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-# after redaction: a 32+ character base64-like run with upper case, lower case and a digit (a 40-hex sha has no upper
-# case; shorter ids are not secrets), or a credential label whose value was not redacted
-SUSPECT_RE = re.compile(r"(?<![A-Za-z0-9+/=])(?=[A-Za-z0-9+/=]{32,}(?![A-Za-z0-9+/=]))(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
-                        r"(?=[A-Za-z0-9+/=]*[0-9])[A-Za-z0-9+/=]{32,}")
-LABEL_LEFT_RE = re.compile(rf"(?i)\b(?:{LABELS})\b[\"']?\s*[=:]\s*(?!<redacted)[^\s<]")
 # `PGPASSWORD=hunter2`, `PASSCODE abc`, `MY_API_TOKEN: x` (an env-style name in capitals, then its value)
 ENV_RE = re.compile(rf"\b([A-Z0-9_]*(?:PASSCODE|PASSWORD|PASSWD|TOKEN|SECRET|APIKEY|API_KEY)[A-Z0-9_]*)(\s*[=:]\s*|\s+)({VALUE})")
 # https://user:pw@host, postgres://user:pw@host, ...
@@ -81,6 +75,8 @@ def redact(text: str) -> str:
     out = LABEL_RE.sub(lambda m: f"{m.group(1)}<redacted>", out)
     out = FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     out = GLUED_P_RE.sub("-p<redacted>", out)
+    out = TOOL_P_RE.sub(lambda m: f"{m.group(1)}{m.group(2)} <redacted>", out)
+    out = PASS_EQ_RE.sub(lambda m: f"{m.group(1)}=<redacted>", out)
     out = COOKIE_RE.sub(lambda m: m.group(1) + cookie_pairs(m.group(2)), out)
     out = ENV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     out = PROMPT_RE.sub(lambda m: f"{m.group(1)} <redacted>" if m.group(2) else f"{m.group(1)} <redacted-next-line>", out)
@@ -105,26 +101,3 @@ def wrapped_lines(text: str) -> str:
                 lines[i + 1] = WRAP_RE.sub(lambda m: m.group(0)[: len(m.group(0)) - len(m.group(0).lstrip())] + "<redacted>", lines[i + 1], count=1)
     return MARKER_RE.sub("<redacted>", "\n".join(lines))
 
-
-def redact_foreign(text: str, keep_emails=()) -> str:
-    """Another project's screen (T-0175): everything `redact` does, plus every e-mail address not in `keep_emails`
-    (the human's own, from `panel.keep_emails`), absolute and `~` paths, dotted host names and IPv4 addresses."""
-    if not text:
-        return text
-    keep = {k.lower() for k in keep_emails}
-    out = redact(text)
-    out = EMAIL_RE.sub(lambda m: m.group(0) if m.group(0).lower() in keep else "<redacted-email>", out)
-    out = PATH_RE.sub("<path>", out)
-    out = HOST_RE.sub("<host>", out)
-    return IP_RE.sub("<ip>", out)
-
-
-def suspicious(text: str) -> str:
-    """After redaction: the reason a screen should be withheld when a secret-shaped string is still there, else ''."""
-    if not text:
-        return ""
-    if SUSPECT_RE.search(text):
-        return "a token-shaped string the redactor is not sure about"
-    if LABEL_LEFT_RE.search(text):
-        return "a credential label whose value the redactor did not catch"
-    return ""

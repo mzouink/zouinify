@@ -334,8 +334,7 @@ def load(root: str | None = None) -> Config:
     panel = {"port": port, "bind": bind or "loopback", "link_host": str(pn.get("link_host", "auto")),
              "state_dir": ".ops/state", "refresh_s": refresh_s,
              "redact": str(pn.get("redact", "default")), "autostart": bool(pn.get("autostart", True)),
-             "logs": logs, "plans_glob": str(plans_glob) if plans_glob else None,
-             "keep_emails": _strlist(pn.get("keep_emails"), "panel.keep_emails", errs, [])}
+             "logs": logs, "plans_glob": str(plans_glob) if plans_glob else None}
 
     aws = raw.get("aws") if isinstance(raw.get("aws"), dict) else None
     if aws is not None:

@@ -13,10 +13,11 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from zouinify import panelstate, readonly
-from zouinify.panel.redact import redact, redact_foreign, suspicious
+from zouinify.panel.redact import FILE_EXT, redact
 
 PROMPT_RE = re.compile(r"Do you want|Allow |permission|\(y/n\)|Yes, and|Esc to|Enter to confirm|\[Y/n\]|\(esc\)", re.I)
 CHROME_RE = re.compile(r"^\s*(\[[A-Z][a-z]+ [0-9.]+\]|\U0001F4B0|⏵|─|╭|╰|│\s*$|❯\s*$|>\s*$)")
@@ -281,35 +282,88 @@ def project_label(cwd: str, projects: list) -> tuple:
     return (base or "?"), False
 
 
-def foreign_screen(screen: str, keep_emails=()) -> tuple:
-    """(text, withheld_reason) for another project's screen (already through `redact`): only the dialog, from the
-    question above the first option (or the first prompt line) to the bottom, chrome and blank lines dropped, then
-    `redact_foreign` (e-mails, paths, hosts, addresses). Withheld entirely when no prompt or dialog is on the visible
-    screen or a secret-shaped string survives redaction (manager's merge condition, T-0175). The capture is the last
-    visible screen only, never scrollback."""
+ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff\u00ad]")
+BAD_CHAR_RE = re.compile(r"[/\\~@]")
+ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]{8,}")
+TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9+=_-]{16,}")
+DIGITS_RE = re.compile(r"\d{9,}")
+HOSTY_RE = re.compile(rf"(?i)(?<![\w.-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?!{FILE_EXT}\b)[a-z]{{2,}}\b")
+COOKIE_WORD_RE = re.compile(r"(?i)\bcookies?\b|\bset-cookie\b")
+FOREIGN_LINE_MAX = 400            # a line longer than this is withheld; a clean line is shown to FOREIGN_LINE_SHOWN
+FOREIGN_LINE_SHOWN = 160
+FOREIGN_LOOKBACK = 6
+FOREIGN_OPTION_LINES = 16
+
+
+def clean_line(line: str) -> str:
+    """NFKC-normalised, zero-width characters and box borders stripped, trimmed."""
+    t = unicodedata.normalize("NFKC", ZERO_WIDTH_RE.sub("", line))
+    return BOX_RE.sub("", t).strip()
+
+
+def line_ok(t: str) -> str:
+    """The allowlist a line of another project's dialog must pass (desk + reviewer, T-0175): the reason it fails, else ''.
+    Printable text under 400 characters (checked whole; shown to 160) with no path, home or address character (`/ \\ ~ @`), no alphanumeric run of 8+
+    mixing letters and digits (keys, ids, shas, split secrets), no token-shaped run of 16+ with a digit or symbol, no
+    9+ digit number, no dotted host name, no cookie text, and nothing the redactor would change."""
+    if len(t) > FOREIGN_LINE_MAX:
+        return "a line longer than 400 characters"
+    if not t.isprintable():
+        return "a control character"
+    if BAD_CHAR_RE.search(t):
+        return "a path, address or home marker"
+    for m in ALNUM_RUN_RE.finditer(t):
+        w = m.group(0)
+        if re.search(r"[A-Za-z]", w) and re.search(r"[0-9]", w):
+            return "an identifier-shaped string"
+    for m in TOKEN_RUN_RE.finditer(t):
+        if re.search(r"[0-9+=_-]", m.group(0)):
+            return "a token-shaped string"
+    if DIGITS_RE.search(t):
+        return "a long number"
+    if HOSTY_RE.search(t):
+        return "a host name"
+    if COOKIE_WORD_RE.search(t):
+        return "cookie text"
+    if redact(t) != t:
+        return "a credential-shaped value"
+    return ""
+
+
+def foreign_dialog(screen: str) -> tuple:
+    """(text, withheld_reason) for another project's screen: an ALLOWLIST, not a redaction. Shown are only the question
+    block right above the first option line (contiguous text, at most 6 lines up) and the option lines with their
+    continuation lines (until a blank or chrome line, at most 16), each cleaned by `clean_line` and accepted by `line_ok`;
+    with no option list, the first prompt line alone. One failing line withholds the whole dialog; no prompt or dialog
+    withholds it too. The capture is the last visible screen only, never scrollback."""
     lines = screen.splitlines()
     first_opt = next((i for i, l in enumerate(lines) if OPTION_RE.match(l)), None)
-    first_prompt = next((i for i, l in enumerate(lines) if PROMPT_RE.search(l)), None)
-    start = None
+    picked: list = []
     if first_opt is not None:
-        start = first_opt
-        for i in range(first_opt - 1, max(-1, first_opt - 9), -1):
-            t = BOX_RE.sub("", lines[i]).strip()
+        above: list = []
+        for i in range(first_opt - 1, max(-1, first_opt - FOREIGN_LOOKBACK - 1), -1):
+            t = clean_line(lines[i])
             if not t or CHROME_RE.match(lines[i]) or t.startswith("☐") or t.startswith("☑"):
-                if start < first_opt:
+                if above:
                     break
                 continue
-            start = i
-    if first_prompt is not None and (start is None or first_prompt < start):
-        start = first_prompt
-    if start is None:
-        return "", "no prompt or dialog on the visible screen"
-    body = [l for l in lines[start:] if l.strip() and not CHROME_RE.match(l)]
-    text = redact_foreign("\n".join(body), keep_emails)
-    why = suspicious(text)
-    if why:
-        return "", why
-    return text, ""
+            above.append(t)
+        picked = list(reversed(above))
+        for l in lines[first_opt:first_opt + FOREIGN_OPTION_LINES]:
+            t = clean_line(l)
+            if not t or CHROME_RE.match(l):
+                break
+            picked.append(t)
+    else:
+        first_prompt = next((i for i, l in enumerate(lines) if PROMPT_RE.search(l)), None)
+        if first_prompt is None:
+            return "", "no prompt or dialog on the visible screen"
+        picked = [clean_line(lines[first_prompt])]
+    for t in picked:
+        why = line_ok(t)
+        if why:
+            return "", why
+    return "\n".join(t if len(t) <= FOREIGN_LINE_SHOWN else t[:FOREIGN_LINE_SHOWN - 1] + "\u2026" for t in picked), ""
 
 
 def foreign_waiting_source(cfg) -> dict:
@@ -327,7 +381,6 @@ def foreign_waiting_source(cfg) -> dict:
         return {"rows": []}
     pane_by_pid = pane_index(readonly.list_panes())
     projects = registered_projects()
-    keep = tuple(cfg.panel.get("keep_emails") or ())
     rows: list = []
     seen: set = set()
     for a in waiting:
@@ -338,7 +391,7 @@ def foreign_waiting_source(cfg) -> dict:
         pane = walk_to_pane(a.get("pid"), pane_by_pid)
         tmux_name = pane["session"] if pane else None
         screen = redact(readonly.capture_pane(tmux_name)) if tmux_name else ""
-        portion, why = foreign_screen(screen, keep) if screen else ("", "")
+        portion, why = foreign_dialog(screen) if screen else ("", "")
         label, registered = project_label(str(a.get("cwd") or ""), projects)
         rows.append({"name": name, "tmux": tmux_name, "project": label, "registered": registered, "in_project": False,
                      "role": "", "ticket": "", "since": "", "started_at": a.get("startedAt"), "withheld": why,
@@ -694,7 +747,7 @@ class Snapshot:
                 return None
             d = dict(row)
             screen = redact(readonly.capture_pane(row["tmux"])) if row.get("tmux") else ""
-            d["screen"], d["withheld"] = foreign_screen(screen, tuple(self.cfg.panel.get("keep_emails") or ())) if screen else ("", "")
+            d["screen"], d["withheld"] = foreign_dialog(screen) if screen else ("", "")
             return d
         d["screen"] = redact(readonly.capture_pane(row["tmux"])) if row.get("tmux") else ""
         d["withheld"] = ""
