@@ -302,8 +302,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from zouinify import panelstate, readonly
-from zouinify.panel.redact import redact
-from . import sources
 
 def read(p):
     with open(p, encoding="utf-8", errors="replace") as fh:
