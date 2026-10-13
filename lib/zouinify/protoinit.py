@@ -79,10 +79,11 @@ def check_supported(cfg) -> None:
     if cfg.tickets_script != CORE_REL:
         raise ZouinifyError(f"tickets.script is {cfg.tickets_script!r}; init --protocol installs {CORE_REL}")
     seen = {}
-    for r in cfg.repos:                                       # the core refuses two repos that resolve to one directory; say it first
+    for r in cfg.repos:                                       # two names for one directory: merge would land a ticket twice
         real = os.path.realpath(cfg.path(r["path"]))
         if real in seen:
-            raise ZouinifyError(f"repos {seen[real]} and {r['name']} resolve to the same directory ({real}); the core refuses that")
+            raise ZouinifyError(f"repos {seen[real]} and {r['name']} resolve to the same directory ({real}): two names for one "
+                                f"directory are refused here (and by the core, which compares the resolved paths since 1.1.2)")
         seen[real] = r["name"]
     default = next((r for r in cfg.repos if r.get("default")), cfg.repos[0])
     if os.path.realpath(cfg.path(default["path"])) != cfg.root:

@@ -11,6 +11,18 @@ import time
 import unittest
 
 from test_init import IDENTITY, InitWorld, snapshot
+from test_core import HERE
+
+MANIFEST = os.path.join(os.environ.get("ZOUINIFY_REPO_UNDER_TEST") or os.path.dirname(HERE), "templates", "protocol", "MANIFEST")
+
+
+def core_version():
+    """The vendored core's version from the manifest, so a re-pin never has to edit this file."""
+    with open(MANIFEST, encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("version "):
+                return line.split(" ", 1)[1].strip()
+    raise AssertionError("no version line in " + MANIFEST)
 
 PROTOCOL_FILES = ("scripts/ticket.sh", "tickets/ticket.env", "tickets/plugins/none/plugin.sh", "tickets/plugins/none/docs/handoff.md",
                   "tickets/README.md", "tickets/_TEMPLATE.md", "tickets/WORKER_BRIEF.md")
@@ -154,7 +166,7 @@ class TestInitProtocol(ProtocolWorld):
         self.assertIn("paste      CLAUDE.md  (not written: add the block printed above yourself)", text)
         self.assertIn("next: paste the CLAUDE.md block printed above", text)
         self.assertIn("appended   .gitignore", text)
-        self.assertIn("verify     scripts/ticket.sh version -> ticket.sh 1.1.1  plugin none", text, "the installed core parses its env")
+        self.assertIn(f"verify     scripts/ticket.sh version -> ticket.sh {core_version()}  plugin none", text, "the installed core parses its env")
         self.assertIn("next: paste the CLAUDE.md block printed above", text)
         mode = stat.S_IMODE(os.stat(os.path.join(self.root, "scripts", "ticket.sh")).st_mode)
         self.assertEqual(mode & 0o111, 0o111, "the core is executable")
@@ -173,7 +185,7 @@ class TestInitProtocol(ProtocolWorld):
         # the vendored core really runs here: version from the repo root, and from a subdirectory
         r = subprocess.run(["bash", "scripts/ticket.sh", "version"], cwd=self.root, capture_output=True, text=True, env=self.env, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("ticket.sh 1.1.1  plugin none", r.stdout)
+        self.assertIn(f"ticket.sh {core_version()}  plugin none", r.stdout)
         r = subprocess.run(["bash", os.path.join(self.root, "scripts", "ticket.sh"), "board"], cwd=self.root, capture_output=True, text=True,
                            env=dict(self.env, TICKET_AS="tester"), timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

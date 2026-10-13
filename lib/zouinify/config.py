@@ -204,8 +204,12 @@ def load(root: str | None = None) -> Config:
                 errs.append(f"repos[{i}].{fld}: not a valid git branch name for ticket.sh (git's rules plus letters, digits and "
                             f". _ / @ + -): {r.get(fld)!r}")
         clean_repos.append(dict(r))
-        if r.get("default") and default_repo is None:
-            default_repo = r
+        if r.get("default"):
+            if default_repo is not None:
+                errs.append(f"repos[{i}]: a second `default: true` ({r['name']}; {default_repo['name']} already is): exactly one repo is "
+                            f"the default, the one the tickets live in")
+            else:
+                default_repo = r
     if default_repo is None and clean_repos:
         default_repo = clean_repos[0]
     trunk = str((default_repo or {}).get("trunk") or "main")

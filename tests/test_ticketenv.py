@@ -85,6 +85,14 @@ class TestTicketEnv(World):
         self.assertEqual(env["TRUNK"], "dev")
         self.assertLess(text.index("REPO_BACKEND_PATH="), text.index("REPO_LIB_PATH="))
 
+    def test_two_default_repos_are_refused(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("repos:\n", "repos:\n  - {name: lib, path: ../lib, trunk: main, default: true}\n"))
+        r = self.nz("config", "--check")
+        self.assertIn("repos[1]: a second `default: true` (backend; lib already is)", r.stderr)
+        r = self.nz("config", "--env")
+        self.assertIn("second `default: true`", r.stderr)
+
     def test_optional_tickets_keys_render_and_are_validated(self):
         cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
         self.write(".ops/config.yaml", cfg.replace("  deploy_plugin: none\n",

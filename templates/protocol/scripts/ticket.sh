@@ -16,7 +16,7 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.1.1"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.1.2"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
@@ -978,7 +978,7 @@ human_collect() {
     why=$(plugin_ask_check "$verb" "$cmd" inbox)
     if grep -qE '<[^>]+>' <<<"$cmd"; then cmd="(not copy-paste: the ask has a placeholder -- $cmd -- ask ${who:-its author})"
     elif [ -n "$why" ]; then cmd="(not copy-paste: $why -- $cmd -- ask ${who:-its author})"
-    else case $cmd in scripts/*|./*|terraform\ *|python3\ *|bash\ *|make\ *|[A-Z_]*=*) cmd="cd $MAIN && $cmd";; esac; fi
+    else case $cmd in scripts/*|./*|python3\ *|bash\ *|make\ *|[A-Z_]*=*) cmd="cd $MAIN && $cmd";; esac; fi   # a repo-relative command gets the cd; a bare tool name is the ask's own business (terraform dropped, T-0192: scripts/* covers tf.sh)
     add_item "$(sev_rank "$sev")" 3 "${stamp:-?}" "$verb" "$ids" "$sev" "$(sed 's/^ *//; s/ *$//' <<<"$what")" "${cmd:-reply in the tickets window: \"$id ok\"}" "${expect:-(the ask names no expected output)}" "${nothing:-$ids waits}" "asked by ${who:-?}"
   done
   # (4) deployed, with a Verify line that names the human and no done yet
@@ -1429,7 +1429,8 @@ load_config() { # everything derived from ticket.env, or a clear death
   [ "${REPO_PATH[$REPO0]}" = "$MAIN" ] || die "ticket.env: the default repo $REPO0 resolves to ${REPO_PATH[$REPO0]}, but this script's main checkout is $MAIN (REPO_$(repo_key "$REPO0")_PATH is '.')"
   for r in $REPOS; do for nm in $REPOS; do   # two names, one directory: merge would land a ticket twice and prune would look in the wrong repo
     [ "$r" = "$nm" ] && break
-    [ "${REPO_PATH[$r]}" != "${REPO_PATH[$nm]}" ] || die "ticket.env: REPO_$(repo_key "$nm")_PATH and REPO_$(repo_key "$r")_PATH resolve to the same directory (${REPO_PATH[$r]})"
+    # compared resolved (symlinks followed, trailing slashes dropped; a missing path canonicalised as text), reported as written (T-0192)
+    [ "$(readlink -m "${REPO_PATH[$r]}")" != "$(readlink -m "${REPO_PATH[$nm]}")" ] || die "ticket.env: REPO_$(repo_key "$nm")_PATH and REPO_$(repo_key "$r")_PATH resolve to the same directory (${REPO_PATH[$nm]} = ${REPO_PATH[$r]})"
   done; done
   for r in $REPOS; do [ "$r" = "$REPO0" ] || [ -n "${REPO_TRUNK[$r]-}" ] || die "ticket.env: REPO_$(repo_key "$r")_TRUNK is missing (REPOS names $r)"; done
   # every branch name the core protects: TRUNK, each repo's trunk and prod, the project's extra names -- none starts with '-'

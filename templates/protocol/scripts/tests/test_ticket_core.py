@@ -1497,6 +1497,20 @@ class TestHumanInbox(HumanInboxHelpers):
         self.assert_main_sane()
 
     # ---- review of 7715037 (2026-10-12): the inbox must never print a wrong or void command ------------------------
+    def test_an_ask_command_gets_the_cd_prefix_only_when_it_is_repo_relative(self):
+        """T-0192: `scripts/...`, `./...`, `python3 ...`, `bash ...`, `make ...` and `VAR=... cmd` asks are prefixed with `cd <main> &&`; a bare
+        tool name is not -- `terraform ...` was in that list (a leftover of the deploy tooling in the core) and is not any more. RED on 0cac7ee."""
+        self.write_ticket("T-0003", "a", "in-dev", "a"); self.write_ticket("T-0004", "b", "in-dev", "b"); self.write_ticket("T-0005", "c", "in-dev", "c")
+        self.commit_main("tickets: three asks")
+        for tid, cmd in (("T-0003", "scripts/check.sh --all"), ("T-0004", "terraform -chdir=infra plan"), ("T-0005", "python3 tools/x.py")):
+            p = self.ts("ask", tid, "RUN the thing | %s | ok | waits" % cmd)
+            self.assertEqual(p.returncode, 0, p.out)
+        out = self.ts("human", env=self.env_without_who()).out
+        self.assertIn("   cd %s && scripts/check.sh --all\n" % self.main, out)
+        self.assertIn("   cd %s && python3 tools/x.py\n" % self.main, out)
+        self.assertIn("   terraform -chdir=infra plan\n", out)
+        self.assertNotIn("&& terraform", out)
+
     def test_ask_keeps_backslash_sequences_literal(self):
         """B5: awk -v turned a literal \\n or \\t into a real newline/tab and corrupted the front matter"""
         text = r"CHECK the log line a\nb | grep -c 'x\ty' /tmp/log | 1 | nothing"

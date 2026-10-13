@@ -278,10 +278,27 @@ class TestThreeRepos(ThreeRepoWorld):
         self.write_ticket_env("\n".join(lines) + "\n"); self.commit_main("tickets: shared path")
         p = self.ts("board", env=self.env3)
         self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("ticket.env: REPO_FRONTEND_PATH and REPO_AUTH_PATH resolve to the same directory (%s)" % self.fe_main, p.out)
+        self.assertIn("ticket.env: REPO_FRONTEND_PATH and REPO_AUTH_PATH resolve to the same directory (%s = %s)" % (self.fe_main, self.fe_main), p.out)   # both paths as written since T-0192
         self.write_ticket_env(ENV3); self.commit_main("tickets: back")
         p = self.ts("board", env=dict(self.env3, TICKET_REPO_AUTH_PATH=self.main))
         self.assertEqual(p.returncode, 1, p.out); self.assertIn("REPO_BACKEND_PATH and REPO_AUTH_PATH resolve to the same directory", p.out)
+
+    def test_the_same_directory_check_sees_through_a_trailing_slash_and_a_symlink(self):
+        """T-0192 (T-0189 review nit): the check compared the joined strings, so `../fe_main/` and a symlink to fe_main passed; the
+        paths are compared resolved now and reported as written"""
+        os.symlink(self.fe_main, os.path.join(self.tmp, "fe_link"))
+        for path in ("../fe_main/", "../fe_link", "../fe_link/", "../auth_main/../fe_main"):
+            with self.subTest(path=path):
+                lines = [l for l in ENV3.splitlines() if not l.startswith("REPO_AUTH_PATH=")] + ["REPO_AUTH_PATH=" + path]
+                self.write_ticket_env("\n".join(lines) + "\n"); self.commit_main("tickets: alias path")
+                p = self.ts("board", env=self.env3)
+                self.assertEqual(p.returncode, 1, p.out)
+                self.assertIn("REPO_FRONTEND_PATH and REPO_AUTH_PATH resolve to the same directory (%s = %s)" % (self.fe_main, os.path.join(self.tmp, path.lstrip("./").lstrip("/"))), p.out)
+        self.write_ticket_env(ENV3); self.commit_main("tickets: back")
+        p = self.ts("board", env=dict(self.env3, TICKET_REPO_AUTH_PATH=os.path.join(self.tmp, "fe_link") + "/"))
+        self.assertEqual(p.returncode, 1, p.out); self.assertIn("REPO_FRONTEND_PATH and REPO_AUTH_PATH resolve to the same directory", p.out)
+        p = self.ts("board", "--json", env=self.env3)
+        self.assertEqual(p.returncode, 0, "three distinct directories are fine: " + p.out)
 
 
 if __name__ == "__main__":
