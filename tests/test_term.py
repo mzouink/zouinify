@@ -88,7 +88,18 @@ class TermWorld(World):
             fh.write(PROMPT_SCREEN)
         with open(os.path.join(self.state, "sessions.json")) as fh:
             pids = {n: v["pid"] for n, v in json.load(fh).items()}
+        # a fake /proc: every fake pane pid is a `claude` process in its own group, foreground on its tty /dev/pts/<pid>
+        self.proc = os.path.join(self.tmp, "proc")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        for b in ("claude", "tmux", "bash"):
+            open(os.path.join(self.bin, b), "w").close()
+        for pid in pids.values():
+            self.proc_entry(pid, "claude", 1, pid, pid, pid, "claude")
+        self.env["ZOUINIFY_PROC"] = self.proc
         agents = [
+            # a same-named session of ANOTHER project listed first: agents.find picks the one in this project (L5)
+            {"name": "t0001-first-ready-ticket", "cwd": self.other, "status": "idle", "pid": 1, "kind": "interactive"},
             {"name": "tp-desk", "cwd": self.root, "status": "busy", "pid": pids["tp-desk"], "kind": "interactive"},
             {"name": "t0001-first-ready-ticket", "cwd": os.path.join(self.root, ".claude", "worktrees", "t0001-first-ready-ticket"),
              "status": "waiting", "pid": pids["t0001-first-ready-ticket"], "kind": "interactive"},
@@ -118,6 +129,25 @@ class TermWorld(World):
         finally:
             self.env_patch.stop()
             super().tearDown()
+
+    def proc_entry(self, pid, comm, ppid, pgrp, tty_nr, tpgid, exe_name):
+        """One process in the fake /proc: <pid>/stat with the fields the inspection reads, <pid>/exe -> bin/<exe_name>."""
+        d = os.path.join(self.proc, str(pid))
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "stat"), "w") as fh:
+            fh.write(f"{pid} ({comm}) S {ppid} {pgrp} {pgrp} {tty_nr} {tpgid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+        exe = os.path.join(d, "exe")
+        if os.path.lexists(exe):
+            os.remove(exe)
+        os.symlink(os.path.join(self.bin, exe_name), exe)
+
+    def proc_remove(self, pid):
+        import shutil
+        shutil.rmtree(os.path.join(self.proc, str(pid)), ignore_errors=True)
+
+    def pane_pid(self, name):
+        with open(os.path.join(self.state, "sessions.json")) as fh:
+            return json.load(fh)[name]["pid"]
 
     def req(self, method, path, body=None, cookie=None, headers=None, host=None, raw=None, ctype="application/json"):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
@@ -353,6 +383,66 @@ class TestTermApi(TermWorld):
         self.assertEqual(st, 410)
         self.assertEqual(self.sent(), [], "nothing was typed into a session with a second pane")
         self.assertTrue(any(a["event"] == "close" and "2 panes" in a.get("reason", "") for a in self.audit()))
+
+    def test_a_tmux_client_inside_the_pane_is_refused(self):
+        """Review B2: the worker itself runs a tmux client of another session inside its pane, with argv[0] faked to
+        `claude`; pane_current_command, the pid descent and the %id all still look right. The real executable gives it away."""
+        cookie, _ = self.unlock()
+        P = self.pane_pid("t0001-first-ready-ticket")
+        self.proc_entry(7777, "claude", P, 7777, P, P, "tmux")            # comm says claude, exe is tmux, holds the pane's tty
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.assertIn("tmux client runs inside the pane", d["reason"])
+        self.proc_remove(7777)
+        self.proc_entry(7778, "claude", 1, 7778, P, P, "tmux")            # not under the pane, but on its tty: refused too
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.proc_remove(7778)
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        tid = d["tid"]
+        self.proc_entry(7777, "claude", P, 7777, P, P, "tmux")            # the client appears after the open
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual(st, 410, k)
+        self.assertEqual(self.sent(), [], "nothing was typed with a tmux client in the pane")
+        self.assertTrue(any("tmux client" in a.get("reason", "") for a in self.audit() if a["event"] == "close"))
+
+    def test_the_foreground_group_must_be_the_agents(self):
+        cookie, _ = self.unlock()
+        P = self.pane_pid("t0001-first-ready-ticket")
+        self.proc_entry(P, "claude", 1, P, P, 4242, "claude")              # some other group holds the tty
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.assertIn("foreground process group", d["reason"])
+        self.assertEqual(self.sent(), [])
+
+    def test_a_respawned_pane_keeps_its_id_but_is_refused(self):
+        """Review L5: respawn-pane keeps the %id and changes the pane pid; the agent no longer descends from it."""
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        tid, pane = d["tid"], d["pane"]
+        with open(os.path.join(self.state, "panepid-t0001-first-ready-ticket.txt"), "w") as fh:
+            fh.write("5555\n")
+        st, _, s = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+        self.assertEqual(st, 410, s)
+        self.assertIn("process tree", s["error"])
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual(st, 410)
+        self.assertEqual(self.sent(), [])
+
+    def test_every_op_is_inspected(self):
+        """Review M4: a batch is several tmux calls; the pane is re-inspected before each one, not once per batch."""
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        tid = d["tid"]
+        before = len([c for c in self.tmux_calls() if c and c[0] == "list-panes" and "-s" in c])
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "a"}, {"t": "b"}, {"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual((st, k["sent"]), (200, 3), k)
+        after = len([c for c in self.tmux_calls() if c and c[0] == "list-panes" and "-s" in c])
+        self.assertGreaterEqual(after - before, 3, "one inspection per op")
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"k": "Enter"}] * 9}, cookie=cookie)
+        self.assertEqual(st, 400, "a batch is at most 8 ops")
 
     def test_a_partial_batch_is_audited(self):
         """Review M3: when tmux fails mid-batch the audit says how many ops went."""

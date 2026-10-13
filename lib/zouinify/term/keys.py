@@ -8,7 +8,7 @@ from __future__ import annotations
 NAMED_KEYS = frozenset({"Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BSpace", "Home", "End", "PageUp", "PageDown",
                         "Space", "C-c", "C-u"})
 TEXT_MAX = 2000
-OPS_MAX = 50
+OPS_MAX = 8          # every op is re-inspected and sent on its own (review M4); the page sends one or two per batch
 
 
 def parse_ops(payload) -> list:
@@ -19,7 +19,7 @@ def parse_ops(payload) -> list:
     if not ops:
         raise ValueError("ops: empty")
     if len(ops) > OPS_MAX:
-        raise ValueError(f"ops: at most {OPS_MAX} items per batch")
+        raise ValueError(f"ops: at most {OPS_MAX} items per batch (every op is checked and sent on its own)")
     out = []
     prev = None
     for i, op in enumerate(ops):

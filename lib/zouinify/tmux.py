@@ -72,7 +72,7 @@ def capture_pane(name: str) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-PANE_FIELDS = ("pane_id", "pane_active", "window_active", "pane_current_command", "pane_pid", "window_index", "pane_index")
+PANE_FIELDS = ("pane_id", "pane_active", "window_active", "pane_current_command", "pane_pid", "window_index", "pane_index", "pane_tty")
 PANE_ID_RE = re.compile(r"^%\d+$")
 
 
@@ -89,7 +89,7 @@ def panes_of(name: str) -> list:
         if len(parts) != len(PANE_FIELDS):
             continue
         rows.append({"pane_id": parts[0], "active": parts[1] == "1", "window_active": parts[2] == "1", "command": parts[3],
-                     "pane_pid": parts[4], "window": parts[5], "index": parts[6]})
+                     "pane_pid": parts[4], "window": parts[5], "index": parts[6], "tty": parts[7]})
     return rows
 
 

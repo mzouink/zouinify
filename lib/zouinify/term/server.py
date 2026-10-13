@@ -58,6 +58,7 @@ NO_SECRET_MSG = ("no passphrase is set for the terminal page: run `zouinify term
 class TermServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 64          # a burst of half-open connections waits in the kernel, it does not pin threads
 
     def __init__(self, address, handler, cfg, bind: str, allowed_hosts, tls: bool):
         super().__init__(address, handler)
@@ -472,16 +473,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
         text = "".join(v for k, v in ops if k == "t")
         names = [v for k, v in ops if k == "k"]
-        try:
-            n = tmux.send_keys(a["target"]["pane_id"], ops)
-        except TmuxError as e:
-            sent = int(getattr(e, "sent", 0) or 0)
-            srv.touch(uid, tid)
-            self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], tmux=a["target"]["tmux"], pane=a["target"]["pane_id"],
-                       text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=sent, m=len(ops), partial=True, reason=str(e)[:200])
-            return self.send_json(HTTPStatus.BAD_GATEWAY, {"error": f"tmux refused mid-batch after {sent} of {len(ops)} ops: {e}"[:300], "sent": sent})
+        tgt = a["target"]
+        n = 0
+        for i, op in enumerate(ops):
+            if i:                                              # the first op was inspected by attached() a moment ago (M4)
+                a, err = self.attached(uid, tid)
+                if err:
+                    self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
+                               text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops), partial=True, reason=err[:200])
+                    return self.send_json(HTTPStatus.GONE, {"error": f"{err}; {n} of {len(ops)} ops were sent before", "sent": n})
+            try:
+                tmux.send_keys(tgt["pane_id"], [op])
+            except TmuxError as e:
+                srv.touch(uid, tid)
+                self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
+                           text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops), partial=True, reason=str(e)[:200])
+                return self.send_json(HTTPStatus.BAD_GATEWAY, {"error": f"tmux refused mid-batch after {n} of {len(ops)} ops: {e}"[:300], "sent": n})
+            n += 1
         srv.touch(uid, tid)
-        self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], tmux=a["target"]["tmux"], pane=a["target"]["pane_id"],
+        self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
                    text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops))
         return self.send_json(HTTPStatus.OK, {"ok": True, "sent": n, "closes_in_s": srv.closes_in(tid)})
 

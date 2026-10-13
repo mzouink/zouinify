@@ -220,7 +220,11 @@ human's user and can reach loopback ports; a `--chrome` session can drive the hu
   the kill switch**: it ends the process, every unlock and every attachment at once, and the cookie is then worthless;
 - **targets are WORKER sessions of this project only** (the user's decision, "Z-11 yes workers"): a session the launcher
   registered with role `worker`, or a live Claude session named by the configured worker pattern (`t{num}-{slug}`) with its
-  cwd under the project; each is checked live before every batch: its tmux session exists and its pane runs `claude`.
+  cwd under the project; each is checked live before EVERY keystroke op against the one %pane_id pinned at open: its tmux
+  session has exactly one pane across its windows, that pane runs `claude`, no process on the pane's tty or under its shell
+  has tmux as its real executable (a nested client renamed `claude` is caught by /proc/<pid>/exe), the tty's foreground
+  process group is the agent's own, and the agent's pid descends from the pane's. Same-uid residual accepted for v1 (a
+  worker can already `send-keys` or read /dev/pts on its own): stated in REFERENCE.md.
   The configured role sessions (desk, manager, debug, chrome_debug) are refused by name AND by tmux window whatever the
   registry says, enforced in code (`zouinify.term.targets`) and pinned by a test; so is a shell pane (no human-only command
   can be typed through it), a session of another project, an arbitrary tmux target, a name in `terminal.exclude`, and

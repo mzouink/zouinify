@@ -86,9 +86,12 @@ def panes_of(d, name):
         with open(extra_path) as fh:
             extras = json.load(fh)
     main_active = not any(e.get("active") for e in extras)
-    rows = [{"id": f"%{s['pid']}", "pid": s["pid"], "cmd": command, "active": main_active, "index": 0}]
+    override = os.path.join(STATE, f"panepid-{name}.txt")        # a respawned pane: same %id, a new pane pid
+    pid = int(open(override).read().strip()) if os.path.exists(override) else s["pid"]
+    rows = [{"id": f"%{s['pid']}", "pid": pid, "cmd": command, "active": main_active, "index": 0, "tty": f"/dev/pts/{s['pid']}"}]
     for i, e in enumerate(extras, 1):
-        rows.append({"id": e.get("id", f"%{9000 + i}"), "pid": e.get("pid", 9000 + i), "cmd": e.get("cmd", "bash"), "active": bool(e.get("active")), "index": i})
+        rows.append({"id": e.get("id", f"%{9000 + i}"), "pid": e.get("pid", 9000 + i), "cmd": e.get("cmd", "bash"), "active": bool(e.get("active")),
+                     "index": i, "tty": e.get("tty", f"/dev/pts/{9000 + i}")})
     return rows
 
 
@@ -198,7 +201,8 @@ def main(argv):
             for p in (panes_of(d, name) if "-s" in args else panes_of(d, name)[:1]):
                 print(fmt.replace("#{session_name}", name).replace("#{pane_pid}", str(p["pid"])).replace("#{pane_current_command}", p["cmd"])
                       .replace("#{pane_id}", p["id"]).replace("#{pane_active}", "1" if p["active"] else "0")
-                      .replace("#{window_active}", "1").replace("#{window_index}", "0").replace("#{pane_index}", str(p["index"])))
+                      .replace("#{window_active}", "1").replace("#{window_index}", "0").replace("#{pane_index}", str(p["index"]))
+                      .replace("#{pane_tty}", p["tty"]))
         return 0
     if cmd == "list-sessions":
         for name in d:

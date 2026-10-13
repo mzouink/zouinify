@@ -5,8 +5,13 @@ name matches the configured worker pattern (`t{num}-{slug}`) and whose cwd is un
 Every target is inspected as ONE concrete pane (security review of T-0181, B1): the session must have exactly one pane
 across its windows, that pane's command must be claude, its process tree must be the registered agent (the pid `claude
 agents --json` reports descends from the pane's pid), the agent's cwd must be under the project, and the %pane_id found
-at open must be the same before every later screen and keystroke; the send and the capture then address that %pane_id,
-never a session or window name. The configured role sessions (desk, manager, debug, chrome_debug) are refused by name
+at open must be the same before every later screen and EVERY keystroke op; the send and the capture then address that
+%pane_id, never a session or window name. Because `pane_current_command` is only argv[0] of the tty's foreground process
+(review B2: a tmux client of the desk's session started with `exec -a claude` would pass), no process whose real executable is tmux may hold the pane's
+tty or sit under the pane's pid, and the tty's foreground process group must be the agent's own (zouinify.term.procs).
+Residual, accepted for v1 and stated in REFERENCE.md: a same-uid worker can already run `tmux send-keys` into any window
+of the user or read the user's /dev/pts on its own; full isolation needs a separate uid. That is why approvals stay typed in
+the desk's window and why the role panes stay unreachable from here. The configured role sessions (desk, manager, debug, chrome_debug) are refused by name
 AND by tmux window, whatever the registry or the config says; so is a shell pane, a session of another project, a session
 with a split or a second window (a worker could open a second pane that is a client of another session), and any name
 in `terminal.exclude`."""
@@ -19,6 +24,7 @@ import time
 
 from zouinify import agents, readonly, tmux
 from zouinify.registry import Registry
+from zouinify.term import procs
 
 ROLE_REFUSED = "the role sessions (desk, manager, debug, chrome_debug) are never reachable from the browser"
 CLAUDE_COMMANDS = frozenset({"claude", "node"})     # tmux names Claude's pane `claude`, sometimes `node`
@@ -158,14 +164,29 @@ def inspect(cfg, target: dict, expect_pane: str | None = None) -> tuple:
         return False, "the pane changed since the attachment was opened", None
     if p.get("command") not in CLAUDE_COMMANDS:
         return False, f"the pane runs {p.get('command') or 'nothing'!r}, not claude", None
-    agent = next((a for a in live_agents(cfg) if str(a.get("name") or "") == target["name"]), None)
-    if agent is None:
+    same_name = [a for a in live_agents(cfg) if str(a.get("name") or "") == target["name"]]
+    if not same_name:
         return False, "no live claude agent of that name (claude agents --json)", None
-    if not _under(str(agent.get("cwd") or ""), _roots(cfg)):
+    roots = _roots(cfg)
+    agent = next((a for a in same_name if _under(str(a.get("cwd") or ""), roots)), None)   # the one in this project when names repeat (L5)
+    if agent is None:
         return False, "the agent's cwd is outside this project", None
     if not descends(agent.get("pid"), p.get("pane_pid")):
         return False, "the pane's process tree is not the registered agent", None
-    return True, "", {"pane_id": p["pane_id"], "pane_pid": p["pane_pid"], "agent_pid": agent.get("pid"), "command": p.get("command")}
+    tty_nr = procs.tty_nr_of(p.get("tty"))
+    if tty_nr is None:
+        return False, "tmux gave no usable pane tty", None
+    try:
+        pane_pid = int(p["pane_pid"])
+    except (TypeError, ValueError):
+        return False, "tmux gave no usable pane pid", None
+    clients = procs.tmux_clients(tty_nr, pane_pid)
+    if clients:
+        return False, f"a tmux client runs inside the pane (pid {clients[0]})", None
+    fg, ag = procs.foreground_pgid(pane_pid), procs.pgid(agent.get("pid"))
+    if fg is None or ag is None or fg != ag:
+        return False, "the pane's foreground process group is not the agent's", None
+    return True, "", {"pane_id": p["pane_id"], "pane_pid": p["pane_pid"], "agent_pid": agent.get("pid"), "command": p.get("command"), "tty": p.get("tty")}
 
 
 def live(cfg, target: dict) -> tuple:
