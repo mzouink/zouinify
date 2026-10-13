@@ -12,16 +12,31 @@ session whose name starts with it (so an implementation that drops the `=` is ca
 plants a `tp-desk-old` next to a missing `tp-desk`). $FAKE_TMUX_RACE=<name> makes `has-session` deny
 that session although it exists, to simulate losing the check-then-launch race.
 """
+import fcntl
 import json
 import os
 import sys
+import tempfile
 
 STATE = os.environ["FAKE_TMUX_STATE"]
 SESSIONS = os.path.join(STATE, "sessions.json")
 MODEL_LABEL = {"fable": "Fable 5.1", "opus": "Opus 5.5", "sonnet": "Sonnet 5.5", "haiku": "Haiku 5.5"}
 
 
+_LOCK = None
+
+
+def lock():
+    """One fake-tmux process at a time per state dir: a real tmux server serializes its commands, and two
+    concurrent `launch` calls must never see a half-written sessions.json (a flaky CI run, 2026-10-13)."""
+    global _LOCK
+    if _LOCK is None:
+        _LOCK = open(os.path.join(STATE, ".lock"), "a+")
+        fcntl.flock(_LOCK.fileno(), fcntl.LOCK_EX)
+
+
 def load():
+    lock()
     try:
         with open(SESSIONS) as fh:
             return json.load(fh)
@@ -30,11 +45,15 @@ def load():
 
 
 def save(d):
-    with open(SESSIONS, "w") as fh:
+    lock()
+    fd, tmp = tempfile.mkstemp(dir=STATE, prefix=".sessions.", suffix=".json")
+    with os.fdopen(fd, "w") as fh:
         json.dump(d, fh, indent=1)
+    os.replace(tmp, SESSIONS)
 
 
 def log(argv):
+    lock()
     with open(os.path.join(STATE, "calls.log"), "a") as fh:
         fh.write(json.dumps(argv) + "\n")
 
