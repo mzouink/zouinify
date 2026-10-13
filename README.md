@@ -51,6 +51,11 @@ default; `panel.bind: intranet` is an explicit flag that keeps the token mandato
 token: a false tier-1 claim the desk re-verifies, or a worker launched for a ticket that was ready anyway; never a production
 action, never a grant.
 
+## UX specification
+
+The panel's look, screen anatomy, tiers of clickable actions and acceptance criteria are in
+[`docs/UX_SPEC.md`](docs/UX_SPEC.md). It wins over the hero image; the design document in the first consumer's repo wins over it.
+
 ## Planned layout
 
 ```

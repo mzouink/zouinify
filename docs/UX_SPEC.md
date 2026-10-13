@@ -1,0 +1,272 @@
+# zouinify panel -- UX / UI specification v1 (functional refinement, 2026-10-13)
+
+Source: a UX expert's draft written from the `zouinify` hero image, refined here against the functional design (the
+receipts channel, the ticket lifecycle in `scripts/ticket.sh`, the one-voice rule). Where the two disagree, **this file wins**;
+the design document in the first consumer's repo wins over this file. Implemented by the panel tickets: v1 read-only
+(T-0160), receipts (T-0162), hooks (T-0163); referenced by T-0159 (`up` starts the panel).
+
+Rules the UI can never violate, in one place:
+
+1. **Zero own state.** Every list is derived at render time from `ticket.sh human --json`, `ticket.sh board --json` (front
+   matter until T-0158 lands), `claude agents --json`, the launcher registry, `tmux capture-pane` (redacted), hook events,
+   the config and the logs. The page never remembers "clicked", "read" or "done"; an item disappears when its source stops
+   printing it. The only persisted things are the token hash and the receipt/audit log, and those are the server's.
+2. **The page never types into a Claude pane, never launches or kills a session, never runs a mutating `ticket.sh`
+   command, never `aws`/`terraform`/`docker`/`git`.** A click is a *receipt* (T-0162) that the desk session verifies before
+   acting. v1 (T-0160) has **no write path at all**: every button described below renders disabled with the tooltip
+   "available after receipts (T-0162)" or is hidden.
+3. **Tiers.** Tier 1, clickable after T-0162: `ok` after a command the human ran in their terminal, an answer among offered
+   options, "send to desk" (file a ticket, ask a question), "launch worker" (on a `ready` card), "kill" (on a session whose
+   ticket is `done`). Tier 2, **never clickable**: a paid budget, a `CLAUDE.md`/settings yes, a prod apply/deploy/push, a worker's
+   permission prompt. Tier-2 items show the exact text to type in the desk's tmux window, with a copy button.
+4. **One voice.** Receipts and chat go to the desk only. Nothing on the page addresses a worker.
+5. **No secrets.** Pane captures are redacted server-side; the UI never renders env, credentials, tfvars or tokens; the
+   credential tile shows time left and the identity ARN's role name only.
+
+---
+
+## 1. Design direction (kept from the UX draft)
+
+Premium developer tooling: compact, calm, precise, dark-first, dense without clutter. Near-black navy canvas, layered
+surfaces, thin cool-blue borders. Semantic colors: **teal** primary action and success, **amber** needs the human, **blue**
+navigation and `ready`, **purple** review, **green** idle/done, **red** failure/P0. Inter or system sans; JetBrains Mono or
+system mono for ids, commands, paths, timestamps. 10-13 px card radii, 6-8 px badges, no gradients in content, no glow, no
+glassmorphism, no emoji icons, Lucide-style 16-20 px outline icons. 4/8 px spacing scale; 24 px page padding desktop, 16 px
+phone. 120-200 ms transitions; honour `prefers-reduced-motion`. Light theme is a follow-up: ship dark with every color as a
+token so a light palette is a second `:root` block.
+
+Tokens (targets, adjust after visual comparison with the hero image; the hero's perspective collage, floating terminals and
+browser window are marketing, not UI):
+
+```css
+:root {
+  color-scheme: dark;
+  --bg-canvas:#081321; --bg-sidebar:#0a1626; --bg-surface:#0f1c2e; --bg-card:#122238; --bg-card-hover:#182c45; --bg-input:#0b192a;
+  --border-subtle:#21344b; --border-strong:#31516a;
+  --text-primary:#eef6ff; --text-secondary:#9bb1c9; --text-muted:#68829d;
+  --accent-teal:#26e0d0; --accent-teal-hover:#5cf0e3; --accent-blue:#37b9ff; --accent-amber:#f2b544; --accent-purple:#b79bff;
+  --accent-green:#35d59b; --accent-red:#ff6e78;
+  --radius-sm:7px; --radius-card:11px; --radius-panel:13px; --shadow-panel:0 8px 24px rgb(0 0 0 / .13);
+}
+```
+
+Semantic token names for every status (`--status-waiting`, `--status-idle`, `--status-working`, `--status-gone`,
+`--status-p0`), never a raw hue in a component. WCAG AA contrast; visible `:focus-visible` ring in teal.
+
+Stack: the panel is a Python stdlib server serving static HTML/CSS/JS from `lib/zouinify/panel/static/`. **No build step, no
+framework, no CDN** (the page must work on a LAN with no internet and must not leak requests to third parties). One
+`app.js` with small modules, CSS variables for tokens, SSE for live updates once T-0163 exists, else a 30 s refresh of
+`GET /api/snapshot`.
+
+## 2. Screen anatomy (desktop)
+
+```
+┌──────────────┬──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ zouin|ify    │ rai · trunk dev @167bfca · FREEZE off · creds ~1h51 (estimate) · desk: polling · data 12 s ago · 🔒 │
+│              ├──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ▣ Dashboard  │ !! P0 T-0146 LIVE REGRESSION ... · DEPLOY waiting since 19:50 (10h)                            │
+│ ◫ Tickets    │ ┌ For you ──────────┐ ┌ Sessions ─────────────┐ ┌ Deploy & verify ───────────────┐           │
+│ >_ Sessions  │ │ 12 items · 1 P0   │ │ 1 waiting for you     │ │ 3 to deploy · 19 deployed      │           │
+│ ✓ Live checks│ │ next sitting 09:30│ │ 2 working · 4 idle    │ │ awaiting a live check          │           │
+│ ✉ Inbox      │ └───────────────────┘ └───────────────────────┘ └────────────────────────────────┘           │
+│ ◔ Desk chat  │ Tickets   backlog 26 · blocked 1 · done 90 · dropped 3                              [Send to desk]│
+│ ⚙ Settings   │ ┌ ready 4 ─┬ in-dev 1 ─┬ review 1 ──┬ to deploy 5 ─┬ deployed 19 ─┐                            │
+│              │ │ T-0155 P1│ T-0125 P2 │ T-0119 P1  │ T-0145 P1    │ T-0139 P0    │  (horizontal scroll < 1440)│
+│              │ │ T-0156 P2│ s1-stage… │ s1-stage…  │ plan 10-12…  │ T-0141 P2    │                            │
+│              │ └──────────┴───────────┴────────────┴──────────────┴──────────────┘                            │
+│              │ ┌ Inbox (ticket.sh human) ───────────────────────────┐ ┌ Panes waiting for you ─┐ ┌ Next sitting ┐│
+│              │ │ 1 DEPLOY T-0146 P0 … [copy cmd] expect … [OK]       │ │ s1-stage-guard  perm   │ │  09:30 ET    ││
+│              │ │ 2 APPROVE T-0119 P1 … type in tickets window: … [copy]│ │  since 14:40 (16h)     │ │  in 2h38     ││
+│              │ │ 3 APPLY T-0145 P1 … [copy cmd] expect … [OK]        │ │ upload-errors  2d      │ │ freezes 09:20││
+│              │ └─────────────────────────────────────────────────────┘ └────────────────────────┘ └──────────────┘│
+│              │ ┌ Sessions ─────────────────────────────────────────────┐ ┌ Desk chat ─────────────────────────┐ │
+│              │ │ desk  rna-atlas-inference-6b  tickets  Opus  working  │ │ you: is T-0145 safe to apply?       │ │
+│              │ │ worker s1-stage-guard  Fable  WAITING  T-0119  14:40  │ │ desk (a1b2c3): yes, plan is newest…│ │
+│              │ │ debug inference_debug  Fable  idle  T-0011            │ │ [ ask the desk … ]          [send]  │ │
+│              │ └───────────────────────────────────────────────────────┘ └────────────────────────────────────┘ │
+└──────────────┴──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.1 Shell and navigation
+
+Sidebar 220-240 px, wordmark `zouin` white + `ify` teal. Items, in this order: **Dashboard, Tickets, Sessions, Live checks,
+Inbox, Desk chat, Settings**. Collapses to icons under 1024 px; a top bar with a menu under 768 px. Routes are hash routes
+(`#/tickets?state=blocked`, `#/tickets/T-0145`, `#/sessions/s1-stage-guard`) so links are shareable without a router.
+
+Header (every page): project short name and name, trunk sha, FREEZE badge (red, with the allowed ids on hover), credential
+tile ("~1h51 left (estimate)" from the key file's age until SSO lands, then "SSO 9h12"), desk presence ("polling" green,
+"not polling since HH:MM" amber, "desk gone" red, from the server's active-poll count and `claude agents`), data age per
+source on hover, a padlock showing `loopback` or `intranet`. No user menu: there is one human.
+
+### 2.2 KPI cards (replace the draft's Tickets / Sessions / Browser Tests)
+
+| Card | Big number | Secondary | Click |
+|---|---|---|---|
+| **For you** | inbox count (`ticket.sh human --count`) | `P0 n` in red when > 0; next sitting time | `#/inbox` |
+| **Sessions** | sessions waiting for you (amber when > 0) | `w working · i idle · g gone` | `#/sessions` |
+| **Deploy & verify** | tickets in `ready-to-deploy` (+ `merged` with a deploy) | `deployed awaiting a live check: n` | `#/tickets?state=ready-to-deploy` |
+
+Counts are scoped to this project (sessions: `cwd == project root`; tickets: this `tickets/` dir). Skeletons while loading;
+`0` with a one-line explanation when empty; never an invented metric.
+
+### 2.3 Ticket board (the lifecycle has 11 states, the dashboard shows 5 lanes)
+
+`scripts/ticket.sh` states: `backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped`.
+
+| Lane | States shown | Accent | Card extras |
+|---|---|---|---|
+| `ready` | ready | blue | severity; **[launch worker]** after T-0162 (disabled in v1), hidden when FREEZE excludes the id |
+| `in-dev` | in-dev | amber | owner session name, `claimed Xh ago`, dirty/behind badges from `board --json --slow` when cached |
+| `review` | in-review + ready-to-merge | purple | owner; `ready-to-merge` sub-badge |
+| `to deploy` | merged (deploy != none) + ready-to-deploy | teal | the `plan:` basename; VOID badge when a newer plan exists (T-0081 rule, same as `ticket.sh human`) |
+| `deployed` | deployed | green outline | `closed_by` short shas; "awaiting live check" |
+
+Above the lanes, chips with counts: `backlog n` (grey), **`blocked n`** (amber; the questions are inbox DECIDE items),
+`done n`, `dropped n`. Clicking a chip opens `#/tickets?state=…`. `done` is never a lane on the dashboard. The Tickets page
+shows all 11 states as filters plus text search, sorted by severity then age.
+
+Card: `T-0145` in mono, severity badge `P0`..`P3` (P0 red), 2-line title, extras per lane, a bell when the ticket has a pending
+`human:` ask. The whole card opens the **ticket drawer**: front matter as a key/value table, the last 10 `## Log` lines
+(newest first, mono), the newest `## Deploy handoff` block with copy buttons on command lines, links to the owner session and
+to the inbox item. Nothing in the drawer is editable.
+
+**Not in any version:** drag-and-drop, "+ Add ticket" per lane, inline stage changes. A state change needs evidence and is
+made by the owning session with `ticket.sh move`. "**Send to desk**" (top right of the board; receipt `new`, T-0162) opens a
+small form (type bug/feature/chore/process, severity, title, two lines of text) and shows "sent to the desk, receipt a1b2c3";
+the card appears when the desk files it. In v1 the button is disabled with the T-0162 tooltip.
+
+Under 1440 px the board scrolls horizontally with `min-width` per lane 180 px; never five crushed lanes.
+
+### 2.4 Inbox panel and Inbox page (this is `ticket.sh human --json`, not a notification feed)
+
+Each item, in the command's own order (never re-sorted client-side; P0 items print first already):
+
+```
+1  DEPLOY  T-0146  P0  LIVE REGRESSION (T-0143, frontend 7d3a72d): opening a finished job fails …   since 19:50 (10h)
+   cd … && scripts/deploy_frontend.sh                                                      [copy]
+   expect: LIVE CHECK PASSED        if you do nothing: the merged fix stays unreleased         asked by desk
+   ─ run it in your terminal, then ─────────────────────────────────────────────────────  [ OK ]  (tier 1, T-0162)
+```
+
+Verb badge colors: `APPLY`/`DEPLOY`/`PUSH` teal outline, `RUN` blue, `DECIDE` purple, `CHECK` green, `APPROVE` amber,
+`SSO` grey. Fields: verb, ticket id(s), priority, title, `since` + age, command (mono, copy button; a `question:` wraps, a
+command never), `expect`, `if you do nothing`, `note`/asked-by. The item's `id` from `human --json` (T-0158) is the receipt key.
+
+Per-verb action, after T-0162 (all disabled in v1):
+
+| Verb | Action on the page | Tier |
+|---|---|---|
+| APPLY, DEPLOY, PUSH, RUN, SSO | copy the command; after the human ran it in their terminal, **[OK]** queues `{kind: ok}`; the desk verifies read-only and moves the ticket | 1 (the command itself is always typed by the human) |
+| CHECK | **[OK]** after the human did the browser/email check | 1 |
+| DECIDE | the offered replies (`reply "T-0140 delete" or "T-0140 keep"`) parsed into radios + **[Send answer]**; a free-text answer box when none are offered | 1, except when the question names `CLAUDE.md`/settings: then tier 2 |
+| APPROVE | no button; "type in the tickets window: `T-0115 budget ok`" with copy | 2, always |
+
+Never "Acknowledge all", never a generic OK, never an OK that executes anything. The "do NOT run (void plans)" group renders
+in grey with the newer plan named; "Blocked on you but not urgent" is a collapsed footer. The Inbox page is the same list
+full-width with the drawer on the right.
+
+### 2.5 Panes waiting for you (the page's main win)
+
+Sessions of this project whose state is `waiting` (`claude agents --json` status, or a `Notification(permission_prompt |
+idle_prompt)` hook without a later `Stop`/`UserPromptSubmit`, or the prompt heuristics on the captured screen). Row: name,
+role, what it waits for (first line of the prompt, redacted), **since HH:MM (age)**, ticket, **[show pane]** (the redacted
+visible screen in a drawer). No answer button in v1 or v2: permission prompts are tier 2 (the human answers in that window;
+decision 2026-10-13, revisit after a week).
+
+### 2.6 Sessions panel and page
+
+State mapping, with text labels (never color alone):
+
+| Shown | From | Color |
+|---|---|---|
+| `waiting for you` | status `waiting` or hook as above | amber, row highlighted |
+| `working` | status `busy` | blue |
+| `idle` | status `idle` | green |
+| `gone` | in the launcher registry or the tmux list but not in `claude agents` | grey; offers "re-launch via desk" after T-0162 |
+| `shell` | pane runs a non-claude command (the human is in it) | grey outline |
+
+Columns: role (desk/manager/debug/chrome_debug/worker, from the registry or the config's name map), name, tmux window,
+**model** from the status bar (red `Sonnet?` badge when it is not the configured model: a real failure mode), state, ticket,
+last visible line or last `Stop` reply (hook), age. The desk row is pinned first with its poll presence. Session detail
+(`#/sessions/<name>`): the redacted screen, last reply, hook event timeline, ticket link, registry entry. Controls: none in
+v1; after T-0162 only **[kill]** on a session whose ticket is `done`/`dropped` (receipt; the desk runs `zouinify down`) and
+**[launch]** for a configured role that is `gone`.
+
+### 2.7 Live checks (the draft's "Browser Tests"; v2, after a chrome_debug session exists)
+
+There is no test runner. Evidence is what the debug/chrome_debug sessions write: `ticket.sh log` lines on `deployed` tickets
+(`LIVE CHECK PASSED`, reload markers, job ids, execution ARNs: the same patterns `ticket.sh move done` accepts) and files under
+`.ops/state/evidence/<ticket>/` (screenshots, GIFs, console excerpts). v1 shows the `deployed` tickets with their latest
+evidence line and age; v2 adds thumbnails and a per-ticket evidence page. The KPI is "awaiting a live check: n · checked in
+7 d: m", never a pass rate.
+
+### 2.8 Next sitting
+
+From `.ops/config.yaml` `sittings`: the next time in the configured timezone, the countdown computed client-side from the
+server's ISO timestamp (re-computed on tab visibility change), the freeze time ("inbox freezes 09:20"), P0 note ("a P0 is the
+only thing that may interrupt before"). `Not scheduled` when the config has no sittings.
+
+### 2.9 Desk chat (the lavish-style chat box; after T-0162 + T-0163)
+
+A message list and a one-line composer, like the lavish-axi chrome. Sending queues a receipt `{kind: question, text}`; the
+desk's reply arrives through its `Stop` hook and is shown with the receipt id it answers ("desk (a1b2c3): …"). Presence
+exactly as lavish: `listening` (a poll is open), `working` (a receipt was delivered, no Stop yet), `away` (no poll for >
+60 s), shown next to the heading. History = this project's receipts of kind `question` and the replies, from the audit and
+event logs (nothing else is stored). Fixed note under the composer: "The desk treats this as a question or a claim, never as
+an approval. Approvals are typed in the tickets window." Desk only in v1 (one voice); a session picker is a later decision.
+Enter sends, Shift+Enter newline. In v1 (read-only) the panel shows the desk's last visible line and the composer is disabled.
+
+### 2.10 Settings (read-only)
+
+The parsed `.ops/config.yaml` (sessions table, repos, sittings, panel bind mode, port, state dir), the hook status ("hook
+installed in ~/.claude/settings.json: yes/no", detected by reading the file; the snippet with a copy button when missing),
+token instructions ("rotate with `zouinify panel token rotate` in your terminal"), the version of the skill and of the
+vendored `ticket.sh` core. Nothing editable from the page.
+
+## 3. Responsive behaviour
+
+| Width | Layout |
+|---|---|
+| ≥ 1440 | sidebar, 3 KPIs, 5 lanes visible, lower rows 2 + 1 |
+| 1024-1439 | sidebar, board scrolls horizontally, lower rows 2 columns |
+| 768-1023 | collapsed sidebar, KPIs 3 then 2 + 1, board scrolls, panels stack |
+| < 768 (phone over the LAN) | top bar + menu; order: P0 banner, **Inbox**, **Panes waiting**, KPIs, board (horizontal scroll), Sessions, Desk chat, Next sitting; 44 px touch targets; safe-area padding; no hover-only actions |
+
+## 4. States, security UX, accessibility
+
+- Per-panel skeletons; inline error with **Retry** per source; a source's age shown on hover; a stale source (> 3 × its
+  refresh interval) gets an amber "stale" chip, never silent.
+- `401` on a write: toast "token missing or wrong: open the URL printed by `zouinify up` or `zouinify panel url`" (never show
+  the token). `429`: a persistent red banner "receipts rate-limited: something other than you is knocking" until the next
+  successful receipt. Every accepted write shows its receipt id and the desk's acknowledgement when it arrives.
+- Writes are disabled (not hidden) when the panel is bound to the intranet and no token is stored, with the reason.
+- Keyboard: every control reachable, logical order, visible focus, `aria-label` on icon buttons, headings per panel, a polite
+  live region for "waiting for you" count changes only. 200 % zoom and reduced motion tested.
+
+## 5. API the UI consumes
+
+v1 (T-0160, read-only): `GET /health` (project root, version, bind), `GET /api/snapshot` (header, kpis, inbox, board,
+sessions, waiting, sitting, creds, logs, releases; each with `age_s`), `GET /api/tickets/<id>` (drawer), `GET /api/sessions/<name>`
+(detail with the redacted screen), `GET /api/logs?which=apply|frontend`. Any `POST` -> 405.
+v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/poll` (desk only), `GET /api/events` (SSE),
+`POST /api/hook` (loopback listener only).
+
+## 6. Acceptance (UI part; the ticket's functional acceptance applies too)
+
+1. Desktop first view: dark navy shell, sidebar, three KPIs as in 2.2, five lanes as in 2.3 with the chips, Inbox / Panes
+   waiting / Next sitting row, Sessions / Desk chat row; visually in the family of the hero's laptop screen, flat, no collage.
+2. The Inbox panel lists exactly the items `scripts/ticket.sh human` prints, in the same order, with command, expect and age;
+   a tier-2 item has no button and shows the text to type.
+3. A session at a permission prompt appears in "Panes waiting for you" with its since-time within one refresh.
+4. The board's lanes and chips sum to the ticket count; a ticket in `ready-to-merge` is in `review`; a void plan is badged.
+5. On a 390 px phone the Inbox is the first thing on screen and the board scrolls horizontally.
+6. v1 has no enabled write control; `POST /api/anything` returns 405; no request leaves the host (no CDN, no fonts fetched).
+7. Keyboard-only navigation reaches every control; focus visible; contrast AA on badges.
+8. A pane capture containing `aws_secret_access_key = x` renders as `<redacted>`.
+
+## 7. What to avoid (the draft's list, plus the functional ones)
+
+No neon/cyberpunk, no permanent fake terminals, no placeholder data once wired, no five crushed lanes on mobile, no
+hover-only actions, no excessive shadows or decorative charts. **No drag-and-drop, no per-lane add, no stage buttons, no
+"Acknowledge all", no generic OK, no OK that executes, no test pass-rates, no answer button on permission prompts, no chat to
+workers, no CDN or third-party request, no token or credential ever rendered, no client-side re-sorting of the inbox.**
