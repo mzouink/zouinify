@@ -31,9 +31,22 @@ def build_parser() -> argparse.ArgumentParser:
                  ("human", "your name, the human the briefs address")):
         s.add_argument(f"--{f}", metavar=f.upper(), help=h)
 
-    s = sub.add_parser("config", help="validate .ops/config.yaml (--check) or print it normalized (--json)")
+    s = sub.add_parser("config", help="validate .ops/config.yaml (--check), print it normalized (--json), or print tickets/ticket.env "
+                                      "for the ticket.sh core (--env; --write puts it in a ticket worktree, never a main one)")
     s.add_argument("--check", action="store_true")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--env", action="store_true", help="print tickets/ticket.env (KEY=\"value\" lines the core parses) to stdout")
+    s.add_argument("--write", nargs="?", const="", metavar="PATH", help="with --env: write it to PATH (default <root>/<tickets dir>/"
+                   "ticket.env); refused inside a repository's main worktree; never commits")
+
+    s = sub.add_parser("protocol", help="the ticket protocol files (README, _TEMPLATE, WORKER_BRIEF) rendered from templates/tickets: "
+                                        "render --out DIR | list")
+    s.add_argument("action", choices=["render", "list"])
+    s.add_argument("--out", metavar="DIR", help="render: the directory to write into (required; nothing is written anywhere else)")
+    s.add_argument("--plugin-docs", metavar="DIR", help="render: the deploy plugin's docs directory (default templates/tickets/plugins/"
+                   "<tickets.deploy_plugin>/docs, falling back to none)")
+    s.add_argument("--project-readme", metavar="FILE", help="render: the project-owned README sections (default <root>/.ops/README.project.md)")
+    s.add_argument("--force", action="store_true", help="render: overwrite files under --out that differ")
 
     s = sub.add_parser("up", help="start the standard session set (always: true) or the named roles, idempotently")
     s.add_argument("roles", nargs="*", metavar="role")
@@ -101,6 +114,13 @@ def main(argv=None) -> int:
             return initcmd.cmd_init(args.project, flags, dry_run=args.dry_run, non_interactive=args.non_interactive)
         cfg = cfgmod.load(args.project)
         if args.cmd == "config":
+            if args.env:
+                if args.json or args.check:
+                    p.error("--env goes alone (not with --json or --check)")
+                from zouinify import ticketenv
+                return ticketenv.cmd_env(cfg, write=args.write)
+            if args.write is not None:
+                p.error("--write needs --env")
             if args.json:
                 print(json.dumps(cfg.to_dict(), indent=1, sort_keys=True))
                 return 0
@@ -109,6 +129,13 @@ def main(argv=None) -> int:
             for w in cfg.warnings:
                 print(f"  warning: {w}")
             return 0
+        if args.cmd == "protocol":
+            from zouinify import protocol
+            if args.action == "list":
+                return protocol.cmd_list(cfg)
+            if not args.out:
+                p.error("protocol render needs --out DIR (it writes nowhere else)")
+            return protocol.cmd_render(cfg, args.out, plugin_docs=args.plugin_docs, project_readme=args.project_readme, force=args.force)
         if args.cmd == "up":
             from zouinify import launch
             return launch.cmd_up(cfg, args.roles, dry_run=args.dry_run, wait_s=args.wait, panel=not args.no_panel)

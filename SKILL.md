@@ -14,8 +14,10 @@ directory under it) and relay its output verbatim. Commands today: `config`, `up
 the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`, `init` (bootstraps a repository: `.ops/config.yaml`,
 `.ops/briefs/*.md`, the `.ops/state/` line in `.gitignore`; it asks its questions on the human's terminal, so from a session
 run `init --non-interactive --name N --short S --human H` with values the human gave, adding `--dry-run` to show the plan
-first; it never overwrites an `.ops/` file and never touches `~/.claude` or `CLAUDE.md`). Receipts (`poll`) are a later step and
-are not available yet. `term` is the terminal page (T-0181): typing into one of this project's WORKER panes from the
+first; it never overwrites an `.ops/` file and never touches `~/.claude` or `CLAUDE.md`), `config --env` (prints `tickets/ticket.env`
+for the ticket.sh core; `--write` only into a ticket worktree, never a main one, and a ticket commits it), `protocol render --out DIR`
+(the README / _TEMPLATE / WORKER_BRIEF of the ticket protocol rendered from templates into DIR only). Receipts (`poll`) are a later
+step and are not available yet. `term` is the terminal page (T-0181): typing into one of this project's WORKER panes from the
 browser, after a passphrase of its own; the desk, manager and debug windows are never reachable from it.
 
 Rules this skill never bends (they come from `.ops/config.yaml` and the project's `tickets/README.md`):

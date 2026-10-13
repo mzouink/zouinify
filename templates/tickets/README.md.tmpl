@@ -1,0 +1,223 @@
+# {{tickets_dir}}/ -- the work queue for {{repos_title}}
+
+Every bug, feature and chore for {{repos_phrase}} is one markdown file here, on trunk ({{trunk_phrase}}).
+{{prod_intro}}
+The developers are concurrent Claude Code sessions; the human makes product decisions and runs everything on the
+human-only list (section 4, rule 2). This page is the protocol; `WORKER_BRIEF.md` is its two-minute version.
+
+---
+
+{{project.section_0}}
+
+---
+
+## 1. For the human: reading the board
+
+```
+{{tickets_script}} human          # YOUR LIST: what is waiting for you, top item first (read-only, any directory)
+{{tickets_script}} board          # every ticket by state (read-only, any directory, any time)
+{{tickets_script}} board --json   # for tools (the ops panel, the status line): one JSON object -- front matter of every ticket, counts per state, pending asks, freeze, warnings; `--slow` adds branch stats and orphans
+{{tickets_script}} human --json   # for tools: the same list as JSON; every item carries a stable `id` (changes only when the ask text changes)
+```
+
+The line at the bottom of the `{{desk.tmux}}` tmux window is `inbox N | P0 n | creds <time left> | <board counts>`, refreshed every 30 s: it is
+zouinify's `status --line` (inbox and P0 from `human --json`, counts from `board --json`); the desk sets it once with
+`tmux set -t {{desk.tmux}} status-right '#(zouinify status --line)' \; set -t {{desk.tmux}} status-interval 30`.
+
+`human` is derived from the tickets, never maintained by hand: the deploys waiting (one item per handoff, the
+handoff's command, the expected last line; a plan that a newer plan voided is listed under "do NOT run"),
+the decisions (`blocked_on:` questions, verbatim, with the desk's recommendation), the asks sessions queued
+with `ticket.sh ask`, and the live checks that name you. Every item is `VERB  T-xxxx  priority  title  since`,
+then the exact command, `expect:` and `if you do nothing:`. Work top to bottom and reply `T-xxxx ok` (or
+`T-xxxx <answer>`). `board` groups tickets by state, shows who owns each in-progress one and whether its
+branch is behind trunk or has uncommitted files, and lists ORPHANS (branches with work that no ticket names).
+
+| You see | It means | Your move |
+|---|---|---|
+| `BLOCKED` | needs a decision only you can make; the question is the ticket's `blocked_on:` line, verbatim | answer it |
+| `READY-TO-DEPLOY` | merged, handoff written; the ticket's `## Deploy handoff` has the exact commands | run them, then say "deployed" |
+| `DEPLOYED` | live; waiting for a real check from a fresh client or one real job | test it (the `{{debug.name}}` session does this) |
+| `DONE` | verified live | nothing |
+| `READY` | investigated and scoped, nobody working on it | say "go on T-xxxx" |
+| `BACKLOG` | known, not yet investigated, or parked | nothing (new reports go to the ticket desk) |
+| `SKIPPED` | set aside on your word; its question is kept but nobody asks it, and nobody works on it | nothing (say "go on T-xxxx" to bring it back) |
+
+To report a new bug or idea, just describe it to the ticket desk session (tmux `{{desk.tmux}}`) in plain
+words. It investigates against the real code, files a properly scoped ticket and only then marks it
+`ready`.
+
+### How you are asked
+
+Only the **ticket desk** addresses you, only in the `{{desk.tmux}}` tmux window, **one ask per message**, always
+in this shape:
+
+```
+<VERB> <T-xxxx>: <what it is and why it needs you -- one sentence, under 100 characters>
+
+<the exact command: one fenced block, absolute paths, at most two chained commands>
+
+expect: <the last line you should see>
+if you do nothing: <the consequence, one clause>
+```
+
+{{verbs_line}} A
+decision names the recommended answer first ("reply `ok` for ..., or ..."). After you act, reply
+`T-xxxx ok` (or `T-xxxx <answer>`; paste only the LAST line, and only if it differs from `expect:`); the
+desk answers in one line unless something failed. A status question gets your list plus at most three
+lines, never a chat recap. **Your list is one place**: `{{tickets_script}} human`, top item first. It is
+continuous: an ask is on it the moment a session makes it, ordered by priority, then kind (deploys,
+decisions, asks, checks), then the oldest first; there is no fixed time, no freeze and no countdown.
+Nothing is pushed to you except a P0 (production broken, access control, data loss): one push per new
+P0, the moment it lands. Applies stay batched: everything `ready-to-deploy` shares one plan (section 7),
+applied whenever you get to it. No other session ever asks you anything in its own window: only its own
+permission prompts appear there, everything else comes through the desk.
+
+## 2. Life of a ticket
+
+```
+backlog --desk investigates--> ready --claim--> in-dev --tests--> in-review --someone else reviews--> ready-to-merge
+   --ticket.sh merge--> merged --handoff--> ready-to-deploy --human deploys--> deployed --live check--> done
+(any state) -> blocked (needs a decision)        (any state) -> dropped (won't do, with the reason)
+(any state before merged) -> skipped (set aside on the user's word; back to backlog or ready only)
+```
+
+`{{tickets_script}} move` enforces this order. A move that skips a step is refused (override:
+`TICKET_FORCE=1`, which stamps the log line `FORCED` -- put the reason in the evidence).
+
+## 3. For a session: the loop
+
+```
+export TICKET_AS=<your ListAgents name>     # required: every mutating ticket.sh command refuses without it (board does not)
+{{tickets_script}} board                                        # 1. look before you touch anything
+{{tickets_script}} claim T-0034 $TICKET_AS                      # 2. ready -> in-dev; creates {{worktrees}}/t0034-... + branch
+#    optional [branch] [worktree]: a relative worktree is created under {{worktrees}}/ only; an absolute one is used as given and
+#    must already be a worktree of the ticket's repo -- ticket.sh creates nothing outside the repos it knows
+#    work ONLY in that worktree; commit with the trailer "Ticket: T-0034"
+{{tickets_script}} move T-0034 in-review "<cmd> -> <N passed>; RED on base: <assertion>"     # 3.
+#    a DIFFERENT agent reviews THE DIFF: a peer session or a fresh review sub-agent that did not write the
+#    change, given `git diff {{trunk}}...t0034-<slug>` (or the branch name) -- never the author's summary of it
+{{tickets_script}} move T-0034 ready-to-merge "reviewer <name> (saw the diff): <verdict>; rebased, behind 0; suites re-run"   # 4.
+{{tickets_script}} merge T-0034                                 # 5. THE merge path (`move ... merged` refuses): ff-only under the
+#    lock, every commit trailered "Ticket: T-0034", trunk pushed at once (a failed push undoes that repo's merge),
+#    closed_by = the shas read AFTER the merge. Refuses a branch behind trunk ("rebase first", with the commands), a
+#    trunk or protected branch name, a multi-repo ticket without a branch for every repo it names, and a commit that
+#    carries another ticket's trailer (a shared branch: --allow-trailers T-yyyy, agreed by both owners, logged in
+#    both tickets). Several repos: all are checked before any is merged; if a later push then fails, the merged
+#    part stays merged, the ticket logs "PARTIAL merge", and running merge again finishes it.
+{{tickets_script}} move T-0034 ready-to-deploy "handoff written: <the deploy command>"   # 6. (or -> done if deploy: none)
+{{tickets_script}} prune T-0034                                 # 7. at done: worktree + branch (local and origin) go (rule 11)
+```
+
+Every mutating command needs `TICKET_AS` (your `ListAgents` name) in the environment: each log line is
+signed with it, and there is no `$USER` fallback (a line signed with the shell user tells nobody which
+session wrote it). `board` is read-only and needs nothing.
+
+Other commands: `new <{{types_angle}}> <P0-P3> "<title>"` (files to backlog -- then tell
+the desk), `log T-xxxx "<line>"`, `set T-xxxx <field> "<value>"`, `ask T-xxxx "<VERB> <what> | <command> |
+<expected> | <if you do nothing>"` (a one-line ask that appears in the human's `ticket.sh human`; `ask T-xxxx ""`
+or the next `move` clears it), and to write a ticket's Problem /
+Fix / areas: **copy it out, edit the copy in your own worktree or scratchpad, then
+`put T-xxxx <copy> "<what>"`** -- never edit files under the main worktree's `{{tickets_dir}}/` by hand (that
+leaves main dirty and blocks every other session; `sync` exists only to rescue such an edit).
+Never change `status:` that way; use `move`.
+
+**One voice.** You never address the human in your own window; only your own permission prompts appear
+there. A decision, a paid run, a deploy, a browser check, a command you were refused: write
+it as the section 1 block (verb, ticket, the exact command, `expect:`, `if you do nothing:`): `{{tickets_script}}
+ask T-xxxx "..."` when it belongs to a ticket (it lands in the human's list by itself), `SendMessage` to the
+desk when it does not -- and carry on with something else. A denied or blocked action becomes an `ask`,
+never a prompt the human must find. The desk asks the human, one ask at a time, and relays the answer. A relayed answer settles work
+decisions (which option, go/no-go); it is not the human's own say-so for a `CLAUDE.md` or settings edit
+or for a permission prompt in your session -- those the human does or approves themselves. Every session
+starts from `{{tickets_dir}}/WORKER_BRIEF.md`, the two-minute version of this page.
+
+The script commits **only the one ticket file** it touched, from the main worktree, holds a lock so
+concurrent sessions don't collide, pushes with a rebase-retry, and **refuses to run if the main
+worktree is dirty or off trunk** -- if it refuses, someone has uncommitted files there; tell the
+desk, don't work around it.
+
+## 4. The rules (each one was learned the hard way)
+
+1. **Nobody develops in the main worktree** ({{main_paths}}). Main is only for ticket commits and
+   `ticket.sh merge`. Develop in your ticket's worktree.
+2. {{plugin.rule_no_live_mutations}}
+3. {{plugin.rule_protect_artifacts}}
+4. **Evidence, not claims.** In-review needs a test that is RED on the base tree and GREEN on yours, with
+   the failing assertion pasted. {{plugin.rule_deploy_evidence}}
+   A review by the author's own sub-agent briefed with the author's summary is never evidence either
+   (section 5, `ready-to-merge`).
+5. **Overlap check before editing a shared file.** `grep -l '^status: in-dev' {{tickets_dir}}/*.md | xargs grep -h '^areas:\|^owner:'`;
+   if another session's ticket lists your file, `SendMessage` its `owner` and agree an order first.
+6. **One in-dev ticket per session.** Commit at every state change; never leave a worktree dirty.
+7. **Push what you merge.** A merge that is deployed but not pushed means the remote no longer describes production.
+8. {{plugin.rule_after_deploy}}
+9. **Scratchpads are per-session and can collide.** Anything another session needs goes in git, a ticket,
+   or a message -- never "it's in my scratchpad".
+10. **One ticket, one branch, one worktree.** A follow-up that has to wait (an image push, a stage-2 pin or
+    switch) is a new `chore` ticket with `siblings:` naming the parent, on its own branch and worktree --
+    never a second branch under the old ticket, never a desk cherry-pick onto trunk. A branch two tickets
+    genuinely share is merged with `ticket.sh merge T-xxxx --allow-trailers T-yyyy`, agreed by both owners;
+    the merge logs it in both tickets.
+11. **At `done`, the worktree goes.** `{{tickets_script}} prune T-xxxx` removes the worktree, the local branch
+    and `origin/<branch>`; the desk runs `prune --done` for the backlog (`--dry-run` lists first). The slow checks
+    (fetches, `git cherry`) run before the lock; under the lock every item is checked again -- the ticket still
+    done, no open ticket naming its branch on the trunk just pulled, the worktree and the branch unchanged -- and
+    only then removed, with the remote delete leased on the sha the check saw, and one log commit for the sweep.
+    It refuses, and says why: a trunk, protected or odd branch name; a branch or worktree another open ticket
+    names; a worktree that is not registered, detached (mid-rebase), on another branch, dirty, or holding ignored
+    files that may matter (secrets, keys, backups, and whatever the deploy plugin names); and
+    any commit with no patch-equivalent in trunk, local and origin's (`git cherry`: a branch left at its pre-rebase
+    tip after a rebase-and-merge counts as merged; a squash-merged branch does not and is listed for you to delete
+    by hand). A merged branch has nothing left to keep, and dozens of stale worktrees make the board's orphan list
+    unreadable.
+12. **Freeze.** While `{{tickets_dir}}/FREEZE` exists on trunk, `claim` refuses every ticket whose id is not listed
+    in it (one `T-xxxx` per line, `#` comments allowed) and `board` prints the list. The manager owns the
+    file: a hotfix is added to it, not forced past it (`TICKET_FORCE=1` stamps the log line `FORCED`).
+
+## 5. States and the evidence each needs
+
+| State | Who moves it in | Evidence in `## Log` |
+|---|---|---|
+| `backlog` | whoever files it | file:line of the problem, or the user's verbatim words |
+| `ready` | **the ticket desk only** | `## Investigation` written: cited lines re-checked on current trunk, `areas`/`affects` real, duplicates checked, no open human decision |
+| `in-dev` | the claiming session | owner / worktree / branch / base set (claim does it) |
+| `in-review` | owner | suites covering `areas` run (command + summary line); RED-on-base / GREEN-on-branch test; the linters of the touched languages; every `affects` box ticked or a `siblings:` ticket filed; worktree clean |
+| `ready-to-merge` | **a reviewer who did not write the change and saw the diff**: a peer session or a fresh sub-agent given `git diff` / the branch, not the author's summary (the author's own sub-agent briefed with a summary is never evidence) | reviewer named, with the verdict; rebased, `behind trunk = 0`; suites re-run after rebase |
+| `merged` | `ticket.sh merge` only (`move` refuses it without `TICKET_FORCE`) | ff-only merge pushed; `closed_by` = the shas of trunk..new-HEAD read after the merge |
+| `ready-to-deploy` | owner | the Deploy handoff block (see `_TEMPLATE.md`), laid out as the deploy plugin's handoff template says: the command, every change attributed to a ticket, rollback, verify |
+| `deployed` | after the human deploys | {{plugin.evidence_deployed}} |
+| `done` | owner, the browser tester, or the human | {{plugin.evidence_done}} |
+| `blocked` | anyone | `blocked_on:` the T- id or the human's question, verbatim |
+| `dropped` | the human, or the desk with the reason | `resolution:` and why |
+| `skipped` | the desk, on the user's word | the user's words, verbatim; `blocked_on:` is kept but never asked, `human` never lists it, `ask` refuses it, `prune` keeps its branch; from any state before `merged`; out only to `backlog` or `ready` (the `ready` gate applies) |
+
+Severity: **P0** breaks things / gates other work, **P1** wrong or missing output, **P2** degraded,
+**P3** hygiene.
+
+## 6. The ticket desk
+
+The **ticket desk** session (`{{desk.name}}`, tmux `{{desk.tmux}}`) alone moves `backlog -> ready`,
+permanently, for this project. Before it does, it re-checks every cited file:line on current trunk,
+fills `areas`/`affects` for real, checks duplicates and overlap with in-flight work, and confirms no
+human decision is needed (if one is: `blocked_on:` the question, verbatim). It writes that in
+`## Investigation`. It also verifies every "done/merged/deployed" claim against git or the live system. Don't
+claim a `backlog` ticket; tell the desk. It launches every worker with one line -- `Read
+{{tickets_dir}}/WORKER_BRIEF.md, then claim T-xxxx` -- and it alone speaks to the human (section 1).
+
+{{project.section_7}}
+
+## 8. Files
+
+- `T-NNNN-<slug>.md` -- one per ticket: front matter (`status`, `owner`, `areas`, `affects`, `deploy`,
+  `closed_by`, ...), then `## Problem`, `## Fix` (a checkbox per affected surface), `## Investigation`,
+  an append-only `## Log`, and `## Deploy handoff`.
+- `_TEMPLATE.md` -- the skeleton `ticket.sh new` copies.
+- `WORKER_BRIEF.md` -- the two-minute brief every session reads at launch (section 3 is the long form).
+- The human's list is `{{tickets_script}} human`, computed from these files (the `human:` field holds a session's ask).
+- `FREEZE` -- present only during a freeze (rule 12): the ids `claim` may still take; the manager owns it.
+- `ticket.env` -- this project's values for the script (generated by `zouinify config --env`, committed through a ticket);
+  `plugins/{{deploy_plugin}}/` -- the deploy plugin: what `apply`, `deploy-check` and the evidence gates do here.
+- `../{{tickets_script}}` -- the only way tickets change.
+- Commits for a ticket carry `Ticket: T-NNNN`: `git log --all --grep='Ticket: T-0034'`.
+- History of the board itself: `git log --oneline -- {{tickets_dir}}/`.
+{{releases_item}}

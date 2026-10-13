@@ -1,0 +1,44 @@
+---
+id: T-0000
+title: <one line: what is wrong / what is wanted>
+type: {{default_type}}                      # {{types_bar}}
+severity: P2                   # P0 gates other work / live breakage; P1 wrong or missing output; P2 degraded; P3 hygiene
+status: backlog                # {{states_line}}
+repos: [{{default_repo}}]               # {{repos_bar}}{{repos_many}}
+areas: []                      # files/dirs this touches -- the overlap check greps this
+affects: []                    # every copy/surface the problem lives in; each gets a checkbox under Fix
+deploy: none                   # {{deploy_kinds_bar}}
+owner:                         # ListAgents name of the owning session, or "human"; empty when unclaimed
+worktree:                      # {{worktrees}}/tNNNN-<slug>
+branch:                        # tNNNN-<slug>; for a ticket listing several repos a map {<repo>: <branch>, ...}
+base:                          # trunk sha the branch was cut from / last rebased onto
+claimed:
+created:
+depends_on: []
+siblings: []                   # other tickets that are the same bug elsewhere
+blocked_on:                    # a T- id, or the human decision needed, verbatim
+human:                         # one-line ask for the human, set by `ticket.sh ask` (<VERB> <what> | <command> | <expected> | <if you do nothing>); cleared by `ask T-xxxx ""` or by the next move
+closed_by: []                  # trunk shas that closed it (filled at `merged`)
+plan:                          # saved plan path (filled at `ready-to-deploy`)
+resolution:                    # only for dropped: not-a-bug | duplicate-of T-xxxx | wontfix | superseded-by T-xxxx
+---
+
+## Problem
+<2-10 lines with file:line evidence. For a user-reported item, quote the user's words verbatim first.>
+
+## Fix
+<What will change, and what will NOT (scope line). One checkbox per `affects` entry:>
+- [ ] <surface>  (`path:line`)
+
+## Investigation
+<Written by the ticket desk before backlog -> ready: cited lines re-checked against current trunk,
+scope, duplicates checked, decisions needed. Empty until triaged.>
+
+## Log
+<!-- append-only; one line per transition: "- YYYY-MM-DD HH:MM <session>: <old> -> <new>. <evidence>" -->
+
+## Deploy handoff
+<!-- Filled at ready-to-deploy, one block per batch (every ticket in the batch points `plan:` at it):
+
+{{plugin.handoff}}
+-->

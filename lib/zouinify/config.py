@@ -20,6 +20,9 @@ DEFAULT_MODEL_RE = r"\[((?:Fable|Opus|Sonnet|Haiku|Claude)[^\]\n]*)\]"
 BIND_ALIASES = {"loopback": "loopback", "127.0.0.1": "loopback", "localhost": "loopback",
                 "intranet": "intranet", "0.0.0.0": "intranet"}
 DEFAULT_ASK_VERBS = ["APPLY", "DEPLOY", "PUSH", "RUN", "DECIDE", "CHECK", "APPROVE", "SSO"]
+DEFAULT_TICKET_TYPES = ["bug", "feature", "process", "chore"]
+PLUGIN_NAME_RE = re.compile(r"^[a-z0-9-]+$")           # tickets/plugins/<name>/plugin.sh (T-0186 grammar)
+IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class ConfigError(ZouinifyError):
@@ -77,6 +80,9 @@ class Config:
     worktrees: str
     ask_verbs: list
     deploy_kinds: list
+    deploy_plugin: str
+    ticket_types: list
+    protected_branches_extra: list
     human_only: list
     budget: dict
     model: str | None
@@ -111,7 +117,8 @@ class Config:
                 "project": {"name": self.name, "short": self.short, "root": self.root},
                 "repos": self.repos, "trunk": self.trunk, "prod": self.prod,
                 "tickets": {"dir": self.tickets_dir, "script": self.tickets_script, "worktrees": self.worktrees,
-                            "ask_verbs": self.ask_verbs, "deploy_kinds": self.deploy_kinds},
+                            "ask_verbs": self.ask_verbs, "deploy_kinds": self.deploy_kinds, "deploy_plugin": self.deploy_plugin,
+                            "types": self.ticket_types, "protected_branches_extra": self.protected_branches_extra},
                 "human_only": self.human_only, "budget": self.budget,
                 "model": self.model, "model_re": self.model_re, "sessions": {r: s.to_dict() for r, s in self.sessions.items()},
                 "panel": self.panel, "terminal": self.terminal, "aws": self.aws, "contact": self.contact, "warnings": self.warnings}
@@ -194,6 +201,21 @@ def load(root: str | None = None) -> Config:
     worktrees = str(tk.get("worktrees") or ".claude/worktrees")
     ask_verbs = _strlist(tk.get("ask_verbs"), "tickets.ask_verbs", errs, DEFAULT_ASK_VERBS)
     deploy_kinds = _strlist(tk.get("deploy_kinds"), "tickets.deploy_kinds", errs, ["none"])
+    deploy_plugin = tk.get("deploy_plugin")
+    if deploy_plugin is None or deploy_plugin == "":
+        deploy_plugin = "none"
+    elif not isinstance(deploy_plugin, str) or not PLUGIN_NAME_RE.match(deploy_plugin):
+        errs.append("tickets.deploy_plugin: a plugin name of lowercase letters, digits and dashes (tickets/plugins/<name>/plugin.sh), "
+                    "or none")
+        deploy_plugin = "none"
+    ticket_types = _strlist(tk.get("types"), "tickets.types", errs, DEFAULT_TICKET_TYPES)
+    if ticket_types and any(not IDENT_RE.match(t) for t in ticket_types):
+        errs.append("tickets.types: single lowercase words (default: bug feature process chore)")
+    protected_extra = _strlist(tk.get("protected_branches_extra"), "tickets.protected_branches_extra", errs, [])
+    if any(not _is_str(b) or " " in b for b in protected_extra):
+        errs.append("tickets.protected_branches_extra: branch names (no spaces)")
+    if tk.get("states") not in (None, "default"):
+        errs.append("tickets.states: only `default` (the 12 states of the core) exists in this version")
 
     human_only = _strlist(raw.get("human_only"), "human_only", errs, [])
     if not human_only:
@@ -397,7 +419,8 @@ def load(root: str | None = None) -> Config:
         raise ConfigError(f"{path}:\n  - " + "\n  - ".join(errs))
     return Config(root=root, name=str(name), short=str(short), repos=clean_repos, trunk=trunk, prod=prod,
                   tickets_dir=tickets_dir, tickets_script=tickets_script, worktrees=worktrees, ask_verbs=ask_verbs,
-                  deploy_kinds=deploy_kinds, human_only=human_only, budget=budget,
+                  deploy_kinds=deploy_kinds, deploy_plugin=str(deploy_plugin), ticket_types=ticket_types,
+                  protected_branches_extra=protected_extra, human_only=human_only, budget=budget,
                   model=str(model) if model else None, model_re=str(model_re), sessions=sessions, panel=panel, terminal=terminal, aws=aws, contact=contact,
                   warnings=warns)
 

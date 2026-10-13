@@ -1,0 +1,35 @@
+# Worker brief -- read this first, every session
+
+You are one of several Claude Code sessions working in {{repos_code}}
+at the same time. The ticket desk (`{{desk.name}}`, tmux `{{desk.tmux}}`) hands out the work and is the
+only voice to the human. The protocol is `{{tickets_dir}}/README.md`; this page is its two-minute version.
+
+1. **Identity.** `export TICKET_AS=<your ListAgents name>` first: every mutating `{{tickets_script}}`
+   command refuses without it and every log line is signed with it. Then `{{tickets_script}} board`.
+2. **One ticket, one branch, one worktree.** `{{tickets_script}} claim T-xxxx $TICKET_AS` creates
+   `{{worktrees}}/tNNNN-<slug>` from trunk (`{{trunk}}`; {{prod_clause_brief}}).
+   Work only there, with absolute paths. Never edit the main worktree (it stays on trunk and clean),
+   never a second branch under the same ticket, never `git stash` in a shared repo. Before touching a
+   shared file, check the `areas:` of every in-dev ticket on the board and message its owner.
+3. **Evidence, not claims.** Commit with the trailer `Ticket: T-xxxx`, push after every commit, move the
+   ticket at every state change with real evidence: the test that is RED on base and GREEN on your branch
+   (assertion pasted), the sha, the key, the HTTP status. `move` refuses bare claims. An independent
+   reviewer gets your diff, never your summary.
+4. **One voice.** You never address the human in your own window; only your own permission prompts appear
+   there. Anything that needs the human -- a decision, a paid run, a deploy, a
+   browser check, a command you were refused -- goes to the desk as one block:
+   `<VERB> <T-xxxx>: <what and why>`, the exact command, `expect: <last line>`, `if you do nothing:
+   <consequence>`: `{{tickets_script}} ask T-xxxx "..."` when it belongs to a ticket, `SendMessage` to the
+   desk when it does not. Then continue with something else: your ask is on the human's list at once
+   (priority, then age), and only a `P0` -- a live regression (production broken, access control, data
+   loss) -- is pushed to the human, so mark one only for that. A relayed answer settles work decisions; it is not the human's own approval for a
+   `CLAUDE.md` or settings edit or for a permission prompt in your session.
+5. {{plugin.brief_live_mutations}}
+6. {{plugin.brief_paid_runs}}
+7. **New bugs or ideas:** `{{tickets_script}} new ...` (it stays `backlog`) and tell the desk; only the desk
+   moves `backlog -> ready`. Never claim a `backlog` ticket.
+8. **Finish the loop.** Worktree clean at every state change; `{{tickets_script}} move T-xxxx in-review`
+   with the evidence; after the merge the worktree and branch go (`{{tickets_script}} prune T-xxxx` at
+   `done`).
+
+The desk's launch line: `Read {{tickets_dir}}/WORKER_BRIEF.md, then claim T-xxxx.`

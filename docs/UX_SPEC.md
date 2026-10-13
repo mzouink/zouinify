@@ -114,7 +114,7 @@ source on hover, a padlock showing `loopback` or `intranet`. No user menu: there
 Counts are scoped to this project (sessions: `cwd == project root`; tickets: this `tickets/` dir). Skeletons while loading;
 `0` with a one-line explanation when empty; never an invented metric.
 
-### 2.3 Ticket board (the lifecycle has 11 states, the dashboard shows 5 lanes)
+### 2.3 Ticket board (the lifecycle has 12 states, the dashboard shows 5 lanes)
 
 `scripts/ticket.sh` states: `backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped`.
 
@@ -128,7 +128,7 @@ Counts are scoped to this project (sessions: `cwd == project root`; tickets: thi
 
 Above the lanes, chips with counts: `backlog n` (grey), **`blocked n`** (amber; the questions are inbox DECIDE items),
 `done n`, `dropped n`. Clicking a chip opens `#/tickets?state=…`. `done` is never a lane on the dashboard. The Tickets page
-shows all 11 states as filters plus text search, sorted by severity then age.
+shows all 12 states as filters plus text search, sorted by severity then age.
 
 Card: `T-0145` in mono, severity badge `P0`..`P3` (P0 red), 2-line title, extras per lane, a bell when the ticket has a pending
 `human:` ask. The whole card opens the **ticket drawer**: front matter as a key/value table, the last 10 `## Log` lines

@@ -171,7 +171,7 @@ repos:
 tickets:
   dir: tickets
   worktrees: .claude/worktrees
-  states: default                       # the 11 states of the core
+  states: default                       # the 12 states of the core
   deploy_kinds: [none]                  # add terraform, image+terraform, frontend, manual-aws as the project needs them
   deploy_plugin: none                   # tickets/plugins/<plugin>.sh provides apply / deploy-check / the evidence regexes
   ask_verbs: [APPLY, DEPLOY, PUSH, RUN, DECIDE, CHECK, APPROVE, SSO]
