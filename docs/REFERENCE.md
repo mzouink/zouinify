@@ -218,15 +218,21 @@ desk's tmux window.
   the worker pattern under the project; before every batch its tmux session must exist and its pane must run `claude`
   (a worker that dropped to a shell is closed). The check runs before EVERY keystroke op against one concrete pane id:
   exactly one pane across the session's windows, its real executable not tmux for any process on the pane's tty or under
-  its shell (a nested tmux client, even one renamed `claude`, is refused), and the tty's foreground process group the
-  worker agent's own; a split, a respawned or swapped pane and a nested client all close the attachment with nothing sent.
+  its shell (a nested tmux client, even one renamed `claude`, is refused: tmux is recognised by name, by inode, a hard
+  link under any name, and by content, a byte-identical copy under any name), no client that your tmux servers
+  themselves list (`list-clients` on the default server and on every server in tmux's socket directory,
+  `$TMUX_TMPDIR`/`/tmp` + `tmux-<uid>/`) attached from the pane's tty or from under its shell, whatever that client's
+  binary is called, and the tty's foreground process group the worker agent's own; a split, a respawned or swapped pane
+  and a nested client all close the attachment with nothing sent.
   Keys are an allowlist: printable text and Enter, Esc, arrows, Tab, Backspace, Home, End, PageUp, PageDown, Space, Ctrl-C,
   Ctrl-U; never Ctrl-D; at most 8 ops per batch.
 - **The residual, stated plainly.** Every Claude session on the workstation runs as your user. A worker can already run
   `tmux send-keys` into any of your windows, or read your `/dev/pts` devices, on its own, without this page; the checks
-  above keep the terminal page from becoming an easier route, they do not isolate the sessions. Full isolation needs a
-  separate uid per session, which is not v1. That is exactly why approvals stay typed in the desk's window and why the
-  role panes stay unreachable from the browser.
+  above keep the terminal page from becoming an easier route, they do not isolate the sessions. What they still miss: a
+  client of a tmux server on a socket outside tmux's directory (`-S /elsewhere`) that runs a modified tmux binary (not
+  the one on PATH, not a hard link to it, not a copy of it). Full isolation needs a separate uid per session, which is
+  not v1. That is exactly why approvals stay typed in the desk's window and why the role panes stay unreachable from the
+  browser.
 - **Audit and kill switch.** Every unlock, open, batch of keys, close and refusal is one JSON line in
   `.ops/state/term_audit.jsonl` with the unlock id, the attachment id, the address, the target and the time; the page
   shows the attachment id and `zouinify term audit [--since 10m] [--target NAME]` prints the recent lines, so a session's

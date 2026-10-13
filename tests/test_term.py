@@ -114,6 +114,9 @@ class TermWorld(World):
         with open(self.agents, "w") as fh:
             json.dump(agents, fh)
         self.env["FAKE_CLAUDE_AGENTS"] = self.agents
+        self.tmuxdir = os.path.join(self.tmp, "tmuxdir")   # tmux's socket directory ($TMUX_TMPDIR/tmux-<uid>/): empty unless a test plants a server
+        os.makedirs(self.tmuxdir)
+        self.env["TMUX_TMPDIR"] = self.tmuxdir
         self.env_patch = mock.patch.dict(os.environ, self.env, clear=True)
         self.env_patch.start()
         self.cfg = cfgmod.load(self.root)
@@ -415,6 +418,128 @@ class TestTermApi(TermWorld):
         self.assertEqual(st, 404, d)
         self.assertIn("foreground process group", d["reason"])
         self.assertEqual(self.sent(), [])
+
+    def plant_clients(self, rows, sock=None):
+        """What the fake tmux server (`list-clients`) reports: the default server's clients, or those of the server on
+        socket <sock> (`-S <dir>/<sock>`)."""
+        path = os.path.join(self.state, "clients.json" if sock is None else f"clients-{sock}.json")
+        if rows is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        with open(path, "w") as fh:
+            json.dump(rows, fh)
+
+    def test_a_renamed_copy_of_tmux_inside_the_pane_is_refused(self):
+        """T-0183: `cp $(command -v tmux) ~/x; ~/x ...` inside the worker's pane -- argv[0], comm and the exe name all say
+        `x`, so the name check of T-0181 passed it. The copy is byte-identical to the tmux zouinify runs, and that is
+        what gives it away; a same-sized file with other bytes is not tmux."""
+        import shutil
+        cookie, _ = self.unlock()
+        P = self.pane_pid("t0001-first-ready-ticket")
+        real = shutil.which("tmux")
+        self.assertTrue(real and os.path.getsize(real) > 0, real)
+        shutil.copyfile(real, os.path.join(self.bin, "x"))
+        self.proc_entry(7781, "x", P, 7781, P, P, "x")
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.assertIn("tmux client runs inside the pane", d["reason"])
+        self.assertIn("copy of the tmux binary", d["reason"])
+        self.proc_remove(7781)
+        with open(os.path.join(self.bin, "notmux"), "wb") as fh:
+            fh.write(b"\0" * os.path.getsize(real))
+        self.proc_entry(7782, "notmux", P, 7782, P, P, "notmux")
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        self.proc_remove(7782)
+        self.assertEqual(self.sent(), [])
+
+    def test_exe_identity_catches_a_hard_link_and_a_copy(self):
+        """T-0183 unit: zouinify.term.procs.exe_is_tmux against a planted "real" tmux -- a hard link under another name
+        (same inode), a byte-identical copy (same size and sha256), a same-sized stranger (no), the name alone (yes)."""
+        import shutil
+        from zouinify.term import procs
+        real = os.path.join(self.bin, "tmux-real")
+        with open(real, "wb") as fh:
+            fh.write(os.urandom(4096))
+        os.link(real, os.path.join(self.bin, "y"))
+        shutil.copyfile(real, os.path.join(self.bin, "z"))
+        with open(os.path.join(self.bin, "w"), "wb") as fh:
+            fh.write(os.urandom(4096))
+        st = os.stat(real)
+        ident = {"path": real, "dev": st.st_dev, "ino": st.st_ino, "size": st.st_size, "mtime": st.st_mtime_ns}
+        for pid, name in ((7791, "y"), (7792, "z"), (7793, "w"), (7794, "tmux"), (7795, "claude")):
+            self.proc_entry(pid, name, 1, pid, 0, 0, name)
+        try:
+            with mock.patch.object(procs, "real_tmux", return_value=ident):
+                self.assertEqual(procs.exe_is_tmux(7791), procs.HOW_LINKED)
+                self.assertEqual(procs.exe_is_tmux(7792), procs.HOW_COPIED)
+                self.assertIsNone(procs.exe_is_tmux(7793))
+                self.assertEqual(procs.exe_is_tmux(7794), procs.HOW_NAMED)
+                self.assertIsNone(procs.exe_is_tmux(7795))
+                self.assertIsNone(procs.exe_is_tmux(424242), "no such process")
+            with mock.patch.object(procs, "real_tmux", return_value=None):
+                self.assertIsNone(procs.exe_is_tmux(7792), "without a tmux on PATH only the name counts")
+                self.assertEqual(procs.exe_is_tmux(7794), procs.HOW_NAMED)
+            found = procs.real_tmux()
+            self.assertEqual(found["path"], os.path.realpath(shutil.which("tmux")), "the identity is the tmux zouinify runs")
+        finally:
+            for pid in (7791, 7792, 7793, 7794, 7795):
+                self.proc_remove(pid)
+
+    def test_a_client_attached_from_inside_the_pane_is_refused(self):
+        """T-0183: the tmux server's own list of clients. A client attached from the pane's tty, or by a process under the
+        pane's shell, is refused whatever its binary is called (no /proc evidence needed); the human watching the worker
+        from their own terminal is not. A client that attaches after the open closes the attachment with nothing sent."""
+        cookie, _ = self.unlock()
+        P = self.pane_pid("t0001-first-ready-ticket")
+        self.plant_clients([{"pid": 7801, "tty": f"/dev/pts/{P}", "session": "tp-desk"}])
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.assertIn("attached from inside the pane", d["reason"])
+        self.assertIn("tp-desk", d["reason"])
+        self.plant_clients([{"pid": 7802, "tty": "/dev/pts/555", "session": "tp-desk"}])
+        self.proc_entry(7802, "x", P, 7802, 555, 7802, "x")                 # on another tty, but under the pane's shell
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.assertIn("attached from inside the pane", d["reason"])
+        self.proc_remove(7802)
+        self.plant_clients([{"pid": 1, "tty": "/dev/pts/555", "session": "t0001-first-ready-ticket"}])   # the human, from their terminal
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        tid = d["tid"]
+        self.plant_clients([{"pid": 7801, "tty": f"/dev/pts/{P}", "session": "tp-desk"}])
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual(st, 410, k)
+        self.assertEqual(self.sent(), [], "nothing was typed with a client attached from the pane")
+        self.assertTrue(any("attached from inside" in a.get("reason", "") for a in self.audit() if a["event"] == "close"))
+        self.plant_clients(None)
+
+    def test_every_server_in_the_socket_dir_is_asked(self):
+        """T-0183: a client of a second tmux server (`-L other`) attached from inside the pane is found through that server's
+        socket in $TMUX_TMPDIR/tmux-<uid>/; a socket nobody listens on and a plain file there are harmless."""
+        import socket as socketmod
+        cookie, _ = self.unlock()
+        P = self.pane_pid("t0001-first-ready-ticket")
+        d = os.path.join(self.tmuxdir, f"tmux-{os.getuid()}")
+        os.makedirs(d)
+        for name in ("other", "stale"):
+            s = socketmod.socket(socketmod.AF_UNIX)
+            s.bind(os.path.join(d, name))
+            self.addCleanup(s.close)
+        open(os.path.join(d, "notes.txt"), "w").close()
+        self.plant_clients([{"pid": 7811, "tty": f"/dev/pts/{P}", "session": "tp-desk"}], sock="other")
+        st, _, r = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, r)
+        self.assertIn("attached from inside the pane", r["reason"])
+        self.assertIn("other server", r["reason"])
+        calls = [c for c in self.tmux_calls() if "list-clients" in c]
+        self.assertTrue(any(c[:3] == ["-S", os.path.join(d, "other"), "list-clients"] for c in calls), calls)
+        self.assertTrue(any(c[:3] == ["-S", os.path.join(d, "stale"), "list-clients"] for c in calls), calls)
+        self.assertFalse(any("notes.txt" in " ".join(c) for c in calls), "a plain file is not a server socket")
+        self.plant_clients(None, sock="other")
+        st, _, r = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, r)
 
     def test_a_respawned_pane_keeps_its_id_but_is_refused(self):
         """Review L5: respawn-pane keeps the %id and changes the pane pid; the agent no longer descends from it."""

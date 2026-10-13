@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
 import subprocess
 import time
 
@@ -132,6 +133,67 @@ def send_keys(pane_id: str, ops: list) -> int:
             raise err
         n += 1
     return n
+
+
+CLIENT_FIELDS = ("client_pid", "client_tty", "session_name")
+SOCKETS_MAX = 16
+
+
+def list_clients(socket_path: str | None = None) -> list:
+    """Every client attached to a tmux server, as that server itself sees them (`list-clients`): [{pid, tty, session}];
+    [] when no server answers. Without socket_path: the server zouinify addresses everywhere else; with it: the server
+    on that unix socket (`-S`). The terminal page (T-0183) refuses a pane from inside which a client is attached,
+    whatever that client's binary is called: the server's view depends neither on argv[0] nor on an executable's name."""
+    pre = ["-S", socket_path] if socket_path else []
+    r = _run([*pre, "list-clients", "-F", "\t".join("#{%s}" % f for f in CLIENT_FIELDS)])
+    if r.returncode != 0:
+        return []
+    rows = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != len(CLIENT_FIELDS):
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            pid = 0
+        rows.append({"pid": pid, "tty": parts[1], "session": parts[2]})
+    return rows
+
+
+def server_sockets() -> list:
+    """The unix sockets of this user's tmux servers in tmux's standard directory ($TMUX_TMPDIR or /tmp, then
+    `tmux-<uid>/`): `default` and every `-L name` server, sorted, at most SOCKETS_MAX. A server started with
+    `-S /elsewhere` has no socket here (REFERENCE.md states that residual)."""
+    d = os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{os.getuid()}")
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        p = os.path.join(d, n)
+        try:
+            if stat.S_ISSOCK(os.lstat(p).st_mode):
+                out.append(p)
+        except OSError:
+            pass
+    return out[:SOCKETS_MAX]
+
+
+def attached_clients() -> list:
+    """`list_clients` of the default server and of every server in `server_sockets()`, one row per client (deduplicated
+    by pid and tty), each with the name of the socket it is attached through."""
+    seen: set = set()
+    rows = []
+    for sock in [None, *server_sockets()]:
+        for c in list_clients(sock):
+            key = (c["pid"], c["tty"])
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(dict(c, socket=os.path.basename(sock) if sock else "default"))
+    return rows
 
 
 def list_panes() -> list:

@@ -222,9 +222,12 @@ human's user and can reach loopback ports; a `--chrome` session can drive the hu
   registered with role `worker`, or a live Claude session named by the configured worker pattern (`t{num}-{slug}`) with its
   cwd under the project; each is checked live before EVERY keystroke op against the one %pane_id pinned at open: its tmux
   session has exactly one pane across its windows, that pane runs `claude`, no process on the pane's tty or under its shell
-  has tmux as its real executable (a nested client renamed `claude` is caught by /proc/<pid>/exe), the tty's foreground
-  process group is the agent's own, and the agent's pid descends from the pane's. Same-uid residual accepted for v1 (a
-  worker can already `send-keys` or read /dev/pts on its own): stated in REFERENCE.md.
+  has tmux as its real executable (a nested client renamed `claude` is caught by /proc/<pid>/exe: by the name, by the
+  inode of the tmux on PATH -- a hard link -- and by its content -- a byte-identical copy, T-0183), no client the user's
+  tmux servers list themselves (`list-clients`, the default server and every server in tmux's socket directory) is
+  attached from the pane's tty or from under its shell, the tty's foreground process group is the agent's own, and the
+  agent's pid descends from the pane's. Same-uid residual accepted for v1 (a worker can already `send-keys` or read
+  /dev/pts on its own; a client of a `-S /elsewhere` server running a modified binary is not seen): stated in REFERENCE.md.
   The configured role sessions (desk, manager, debug, chrome_debug) are refused by name AND by tmux window whatever the
   registry says, enforced in code (`zouinify.term.targets`) and pinned by a test; so is a shell pane (no human-only command
   can be typed through it), a session of another project, an arbitrary tmux target, a name in `terminal.exclude`, and

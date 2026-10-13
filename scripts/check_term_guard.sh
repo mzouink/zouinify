@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The terminal page (T-0181) may type into WORKER panes and do nothing else. This is an ALLOWLIST check over
 # lib/zouinify/term/ and lib/zouinify/termctl.py (the server, its helpers, its process side):
-#   - of tmux, only send-keys, capture-pane, list-panes, has-session and display-message may be named (and only through
-#     zouinify.tmux): never new-session / kill-* / respawn-* / run-shell / pipe-pane / paste-buffer / load-buffer /
-#     set-buffer / send-prefix, nor the launcher's new_session() / kill_session();
+#   - of tmux, only send-keys, capture-pane, list-panes, list-clients, has-session and display-message may be named (and
+#     only through zouinify.tmux): never new-session / kill-* / respawn-* / run-shell / pipe-pane / paste-buffer /
+#     load-buffer / set-buffer / send-prefix, nor the launcher's new_session() / kill_session();
 #   - no import of the launcher, no cmd_up/launch/down, no ticket_sh(), no mutating ticket.sh verb, no registry write;
 #   - no terraform / docker push / git push|merge|commit|... / aws write / deploy verb;
 #   - a program may be spawned only by termctl.py (the detached start) and term/tls.py (openssl), and `openssl` only there.
@@ -28,13 +28,13 @@ spawn_pat="\\bsubprocess\\b|\\bos\\.(system|exec[a-z]*|spawn[a-z]*|popen|fork|fo
 rc=0
 report() { echo "term guard FAIL ($1):"; echo "$2"; rc=1; }
 files=("$dir" "$ctl")
-h=$(grep -rnE "${inc[@]}" -- "$tmux_pat" "${files[@]}" 2>/dev/null); [ -z "$h" ] || report "a tmux verb other than send-keys/capture-pane/list-panes/has-session/display-message, or the launcher's session calls" "$h"
+h=$(grep -rnE "${inc[@]}" -- "$tmux_pat" "${files[@]}" 2>/dev/null); [ -z "$h" ] || report "a tmux verb other than send-keys/capture-pane/list-panes/list-clients/has-session/display-message, or the launcher's session calls" "$h"
 h=$(grep -rnE "${inc[@]}" -- "$launch_pat" "${files[@]}" 2>/dev/null); [ -z "$h" ] || report "launcher import, cmd_up/launch/down, direct ticket_sh or a registry write" "$h"
 h=$(grep -rnE "${inc[@]}" -- "$verb_pat" "${files[@]}" 2>/dev/null); [ -z "$h" ] || report "a ticket, deploy, cloud or VCS verb" "$h"
 # process spawning: only termctl.py and term/tls.py
 h=$(grep -rnE "${inc[@]}" -- "$spawn_pat" "$dir" 2>/dev/null | grep -v "/tls\\.py:"); [ -z "$h" ] || report "a process-spawning primitive outside term/tls.py (tmux goes through zouinify.tmux)" "$h"
 h=$(grep -rnE "${inc[@]}" -- "\\bopenssl\\b" "${files[@]}" 2>/dev/null | grep -v "/tls\\.py:"); [ -z "$h" ] || report "openssl named outside term/tls.py" "$h"
 if [ $rc -eq 0 ]; then
-  echo "term guard ok: $dir + $ctl name no tmux verb beyond send-keys/capture-pane/list-panes/has-session, import no launcher, write no ticket or registry, spawn only in termctl.py and term/tls.py"
+  echo "term guard ok: $dir + $ctl name no tmux verb beyond send-keys/capture-pane/list-panes/list-clients/has-session, import no launcher, write no ticket or registry, spawn only in termctl.py and term/tls.py"
 fi
 exit $rc

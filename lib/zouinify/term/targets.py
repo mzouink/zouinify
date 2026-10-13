@@ -8,7 +8,10 @@ agents --json` reports descends from the pane's pid), the agent's cwd must be un
 at open must be the same before every later screen and EVERY keystroke op; the send and the capture then address that
 %pane_id, never a session or window name. Because `pane_current_command` is only argv[0] of the tty's foreground process
 (review B2: a tmux client of the desk's session started with `exec -a claude` would pass), no process whose real executable is tmux may hold the pane's
-tty or sit under the pane's pid, and the tty's foreground process group must be the agent's own (zouinify.term.procs).
+tty or sit under the pane's pid -- tmux by name, by inode (a hard link) or by content (a byte-identical copy under another
+name; T-0183) -- no client the user's tmux servers themselves list (`list-clients` on the default server and on every
+server in tmux's socket directory) may be attached from the pane's tty or from under the pane's pid, whatever its binary
+is called, and the tty's foreground process group must be the agent's own (zouinify.term.procs).
 Residual, accepted for v1 and stated in REFERENCE.md: a same-uid worker can already run `tmux send-keys` into any window
 of the user or read the user's /dev/pts on its own; full isolation needs a separate uid. That is why approvals stay typed in
 the desk's window and why the role panes stay unreachable from here. The configured role sessions (desk, manager, debug, chrome_debug) are refused by name
@@ -180,9 +183,16 @@ def inspect(cfg, target: dict, expect_pane: str | None = None) -> tuple:
         pane_pid = int(p["pane_pid"])
     except (TypeError, ValueError):
         return False, "tmux gave no usable pane pid", None
-    clients = procs.tmux_clients(tty_nr, pane_pid)
+    stats = procs.all_stats()
+    clients = procs.tmux_clients(tty_nr, pane_pid, stats)
     if clients:
-        return False, f"a tmux client runs inside the pane (pid {clients[0]})", None
+        pid_c, how = clients[0]
+        return False, f"a tmux client runs inside the pane (pid {pid_c}, {how})", None
+    inside = procs.descendants(pane_pid, stats)
+    for c in tmux.attached_clients():                                        # the servers' own view of their clients (T-0183)
+        if c["tty"] == p.get("tty") or c["pid"] in inside:
+            return False, (f"a tmux client is attached from inside the pane (pid {c['pid']}, to session {c['session']!r} "
+                           f"on the {c['socket']} server)"), None
     fg, ag = procs.foreground_pgid(pane_pid), procs.pgid(agent.get("pid"))
     if fg is None or ag is None or fg != ag:
         return False, "the pane's foreground process group is not the agent's", None
