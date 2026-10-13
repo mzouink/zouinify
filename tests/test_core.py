@@ -110,7 +110,7 @@ sessions:
   chrome_debug: {{name: tp-chrome,  tmux: tp-chrome,  model: fable, permission_mode: auto, brief: .ops/briefs/chrome_debug.md, flags: [--chrome], optional: true}}
   worker:       {{name: "t{{num}}-{{slug}}", tmux: "t{{num}}-{{slug}}", model: fable, {worker_pm}
                  prompt: "Read tickets/WORKER_BRIEF.md, then claim {{id}}."}}
-panel: {{port: 4799, bind: loopback, state_dir: .ops/state, refresh_s: 30}}
+panel: {{port: 4799, bind: loopback, state_dir: .ops/state, refresh_s: 30, autostart: false}}
 aws: {{profile: default, sso_cache: {sso}, assumed_token_hours: 2}}
 contact: {{human: tester}}
 """

@@ -135,8 +135,10 @@ class Launcher:
         return True
 
 
-def cmd_up(cfg, roles=(), dry_run: bool = False, wait_s: float = 30.0, out=None) -> int:
-    """Idempotent: an existing tmux session of the role's name is reported, never duplicated."""
+def cmd_up(cfg, roles=(), dry_run: bool = False, wait_s: float = 30.0, out=None, panel: bool = True) -> int:
+    """Idempotent: an existing tmux session of the role's name is reported, never duplicated. Then the
+    project's read-only panel is started if `panel.autostart` is on (never by the panel itself: `up` is run
+    by the human or the desk)."""
     roles = list(roles)
     if roles:
         bad = [r for r in roles if r not in cfg.sessions]
@@ -163,6 +165,9 @@ def cmd_up(cfg, roles=(), dry_run: bool = False, wait_s: float = 30.0, out=None)
         optional = [r for r, s in cfg.role_sessions().items() if not s.always and s.kind == "claude"]
         if optional:
             L.say("optional roles, started only when named: " + ", ".join(f"{r} (zouinify up {r})" for r in optional))
+    if panel and cfg.panel.get("autostart", True):
+        from zouinify import panelctl
+        ok = panelctl.ensure_started(cfg, dry_run=dry_run, out=L.out) and ok
     return 0 if ok or dry_run else 1
 
 

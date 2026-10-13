@@ -13,6 +13,7 @@ import unittest
 HERE = os.path.abspath(os.path.dirname(__file__))
 REPO = os.environ.get("ZOUINIFY_REPO_UNDER_TEST") or os.path.dirname(HERE)
 PANEL_GUARD = os.path.join(REPO, "scripts", "check_panel_guard.sh")
+PANEL_AST = os.path.join(REPO, "scripts", "check_panel_ast.py")
 PUBLIC_GUARD = os.path.join(REPO, "scripts", "check_public.sh")
 NO_PRIVATE = {"ZOUINIFY_PRIVATE_PATTERNS": os.path.join(tempfile.gettempdir(), "zouinify-no-such-pattern-file")}
 
@@ -176,3 +177,142 @@ class TestPublicGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# every string trick the desk planted against the regex guard; each one must fail the AST allowlist
+AST_OFFENDING = [
+    "import subprocess",
+    "import os\nos.system('tmux kill-server')",
+    "import sys\nsys.modules['o' + 's'].system('x')",
+    "import os\nf = getattr(os, 'sys' + 'tem')",
+    "m = __import__('os')",
+    "import asyncio\nf = getattr(asyncio, 'create_sub' + 'process_exec')",
+    "from zouinify import cli\ncli.main(['up'])",
+    "from zouinify import commands",
+    "from zouinify import readonly\nreadonly._tmux.kill_session('x')",
+    "from zouinify import tickets as tk\nf = tk.ticket_sh",
+    "from zouinify.registry import Registry\nRegistry(c).add({})",
+    "from pathlib import Path\nPath('.ops/state/sessions.json').write_text('[]')",
+    "import os\nos.kill(1, 9)",
+    "import signal\nsignal.pthread_kill(1, 9)",
+    "import socket\nsocket.socket(socket.AF_UNIX).connect('/tmp/tmux-1/default')",
+    "import runpy\nrunpy.run_path('x.py')",
+    "import code\ncode.InteractiveInterpreter().runsource('1')",
+    "import webbrowser\nwebbrowser.open('http://127.0.0.1:1/')",
+    "import os\nos.chmod('x.sh', 0o755)",
+    "import urllib.request\nurllib.request.urlopen('http://127.0.0.1:1/api/receipts', data=b'{}')",
+    "import http.client\nhttp.client.HTTPConnection('127.0.0.1', 1).request('POST', '/api/receipts')",
+    "open('x', 'w').write('y')",
+    "from pathlib import Path\nPath('x').open('a').write('y')",
+    "with open('x', mode='w') as fh:\n    fh.write('y')",
+    "r = eval('1')",
+    "exec('1')",
+    "c = compile('1', 'x', 'eval')",
+    "import importlib\nimportlib.import_module('zouinify.launch')",
+    "x = object().__class__.__subclasses__()",
+    "from os import system",
+    "import os\nx = os.environ['PATH']",
+    "import os\nos.getpid()",
+    "from zouinify import launch",
+    "from zouinify import tmux",
+    "from zouinify import readonly\nreadonly.read_ticket_sh.__globals__['subprocess']",
+    "import ctypes",
+    "import shlex\nshlex.split('tmux send')",
+    "import os\nf = os.popen('tmux kill-server')",
+    "from zouinify.panel import sources\nsources.__dict__['os']",
+    "import threading\nthreading.Thread(target=exec, args=('1',)).start()",
+    "def f(m):\n    return getattr(m, 'k' + 'ill')",
+    "import tempfile",
+    "import glob",
+]
+
+AST_ALLOWED = """\"\"\"a panel module\"\"\"
+from __future__ import annotations
+import datetime as dt
+import hashlib
+import html
+import json
+import os
+import re
+import threading
+import time
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlsplit
+from zouinify import panelstate, readonly
+from zouinify.panel.redact import redact
+from . import sources
+
+def read(p):
+    with open(p, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+def rows(cfg):
+    for f in Path(cfg.root).glob("tickets/*.md"):
+        fm = readonly.front_matter(str(f))
+        yield os.path.join(cfg.root, os.path.basename(str(f))), fm.get("id"), f.stat().st_mtime
+    panelstate.log(cfg, html.escape("ok " + hashlib.sha1(b"x").hexdigest()))
+    return redact(readonly.capture_pane("x")), json.dumps({"t": time.time(), "d": dt.datetime.now().isoformat()}), re.compile("x")
+"""
+
+
+class TestPanelAst(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(os.access(PANEL_AST, os.X_OK), f"no executable AST gate at {PANEL_AST}")
+
+    def run_ast(self, *dirs):
+        return subprocess.run([PANEL_AST, *dirs], capture_output=True, text=True)
+
+    def test_real_panel_dir_passes(self):
+        r = subprocess.run([PANEL_AST], cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("panel ast ok", r.stdout)
+        self.assertTrue(os.path.isdir(os.path.join(REPO, "lib", "zouinify", "panel")), "the real panel dir must exist and be checked")
+
+    def test_real_panel_dir_fails_with_a_planted_file(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            dst = os.path.join(tmp, "panel")
+            shutil.copytree(os.path.join(REPO, "lib", "zouinify", "panel"), dst)
+            r = self.run_ast(dst)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            with open(os.path.join(dst, "clicks.py"), "w") as fh:
+                fh.write("import os\n\ndef on_click(name):\n    os.system('tmux kill-session -t ' + name)\n")
+            r = self.run_ast(dst)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("clicks.py", r.stdout)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_every_variant_fails(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            for bad in AST_OFFENDING:
+                with open(os.path.join(tmp, "server.py"), "w") as fh:
+                    fh.write(bad + "\n")
+                r = self.run_ast(tmp)
+                self.assertNotEqual(r.returncode, 0, f"should fail on: {bad!r}\n{r.stdout}")
+                self.assertIn("FAIL", r.stdout, bad)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_allowed_panel_code_passes(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmp, "sources.py"), "w") as fh:
+                fh.write(AST_ALLOWED)
+            r = self.run_ast(tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_syntax_error_fails(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmp, "x.py"), "w") as fh:
+                fh.write("def (:\n")
+            r = self.run_ast(tmp)
+            self.assertNotEqual(r.returncode, 0)
+        finally:
+            shutil.rmtree(tmp)

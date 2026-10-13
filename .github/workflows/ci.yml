@@ -12,7 +12,9 @@ jobs:
           python-version: "3.12"
       - run: pip install pyyaml pytest
       - run: python -m pytest -q tests
-      - name: the panel never launches, kills or types
+      - name: the panel never launches, kills or types (regex denylist)
         run: scripts/check_panel_guard.sh
+      - name: the panel package uses only allowlisted imports, no dynamic import, no exec, no write (AST)
+        run: scripts/check_panel_ast.py
       - name: templates only, no private strings
         run: scripts/check_public.sh

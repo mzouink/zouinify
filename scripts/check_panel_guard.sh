@@ -17,7 +17,7 @@ q="[\"'\`]"
 # 1. any way of running a program
 exec_pat="\\bsubprocess\\b|\\bos\\.(system|exec[a-z]*|spawn[a-z]*|popen|fork|forkpty|posix_spawn[a-z]*|startfile)\\b|\\bpty\\b|\\bshlex\\b"
 exec_pat="$exec_pat|create_subprocess|\\bmultiprocessing\\b|\\bctypes\\b|\\bPopen\\b|\\bcheck_output\\b|\\bcheck_call\\b|\\bgetoutput\\b|\\bgetstatusoutput\\b"
-exec_pat="$exec_pat|\\bchild_process\\b|\\bexecSync\\b|\\bspawnSync\\b|\\bexecFile\\b|\\bspawn\\(|\\bexec\\(|\\bimportlib\\b|__import__|\\beval\\(|\\bcompile\\("
+exec_pat="$exec_pat|\\bchild_process\\b|\\bexecSync\\b|\\bspawnSync\\b|\\bexecFile\\b|\\bspawn\\(|(^|[^.A-Za-z_])exec\\(|\\bimportlib\\b|__import__|(^|[^.A-Za-z_])eval\\(|(^|[^.A-Za-z_])compile\\("
 # 2. the launcher, the tmux wrapper, direct ticket.sh, registry writes
 import_pat="(from|import)[[:space:]]+[A-Za-z_.]*\\b(launch|tmux)\\b|zouinify\\.(launch|tmux)\\b|\\btmux\\.[A-Za-z_]+\\(|\\b(new|kill)_session\\(|\\bcmd_(up|launch|down)\\(|\\bticket_sh\\(|Registry\\([^)]*\\)\\.(add|remove|save)\\b|\\.(add|remove|save)\\([^)]*registry"
 # 3. tmux / ticket / deploy verbs and the CLI itself, however spelled

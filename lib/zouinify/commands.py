@@ -9,7 +9,8 @@ from zouinify import ZouinifyError, __version__
 from zouinify import config as cfgmod
 
 NOTE = ("`up`, `launch` and `down` are run by the human from a shell or by the desk session, never by the "
-        "panel process. Everything project-specific comes from <project>/.ops/config.yaml.")
+        "panel process; the panel itself is read-only (loopback, GET only). Everything project-specific comes from "
+        "<project>/.ops/config.yaml.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("roles", nargs="*", metavar="role")
     s.add_argument("--dry-run", action="store_true", help="print the exact launch lines, start nothing")
     s.add_argument("--wait", type=float, default=30.0, metavar="S", help="seconds to wait for the status bar's model (30)")
+    s.add_argument("--no-panel", action="store_true", help="do not start this project's panel (panel.autostart in the config)")
 
     s = sub.add_parser("launch", help="launch worker T-xxxx (ready, unclaimed, not frozen out) or one role session")
     s.add_argument("target", metavar="worker|<role>")
@@ -48,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["render", "list"])
     s.add_argument("--out", metavar="DIR", help="output directory (default .ops/briefs)")
     s.add_argument("--force", action="store_true", help="overwrite briefs that were edited")
+
+    s = sub.add_parser("panel", help="the read-only control panel of this project: start | stop | status | url")
+    s.add_argument("action", choices=["start", "stop", "status", "url"])
+    s.add_argument("--foreground", action="store_true", help="serve in this process (the detached start uses it)")
 
     sub.add_parser("board", help="scripts/ticket.sh board, verbatim (extra arguments pass through)")
     sub.add_parser("human", help="scripts/ticket.sh human, verbatim (extra arguments pass through)")
@@ -82,7 +88,7 @@ def main(argv=None) -> int:
             return 0
         if args.cmd == "up":
             from zouinify import launch
-            return launch.cmd_up(cfg, args.roles, dry_run=args.dry_run, wait_s=args.wait)
+            return launch.cmd_up(cfg, args.roles, dry_run=args.dry_run, wait_s=args.wait, panel=not args.no_panel)
         if args.cmd == "launch":
             from zouinify import launch
             return launch.cmd_launch(cfg, args.target, args.ticket, receipt=args.receipt, dry_run=args.dry_run, wait_s=args.wait)
@@ -102,6 +108,15 @@ def main(argv=None) -> int:
         if args.cmd == "briefs":
             from zouinify import briefs
             return briefs.cmd_render(cfg, args.out, force=args.force)
+        if args.cmd == "panel":
+            from zouinify import panelctl
+            if args.action == "start":
+                return panelctl.cmd_start(cfg, foreground=args.foreground)
+            if args.action == "stop":
+                return panelctl.cmd_stop(cfg)
+            if args.action == "status":
+                return panelctl.cmd_status(cfg)
+            return panelctl.cmd_url(cfg)
         if args.cmd in ("board", "human"):
             from zouinify import tickets
             r = tickets.ticket_sh(cfg, [args.cmd, *extra], capture=False)

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>zouinify</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="app" class="app">
+  <a class="skip" href="#page">Skip to content</a>
+  <aside class="sidebar" id="sidebar" aria-label="Navigation">
+    <div class="wordmark" aria-label="zouinify"><span>zouin</span><span class="ify">ify</span></div>
+    <nav id="nav" class="nav"></nav>
+    <div class="sidebar-foot" id="sidebar-foot"></div>
+  </aside>
+  <div class="main">
+    <header class="topbar" id="header" aria-label="Project status"></header>
+    <main id="page" class="page" tabindex="-1" aria-live="off"></main>
+  </div>
+  <div id="drawer" class="drawer" role="dialog" aria-modal="false" aria-labelledby="drawer-title" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+<noscript><p class="noscript">zouinify needs JavaScript to render the snapshot of <code>/api/snapshot</code>.</p></noscript>
+<script src="/static/app.js"></script>
+</body>
+</html>

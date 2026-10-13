@@ -318,9 +318,32 @@ def load(root: str | None = None) -> Config:
     except (TypeError, ValueError):
         errs.append("panel.refresh_s: an integer (seconds)")
         refresh_s = 30
+    logs = []
+    raw_logs = pn.get("logs")
+    if raw_logs is None or raw_logs == []:
+        pass
+    elif not isinstance(raw_logs, list):
+        errs.append("panel.logs: a list of {label, glob}")
+    else:
+        for i, entry in enumerate(raw_logs):
+            if not isinstance(entry, dict) or not _is_str(entry.get("label")) or not _is_str(entry.get("glob")):
+                errs.append(f"panel.logs[{i}]: label and glob are required")
+                continue
+            g = str(entry["glob"]).strip()
+            if os.path.isabs(g) or g.startswith("~") or ".." in g.split(os.sep):
+                errs.append(f"panel.logs[{i}].glob: must be a relative glob inside the project, not {g!r}")
+                continue
+            logs.append({"label": str(entry["label"]).strip(), "glob": g})
+    plans_glob = pn.get("plans_glob")
+    if plans_glob in (None, ""):
+        plans_glob = None
+    elif not _is_str(plans_glob) or os.path.isabs(plans_glob) or str(plans_glob).startswith("~") or ".." in str(plans_glob).split(os.sep):
+        errs.append("panel.plans_glob: a relative glob inside the project (e.g. deploy/*.plan), or empty for no plan rule")
+        plans_glob = None
     panel = {"port": port, "bind": bind or "loopback", "link_host": str(pn.get("link_host", "auto")),
              "state_dir": str(pn.get("state_dir") or ".ops/state"), "refresh_s": refresh_s,
-             "redact": str(pn.get("redact", "default"))}
+             "redact": str(pn.get("redact", "default")), "autostart": bool(pn.get("autostart", True)),
+             "logs": logs, "plans_glob": str(plans_glob) if plans_glob else None}
 
     aws = raw.get("aws") if isinstance(raw.get("aws"), dict) else None
     if aws is not None:

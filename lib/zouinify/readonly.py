@@ -1,16 +1,29 @@
-"""The read-only facade the panel is allowed to use. lib/zouinify/panel/ may import this module and
-nothing else of zouinify's internals: never zouinify.tmux, zouinify.launch, zouinify.tickets directly, nor
-any process-spawning primitive (scripts/check_panel_guard.sh and the AST allowlist enforce it).
-Everything here observes; nothing creates, kills, types, moves or deploys. The modules it delegates to are
-imported inside the functions so that this module re-exports none of them as attributes."""
+"""The read-only facade the panel is allowed to use. lib/zouinify/panel/ may import this module (and
+zouinify.panelstate for the server's own pid file and log) and nothing else of zouinify's internals: never
+zouinify.tmux, zouinify.launch, zouinify.tickets, zouinify.agents, zouinify.status or the registry
+directly, nor any process-spawning primitive (scripts/check_panel_guard.sh and scripts/check_panel_ast.py
+enforce it). Everything here observes; nothing creates, kills, types, moves or deploys. The modules it
+delegates to are imported inside the functions so that this module re-exports none of them as attributes."""
 from __future__ import annotations
 
 import json
 import os
 
 from zouinify import ZouinifyError
+from zouinify.config import ROLE_SESSIONS  # noqa: F401 - a tuple of role names, re-exported for the panel
 
 READ_ONLY_TICKET_SH = {"human": {"--count", "--json"}, "board": {"--json", "--slow"}}
+TERMINAL = ("done", "dropped")
+
+
+def fail(message: str):
+    """Raise the CLI's user-facing error from code that may not import zouinify itself."""
+    raise ZouinifyError(message)
+
+
+def version() -> str:
+    from zouinify import __version__
+    return __version__
 
 
 # -- tmux, reading only ---------------------------------------------------------------------------------
@@ -69,6 +82,84 @@ def proc_parent(pid: int):
 
 def path_exists(path: str) -> bool:
     return os.path.exists(path)
+
+
+def list_agents() -> list:
+    """`claude agents --json`: every live Claude Code session (name, cwd, pid, status), or []."""
+    from zouinify import agents as a
+    return a.list_agents()
+
+
+def find_agent(agents: list, name: str, cwd: str | None = None):
+    from zouinify import agents as a
+    return a.find(agents, name, cwd)
+
+
+# -- the project's tickets, reading only ------------------------------------------------------------------
+
+def is_ticket_id(s: str) -> bool:
+    from zouinify import tickets as t
+    return bool(t.ID_RE.match(s or ""))
+
+
+def ticket_files(cfg) -> list:
+    from zouinify import tickets as t
+    return t.ticket_files(cfg)
+
+
+def file_of(cfg, tid: str) -> str | None:
+    from zouinify import tickets as t
+    return t.file_of(cfg, tid)
+
+
+def front_matter(path: str) -> dict:
+    from zouinify import tickets as t
+    return t.front_matter(path)
+
+
+def freeze(cfg) -> dict:
+    from zouinify import tickets as t
+    on = t.freeze_on(cfg)
+    return {"on": on, "ids": t.freeze_ids(cfg) if on else []}
+
+
+def counts(cfg) -> tuple:
+    from zouinify import tickets as t
+    return t.counts(cfg)
+
+
+def tickets_dir(cfg) -> str:
+    from zouinify import tickets as t
+    return t.tickets_dir(cfg)
+
+
+# -- status helpers (the same numbers `zouinify status` prints) ---------------------------------------------
+
+def now_local(cfg):
+    from zouinify import status as s
+    return s.now_local(cfg)
+
+
+def next_sitting(cfg, now=None):
+    from zouinify import status as s
+    return s.next_sitting(cfg, now)
+
+
+def creds(cfg, now=None) -> dict:
+    from zouinify import status as s
+    return s.creds(cfg, now)
+
+
+# -- the launcher registry, reading only --------------------------------------------------------------------
+
+def registry_entries(cfg) -> list:
+    from zouinify.registry import Registry
+    return Registry(cfg).load()
+
+
+def registry_entry(cfg, name: str):
+    from zouinify.registry import Registry
+    return Registry(cfg).get(name)
 
 
 # -- ticket.sh, read-only output modes only ---------------------------------------------------------------
