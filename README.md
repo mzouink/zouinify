@@ -15,7 +15,7 @@ a project's names, paths and briefs live in that project's own `.ops/`.
 ## Requirements
 
 - Python 3.9+ with [PyYAML](https://pypi.org/project/PyYAML/) (`pip install pyyaml`); the CLI runs as `python3 -I`
-- tmux 3.2+ (for `new-session -e`; older tmux gets an `env` prefix)
+- tmux 3.2+ (`new-session -e` sets the session's environment; an older tmux is refused loudly)
 - the `claude` CLI on PATH (`claude agents --json` is the session source)
 
 ## Install
@@ -38,19 +38,24 @@ week 3.)
 | `zouinify config [--check\|--json]` | Load and validate `.ops/config.yaml` (every problem listed at once); `--json` prints the normalized config. The project root is `$ZOUINIFY_PROJECT`, `--project DIR`, or the nearest ancestor holding `.ops/config.yaml`. |
 | `zouinify up [role...] [--dry-run] [--wait S]` | Start the standard session set (`always: true`) or the named roles, **idempotently**: an existing tmux session of that name is reported (`attached`, with its status from `claude agents --json` and the model from its status bar), never duplicated. A new one is `tmux new-session -d -s <tmux> -c <root> -e TICKET_AS=<name> -e ZOUINIFY_PROJECT=<root> claude --model <model> -n <name> [--permission-mode <mode>] [flags] "<brief>"`; `up` waits up to 30 s for the status bar to show the model and fails loudly on a wrong one. `--dry-run` prints the exact lines. Launched sessions are recorded in `.ops/state/sessions.json`. |
 | `zouinify launch worker T-xxxx [--receipt ID] [--dry-run]` | One worker per ticket, named `t<num>-<slug>` (the ticket's slug, like `ticket.sh claim`), prompt `Read tickets/WORKER_BRIEF.md, then claim T-xxxx.`, `TICKET_AS=<name>`. Refuses unless the ticket is `ready` with an empty `owner:`, refuses an id that `tickets/FREEZE` does not list while a freeze is on, refuses a duplicate tmux name. The worker claims the ticket itself. With `--receipt ID` (the desk acting on a panel click) it appends `ticket.sh log T-xxxx "launched <name> (panel receipt ID)"`, signed by the caller's `TICKET_AS`. `launch <role>` starts one role session (`chrome_debug` gets `--chrome`). |
-| `zouinify status [--line\|--json] [--no-cache]` | `inbox N \| P0 n \| creds <left> \| sitting HH:MM in Xh \| d dev r rev m rtd k dep` from `ticket.sh human --count`, the ticket front matter, the credential files' metadata (SSO cache `expiresAt`, else credentials-file mtime + `aws.assumed_token_hours`, marked `est`) and the config's sittings. Cached 30 s: made for `tmux set -g status-right '#(zouinify status --line)'`. |
+| `zouinify status [--line\|--json] [--no-cache]` | `inbox N \| P0 n \| creds <left> \| sitting HH:MM in Xh \| d dev r rev m rtd k dep` from `ticket.sh human --count`, the ticket front matter, the credential files' metadata (SSO cache `expiresAt`, else credentials-file mtime + `aws.assumed_token_hours`, marked `est`) and the config's sittings. Cached 30 s: made for `tmux set -g status-right '#(zouinify --project /path/to/repo status --line)'` (the tmux server's cwd is not the project, so name it). `P0` counts the inbox's P0 items, what the human acts on, not every open P0 ticket. |
 | `zouinify down [name...] [--dry-run]` | Kill launcher-registered **worker** sessions whose ticket is `done` or `dropped`; prints the reason for every refusal (a role session, a session zouinify did not launch, a ticket still open). Run `--dry-run` first; a named target that is refused exits 1. |
 | `zouinify briefs render [--out DIR] [--force]`, `briefs list` | Render `templates/briefs/*.md.tmpl` (desk, manager, debug, chrome_debug, worker) with the config: `{{desk.name}}`, `{{trunk}}`, `{{prod}}`, `{{human_only}}`, `{{budget}}`, `{{sittings}}`, `{{ask_verbs}}`, ... Refuses to overwrite an edited brief without `--force`. |
 | `zouinify board`, `zouinify human [--count\|--json]` | `scripts/ticket.sh board` / `human`, verbatim. The lifecycle stays in `ticket.sh`; the skill never re-implements it. |
 
-Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (or a literal prompt) as the first
+Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (a relative path inside the project;
+anything else is refused) or a literal prompt as the first prompt, placed after `--` so a brief starting with `-` is still a
 prompt, `TICKET_AS=<name>` and `ZOUINIFY_PROJECT=<root>` in the environment. **`permission_mode` is a per-session key with no
-default**: `--permission-mode` is passed only when the config sets it.
+default**: `--permission-mode` is passed only when the config sets it. The model is read from the status bar with `model_re`
+(a config key; group 1 is the label): a different model than configured fails loudly, no label within the wait is a warning.
+A session that appears between the existence check and the launch is reported as attached, never duplicated.
 
 **`up`, `launch` and `down` are run by the human from a shell or by the desk session, never by the panel process.** The panel
 (next step) only reads; a click to launch or kill becomes a receipt the desk executes with these commands after its own checks.
-`scripts/check_panel_guard.sh` fails CI if `lib/zouinify/panel/` ever names `new-session`, `kill-session`, `send-keys`, a
-mutating `ticket.sh` command, an apply, a push or a deploy.
+`scripts/check_panel_guard.sh` is an allowlist over `lib/zouinify/panel/`: it fails CI on any process-spawning primitive
+(`subprocess`, `os.system`, `os.exec*`, `pty`, `shlex`, `child_process`, ...), any import of the launcher or the tmux wrapper, a
+direct `ticket_sh()` call or a registry write, and any tmux, ticket, deploy or `zouinify up|launch|down` verb however spelled.
+The panel reads through `lib/zouinify/readonly.py` (captures, pane list, `human --json`, `board --json`) and nothing else.
 
 ## The control panel (next)
 
@@ -103,7 +108,8 @@ templates/
   ops/config.yaml.example     the per-project config
   briefs/*.md.tmpl            desk, manager, debug, chrome_debug, worker
   tickets/, scripts/, claude/, hooks/   (week 3: the vendored lifecycle core, the CLAUDE.md section, the hook)
-scripts/check_panel_guard.sh  CI: the panel never launches, kills, types, mutates tickets or deploys
+readonly.py                 the read-only facade the panel may import (captures, pane list, human/board --json)
+scripts/check_panel_guard.sh  CI allowlist: the panel spawns nothing, imports no launcher/tmux, mutates no ticket or registry
 scripts/check_public.sh       CI + pre-push: no account ids, keys, secrets, e-mails or home paths in tracked files;
                               a project's own names go in ~/.config/zouinify/private-patterns (outside the repo)
 tests/                        throwaway-world tests: fake tmux, fake claude, fake ticket.sh (`python3 -m pytest -q tests`)

@@ -21,6 +21,7 @@ human_only:                             # printed into every brief and the CLAUD
 sittings: {tz: America/New_York, times: ["09:30", "16:00"], freeze_before_min: 10, push_before_min: 10}
 budget: {paid_usd_per_day: 10, approval_text: "T-{id} budget ok"}
 model: fable
+# model_re: '\[((?:Fable|Opus|Sonnet|Haiku|Claude)[^\]\n]*)\]'   # optional: how the model label is read from a pane's status bar (group 1)
 sessions:
   desk:         {name: mp-desk,         tmux: mp-desk,         model: fable, permission_mode: auto, brief: .ops/briefs/desk.md,         always: true}
   manager:      {name: mp-manager,      tmux: mp-manager,      model: fable, permission_mode: auto, brief: .ops/briefs/manager.md,      always: true}

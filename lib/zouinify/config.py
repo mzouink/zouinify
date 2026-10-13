@@ -15,7 +15,9 @@ CONFIG_REL = os.path.join(".ops", "config.yaml")
 ROLE_SESSIONS = ("desk", "manager", "debug", "chrome_debug")  # the fixed roles: `down` never kills them
 MODEL_WORDS = ("fable", "opus", "sonnet", "haiku")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-DEFAULT_WORKER_PROMPT = "Read tickets/WORKER_BRIEF.md, then claim {id}."
+DEFAULT_WORKER_PROMPT_TMPL = "Read {tickets_dir}/WORKER_BRIEF.md, then claim {{id}}."
+# the Claude Code status bar, e.g. `[Fable 5.1] 📁 repo | 🌿 branch`; group 1 is the model label (config key `model_re`)
+DEFAULT_MODEL_RE = r"\[((?:Fable|Opus|Sonnet|Haiku|Claude)[^\]\n]*)\]"
 BIND_ALIASES = {"loopback": "loopback", "127.0.0.1": "loopback", "localhost": "loopback",
                 "intranet": "intranet", "0.0.0.0": "intranet"}
 DEFAULT_ASK_VERBS = ["APPLY", "DEPLOY", "PUSH", "RUN", "DECIDE", "CHECK", "APPROVE", "SSO"]
@@ -80,6 +82,7 @@ class Config:
     sittings: dict
     budget: dict
     model: str | None
+    model_re: str
     sessions: dict
     panel: dict
     aws: dict | None
@@ -109,7 +112,7 @@ class Config:
                 "tickets": {"dir": self.tickets_dir, "script": self.tickets_script, "worktrees": self.worktrees,
                             "ask_verbs": self.ask_verbs, "deploy_kinds": self.deploy_kinds},
                 "human_only": self.human_only, "sittings": self.sittings, "budget": self.budget,
-                "model": self.model, "sessions": {r: s.to_dict() for r, s in self.sessions.items()},
+                "model": self.model, "model_re": self.model_re, "sessions": {r: s.to_dict() for r, s in self.sessions.items()},
                 "panel": self.panel, "aws": self.aws, "contact": self.contact, "warnings": self.warnings}
 
 
@@ -215,6 +218,18 @@ def load(root: str | None = None) -> Config:
     if model is not None and not _is_str(model):
         errs.append("model: a string (e.g. fable)")
         model = None
+    model_re = raw.get("model_re", DEFAULT_MODEL_RE)
+    if not _is_str(model_re):
+        errs.append("model_re: a regular expression over the visible screen whose group 1 is the model label")
+        model_re = DEFAULT_MODEL_RE
+    else:
+        try:
+            if re.compile(model_re).groups < 1:
+                errs.append("model_re: needs one capturing group (the model label)")
+        except re.error as e:
+            errs.append(f"model_re: not a valid regular expression ({e})")
+            model_re = DEFAULT_MODEL_RE
+    default_worker_prompt = DEFAULT_WORKER_PROMPT_TMPL.format(tickets_dir=tickets_dir)
 
     sessions: dict[str, Session] = {}
     raw_sessions = raw.get("sessions")
@@ -236,19 +251,29 @@ def load(root: str | None = None) -> Config:
         if kind == "claude" and not _is_str(s_model):
             errs.append(f"sessions.{role}.model: required (or a top-level `model`)")
         pm = s.get("permission_mode")
-        if pm is not None and not _is_str(pm):
-            errs.append(f"sessions.{role}.permission_mode: a string when set (it is passed to claude only when set)")
-            pm = None
+        if pm is not None and (not isinstance(pm, str) or not pm.strip()):
+            if pm != "" and pm is not None:
+                errs.append(f"sessions.{role}.permission_mode: a string when set (it is passed to claude only when set)")
+            pm = None  # "" means unset
         brief, prompt = s.get("brief"), s.get("prompt")
-        if brief is not None and not _is_str(brief):
-            errs.append(f"sessions.{role}.brief: a file path relative to the project")
-            brief = None
+        if brief is not None:
+            if not _is_str(brief):
+                errs.append(f"sessions.{role}.brief: a file path relative to the project")
+                brief = None
+            else:
+                b = str(brief).strip()
+                real = os.path.realpath(os.path.join(root, b))
+                if os.path.isabs(b) or b.startswith("~") or not real.startswith(root + os.sep):
+                    errs.append(f"sessions.{role}.brief: must be a relative path inside the project, not {b!r}")
+                    brief = None
+                else:
+                    brief = os.path.relpath(real, root)
         if prompt is not None and not _is_str(prompt):
             errs.append(f"sessions.{role}.prompt: a string")
             prompt = None
         flags = _strlist(s.get("flags"), f"sessions.{role}.flags", errs, [])
         if role == "worker":
-            prompt = prompt or DEFAULT_WORKER_PROMPT
+            prompt = prompt or default_worker_prompt
             if "{id}" not in prompt:
                 errs.append("sessions.worker.prompt: must contain {id}")
             for k, v in (("name", s_name), ("tmux", s_tmux)):
@@ -270,7 +295,7 @@ def load(root: str | None = None) -> Config:
         errs.append("sessions.desk: required (the ticket desk is the one voice to the human)")
     if "worker" not in sessions:
         sessions["worker"] = Session("worker", "t{num}-{slug}", "t{num}-{slug}", str(model or ""), None, None,
-                                     DEFAULT_WORKER_PROMPT, [], False, False, "claude")
+                                     default_worker_prompt, [], False, False, "claude")
         warns.append("sessions.worker: missing, using the default pattern t{num}-{slug} and the default prompt")
     seen: dict[str, str] = {}
     for role, s in sessions.items():
@@ -312,7 +337,7 @@ def load(root: str | None = None) -> Config:
     return Config(root=root, name=str(name), short=str(short), repos=clean_repos, trunk=trunk, prod=prod,
                   tickets_dir=tickets_dir, tickets_script=tickets_script, worktrees=worktrees, ask_verbs=ask_verbs,
                   deploy_kinds=deploy_kinds, human_only=human_only, sittings=sittings, budget=budget,
-                  model=str(model) if model else None, sessions=sessions, panel=panel, aws=aws, contact=contact,
+                  model=str(model) if model else None, model_re=str(model_re), sessions=sessions, panel=panel, aws=aws, contact=contact,
                   warnings=warns)
 
 

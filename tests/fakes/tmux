@@ -6,6 +6,11 @@ new-session (its command argv, -e environment, -c cwd), calls.log records every 
 JSON argv per line) so a test can assert what the CLI ran -- and what it never ran (send-keys).
 capture-pane prints a Claude-like screen whose status bar names the model from the recorded
 `--model` argument, or the contents of <state>/screen-<session>.txt when a test plants one.
+
+Target semantics follow tmux: `=name` matches exactly; a bare `name` matches exactly, else the unique
+session whose name starts with it (so an implementation that drops the `=` is caught by a test that
+plants a `tp-desk-old` next to a missing `tp-desk`). $FAKE_TMUX_RACE=<name> makes `has-session` deny
+that session although it exists, to simulate losing the check-then-launch race.
 """
 import json
 import os
@@ -34,15 +39,21 @@ def log(argv):
         fh.write(json.dumps(argv) + "\n")
 
 
-def target(args):
-    """`=name` (exact session), `=name:` / `=name:.` (exact session's active window/pane) -> name."""
+def resolve(d, args):
+    """tmux -t resolution -> the session name, or None."""
     t = args[args.index("-t") + 1]
-    if t.startswith("="):
+    exact = t.startswith("=")
+    if exact:
         t = t[1:]
     for suffix in (":.", ":"):
         if t.endswith(suffix):
             t = t[: -len(suffix)]
-    return t
+    if t in d:
+        return t
+    if exact:
+        return None
+    cands = [n for n in d if n.startswith(t)]
+    return cands[0] if len(cands) == 1 else None
 
 
 def main(argv):
@@ -55,10 +66,10 @@ def main(argv):
         print("tmux 3.4")
         return 0
     if cmd == "has-session":
-        t = target(args)
-        if t in d:
+        t = resolve(d, args)
+        if t is not None and t != os.environ.get("FAKE_TMUX_RACE"):
             return 0
-        print(f"can't find session: {t}", file=sys.stderr)
+        print(f"can't find session: {args[args.index('-t') + 1]}", file=sys.stderr)
         return 1
     if cmd == "new-session":
         name = cwd = None
@@ -91,17 +102,17 @@ def main(argv):
         save(d)
         return 0
     if cmd == "kill-session":
-        t = target(args)
-        if t not in d:
-            print(f"can't find session: {t}", file=sys.stderr)
+        t = resolve(d, args)
+        if t is None:
+            print(f"can't find session: {args[args.index('-t') + 1]}", file=sys.stderr)
             return 1
         del d[t]
         save(d)
         return 0
     if cmd == "capture-pane":
-        t = target(args)
-        if t not in d:
-            print(f"can't find session: {t}", file=sys.stderr)
+        t = resolve(d, args)
+        if t is None:
+            print(f"can't find pane: {args[args.index('-t') + 1]}", file=sys.stderr)
             return 1
         planted = os.path.join(STATE, f"screen-{t}.txt")
         if os.path.exists(planted):
@@ -132,7 +143,7 @@ def main(argv):
             print(name)
         return 0
     if cmd == "show-environment":
-        t = target(args)
+        t = resolve(d, args)
         for k, v in d.get(t, {}).get("env", {}).items():
             print(f"{k}={v}")
         return 0

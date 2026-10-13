@@ -72,6 +72,19 @@ TICKETS = [
     ("T-0008", "in-review-one", "in-review", "P2", "w8"),
     ("T-0009", "rtm-one", "ready-to-merge", "P2", "w9"),
     ("T-0010", "deployed-one", "deployed", "P2", ""),
+    ("T-0011", "deployed-p0-regression", "deployed", "P0", ""),   # open P0 on the board, nothing for the human to do
+]
+
+# the default human inbox of the world (what `ticket.sh human --json` prints): 4 items, exactly one P0
+DEFAULT_HUMAN = [
+    {"verb": "RUN", "tickets": "T-0005", "priority": "P0", "title": "second ready p0", "since": "2026-10-13 06:00",
+     "command": "cd /x && ./fix.sh", "expect": "ok", "if_nothing": "stays broken", "note": "asked by tp-desk"},
+    {"verb": "DECIDE", "tickets": "T-0006", "priority": "P1", "title": "blocked one", "since": "2026-10-12 15:00",
+     "command": "reply \"T-0006 keep\" or \"T-0006 drop\"", "expect": "T-0006 keep", "if_nothing": "stays blocked", "note": ""},
+    {"verb": "CHECK", "tickets": "T-0010", "priority": "P2", "title": "deployed one", "since": "2026-10-13 01:00",
+     "command": "open the page", "expect": "it renders", "if_nothing": "unverified", "note": ""},
+    {"verb": "SSO", "tickets": "", "priority": "P3", "title": "refresh credentials", "since": "2026-10-13 07:00",
+     "command": "aws sso login", "expect": "Successfully logged in", "if_nothing": "checks block", "note": ""},
 ]
 
 CONFIG = """version: 1
@@ -137,10 +150,13 @@ class World(unittest.TestCase):
         self.state = os.path.join(self.tmp, "tmux-state")
         os.makedirs(self.state)
         self.ticket_log = os.path.join(self.tmp, "ticket-calls.log")
+        self.human_json = os.path.join(self.tmp, "human.json")
+        with open(self.human_json, "w") as fh:
+            json.dump(DEFAULT_HUMAN, fh)
         env = dict(os.environ)
         env.pop("ZOUINIFY_PROJECT", None)
         env.update(PATH=FAKES + os.pathsep + env.get("PATH", ""), FAKE_TMUX_STATE=self.state,
-                   FAKE_TICKET_LOG=self.ticket_log, FAKE_HUMAN_COUNT="4", TICKET_AS="tester-session",
+                   FAKE_TICKET_LOG=self.ticket_log, FAKE_HUMAN_COUNT="4", FAKE_HUMAN_JSON=self.human_json, TICKET_AS="tester-session",
                    HOME=self.home, ZOUINIFY_NOW="2026-10-13T07:00:00")
         self.env = env
 
@@ -310,6 +326,7 @@ class TestUp(World):
             self.assertEqual(a[a.index("--permission-mode") + 1], "auto")
             role = {"tp-desk": "desk", "tp-manager": "manager", "tp-debug": "debug"}[name]
             self.assertTrue(a[-1].startswith(f"# {role} brief for testproj"), a[-1][:60])
+            self.assertEqual(a[-2], "--", "the prompt follows `--` so a brief starting with '-' is not an option")
         # the fake status bar shows the model derived from --model: `up` saw it
         screen = subprocess.run(["tmux", "capture-pane", "-p", "-t", "tp-desk"], env=self.env, capture_output=True, text=True).stdout
         self.assertIn("[Fable 5.1]", screen)
@@ -332,7 +349,7 @@ class TestUp(World):
         self.assertIn("tmux new-session -d -s tp-desk -c " + self.root, r.stdout)
         self.assertIn("-e TICKET_AS=tp-desk", r.stdout)
         self.assertIn("claude --model fable -n tp-desk --permission-mode auto", r.stdout)
-        self.assertIn(".ops/briefs/desk.md", r.stdout)
+        self.assertIn(os.path.join(self.root, ".ops/briefs/desk.md"), r.stdout)
 
     def test_up_registry(self):
         self.ok("up")
@@ -525,8 +542,8 @@ class TestStatus(World):
         line = r.stdout.strip().splitlines()[-1]
         m = self.LINE_RE.match(line)
         self.assertTrue(m, line)
-        self.assertEqual(m.group(1), "4")            # FAKE_HUMAN_COUNT
-        self.assertEqual(m.group(2), "1")            # T-0005 is an open P0
+        self.assertEqual(m.group(1), "4")            # the 4 items of human --json
+        self.assertEqual(m.group(2), "1")            # one P0 item in the inbox (T-0011, a deployed P0, asks nothing: not counted)
         self.assertEqual(m.group(3), "none")         # no sso cache, no credentials file
         self.assertEqual(m.group(4), "09:30")        # ZOUINIFY_NOW is 07:00 ET
         self.assertEqual(m.group(5), "2h30")
@@ -557,18 +574,19 @@ class TestStatus(World):
 
     def test_status_cache_30s(self):
         self.ok("status", "--line")
-        n = len([c for c in self.ticket_calls() if c == "human --count"])
+        n = len([c for c in self.ticket_calls() if c == "human --json"])
         self.assertEqual(n, 1)
         self.ok("status", "--line")
-        self.assertEqual(len([c for c in self.ticket_calls() if c == "human --count"]), 1, "cached")
+        self.assertEqual(len([c for c in self.ticket_calls() if c == "human --json"]), 1, "cached")
         self.ok("status", "--line", "--no-cache")
-        self.assertEqual(len([c for c in self.ticket_calls() if c == "human --count"]), 2)
+        self.assertEqual(len([c for c in self.ticket_calls() if c == "human --json"]), 2)
 
     def test_status_json_and_long(self):
         r = self.ok("status", "--json")
         d = json.loads(r.stdout)
         self.assertEqual(d["inbox"], 4)
-        self.assertEqual(d["p0"], 1)
+        self.assertEqual(d["p0"], 1)                 # inbox P0 items
+        self.assertEqual(d["p0_open_tickets"], 2)    # T-0005 (ready) + T-0011 (deployed) on the board
         self.assertEqual(d["counts"]["in-dev"], 1)
         self.assertEqual(d["sitting"]["at"], "09:30")
         r = self.ok("status")
@@ -612,6 +630,90 @@ class TestPassthrough(World):
         self.assertIn("fake board", r.stdout)
         r = self.ok("human", "--count")
         self.assertEqual(r.stdout.strip(), "4")
+
+
+class TestReviewFixes(World):
+    """The items the T-0159 reviews asked for (desk + independent sub-agent)."""
+
+    def test_duplicate_session_race_is_attached(self):
+        self.ok("up", "desk")
+        # has-session lies "missing" for tp-desk while the session exists: new-session answers "duplicate session"
+        r = self.ok("up", env=dict(self.env, FAKE_TMUX_RACE="tp-desk"))
+        line = [l for l in r.stdout.splitlines() if l.startswith("desk")][0]
+        self.assertIn("attached", line)
+        self.assertEqual(len([c for c in self.new_sessions() if self.opts_of(c)["-s"] == "tp-desk"]), 2, "one real, one refused duplicate")
+        self.assertEqual(len(self.sessions()), 3)
+
+    def test_exact_name_not_prefix(self):
+        subprocess.run(["tmux", "new-session", "-d", "-s", "tp-desk-old", "-c", self.root, "claude", "--model", "fable", "x"],
+                       env=self.env, check=True)
+        r = self.ok("up", "desk")
+        self.assertIn("launched", r.stdout)
+        self.assertIn("tp-desk", self.sessions())
+
+    def test_no_model_seen_is_a_warning(self):
+        with open(os.path.join(self.state, "screen-tp-desk.txt"), "w") as fh:
+            fh.write("> starting\n(no status bar yet)\n")
+        r = self.ok("up", "desk", "--wait", "0.3")
+        self.assertIn("WARNING", r.stdout)
+        self.assertIn("launched", r.stdout)
+        self.assertIn("tp-desk", [e["name"] for e in self.registry()], "registered before the wait")
+
+    def test_model_re_is_a_config_key(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("model: fable\n", "model: fable\nmodel_re: 'model=(\\w+)'\n"))
+        with open(os.path.join(self.state, "screen-tp-desk.txt"), "w") as fh:
+            fh.write("custom bar model=Fable ok\n")
+        r = self.ok("up", "desk")
+        self.assertIn("model Fable", r.stdout)
+        self.write(".ops/config.yaml", cfg.replace("model: fable\n", "model: fable\nmodel_re: '(['\n"))
+        r = self.fail("config", "--check")
+        self.assertIn("model_re", r.stderr)
+
+    def test_down_refuses_tampered_registry(self):
+        self.ok("up")
+        self.set_status("T-0003", "done")
+        reg_path = os.path.join(self.root, ".ops", "state", "sessions.json")
+        reg = json.load(open(reg_path))
+        reg.append({"name": "t0003-finished-ticket", "tmux": "tp-desk", "role": "worker", "ticket": "T-0003"})
+        json.dump(reg, open(reg_path, "w"))
+        r = self.fail("down", "t0003-finished-ticket")
+        self.assertIn("desk", r.stdout + r.stderr)
+        self.assertEqual(self.kills(), [])
+        self.assertIn("tp-desk", self.sessions())
+        r = self.ok("down")
+        self.assertEqual(self.kills(), [])
+
+    def test_brief_outside_project_is_refused(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        for bad in ("~/.aws/credentials", "/etc/passwd", "../outside.md"):
+            self.write(".ops/config.yaml", cfg.replace("brief: .ops/briefs/desk.md", f"brief: {bad}"))
+            r = self.fail("config", "--check")
+            self.assertIn("inside the project", r.stderr, bad)
+            r = self.fail("up", "desk")
+            self.assertEqual(self.new_sessions(), [], bad)
+
+    def test_empty_permission_mode_is_unset(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("permission_mode: auto, brief: .ops/briefs/desk.md", 'permission_mode: "", brief: .ops/briefs/desk.md'))
+        self.ok("config", "--check")
+        self.ok("up", "desk")
+        self.assertNotIn("--permission-mode", self.argv_of(self.new_sessions()[0]))
+
+    def test_concurrent_launches_keep_both_registry_entries(self):
+        import threading
+        results = {}
+
+        def go(tid):
+            results[tid] = self.z("launch", "worker", tid)
+        ts = [threading.Thread(target=go, args=(t,)) for t in ("T-0001", "T-0005")]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        for tid, r in results.items():
+            self.assertEqual(r.returncode, 0, f"{tid}: {r.stderr}")
+        self.assertEqual(sorted(e["ticket"] for e in self.registry()), ["T-0001", "T-0005"])
 
 
 if __name__ == "__main__":

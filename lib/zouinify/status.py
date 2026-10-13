@@ -1,12 +1,14 @@
-"""`status [--line|--json]`: inbox count, open P0s, credential time left, the next sitting and the board
-counts, from `ticket.sh human --count`, the ticket front matter, the credential files' metadata and the
-config. Cached 30 s in <state_dir>/status.json (the tmux status bar re-runs it on every redraw)."""
+"""`status [--line|--json]`: inbox count and inbox P0s (from `ticket.sh human --json`: what the human acts
+on, so a deployed P0 that asks nothing is not counted), credential time left, the next sitting and the
+board counts (front matter). Cached 30 s in <state_dir>/status.json (the tmux status bar re-runs it on
+every redraw)."""
 from __future__ import annotations
 
 import datetime as dt
 import glob
 import json
 import os
+import tempfile
 import time
 
 from zouinify import tickets as tk
@@ -118,13 +120,16 @@ def collect(cfg, use_cache: bool = True) -> dict:
         except (OSError, ValueError):
             pass
     now = now_local(cfg)
-    by, p0 = tk.counts(cfg)
-    data = {"inbox": tk.human_count(cfg), "p0": p0, "creds": creds(cfg, now), "sitting": next_sitting(cfg, now),
+    by, p0_open = tk.counts(cfg)
+    items = tk.human_items(cfg)
+    inbox = len(items) if items is not None else None
+    p0 = sum(1 for it in items if str(it.get("priority", "")).upper() == "P0") if items is not None else 0
+    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "creds": creds(cfg, now), "sitting": next_sitting(cfg, now),
             "counts": by, "generated": now.replace(microsecond=0).isoformat(), "trunk": cfg.trunk, "project": cfg.name}
     try:
         os.makedirs(cfg.state_dir, exist_ok=True)
-        tmp = cache + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        fd, tmp = tempfile.mkstemp(dir=cfg.state_dir, prefix=".status.", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"at": time.time(), "data": data}, fh)
         os.replace(tmp, cache)
     except OSError:
@@ -145,8 +150,8 @@ def long(data: dict) -> str:
     s = data.get("sitting")
     c = data.get("counts") or {}
     rows = [f"{data.get('project')} @ {data.get('generated')}  (trunk {data.get('trunk')})",
-            f"inbox   {data.get('inbox') if data.get('inbox') is not None else '? (ticket.sh human --count failed)'}",
-            f"P0 open {data.get('p0', 0)}",
+            f"inbox   {data.get('inbox') if data.get('inbox') is not None else '? (ticket.sh human --json failed)'}",
+            f"P0      {data.get('p0', 0)} in the inbox ({data.get('p0_open_tickets', 0)} open P0 ticket(s) on the board)",
             f"creds   {data['creds']['left']}  ({data['creds']['source']})",
             (f"sitting {s['day']} {s['at']} {s['tz']} in {s['in']} (inbox freezes at {s['freeze_at']})" if s else "sitting none configured"),
             "board   " + ("  ".join(f"{k} {v}" for k, v in sorted(c.items())) or "no tickets")]

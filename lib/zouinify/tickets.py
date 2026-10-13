@@ -7,6 +7,7 @@ is `ticket.sh log` from `launch --receipt`, run on the desk's behalf and signed 
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 import subprocess
@@ -134,3 +135,18 @@ def human_count(cfg) -> int | None:
         return None
     m = re.search(r"(\d+)\s*$", r.stdout or "")
     return int(m.group(1)) if m else None
+
+
+def human_items(cfg) -> list | None:
+    """`ticket.sh human --json` as the list of inbox items, or None when the script cannot answer."""
+    try:
+        r = ticket_sh(cfg, ["human", "--json"], timeout=120)
+    except ZouinifyError:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        data = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    return [it for it in data if isinstance(it, dict)] if isinstance(data, list) else None

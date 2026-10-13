@@ -1,8 +1,10 @@
 """Thin wrappers around the tmux binary ($ZOUINIFY_TMUX overrides the name; the tests put a fake on PATH).
 
 Only zouinify.launch may call new_session / kill_session; nothing here ever types into a pane
-(send-keys does not exist in this module on purpose). scripts/check_panel_guard.sh keeps the panel
-code away from the mutating calls.
+(send-keys does not exist in this module on purpose). The panel never imports this module: it reads
+through zouinify.readonly, and scripts/check_panel_guard.sh fails CI on any other path.
+
+Requires tmux 3.2+ (`new-session -e` sets the session's environment); an older tmux fails loudly.
 """
 from __future__ import annotations
 
@@ -13,15 +15,18 @@ import subprocess
 import time
 
 from zouinify import ZouinifyError
-from zouinify.config import MODEL_WORDS
+from zouinify.config import DEFAULT_MODEL_RE, MODEL_WORDS
 
 TMUX = os.environ.get("ZOUINIFY_TMUX", "tmux")
-# the Claude Code status bar: `[Fable 5.1] 📁 repo | 🌿 branch`; the last match on the screen wins
-MODEL_RE = re.compile(r"\[((?:Fable|Opus|Sonnet|Haiku|Claude)[^\]\n]*)\]")
+_RE_CACHE: dict = {}
 
 
 class TmuxError(ZouinifyError):
     pass
+
+
+class DuplicateSession(TmuxError):
+    """`new-session` found the name already taken: somebody won the race between the check and the launch."""
 
 
 def _run(args: list, timeout: float = 20) -> subprocess.CompletedProcess:
@@ -39,15 +44,18 @@ def has_session(name: str) -> bool:
 
 
 def new_session(name: str, cwd: str, env: dict, argv: list) -> None:
-    """`tmux new-session -d -s <name> -c <cwd> -e K=V ... <argv>`; tmux < 3.2 (no -e) gets `env K=V ... <argv>`."""
+    """`tmux new-session -d -s <name> -c <cwd> -e K=V ... <argv>` (tmux 3.2+)."""
     cmd = ["new-session", "-d", "-s", name, "-c", cwd]
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
     r = _run(cmd + list(argv))
-    if r.returncode != 0 and env and "unknown option" in (r.stderr or ""):
-        r = _run(["new-session", "-d", "-s", name, "-c", cwd, "env", *[f"{k}={v}" for k, v in env.items()], *argv])
     if r.returncode != 0:
-        raise TmuxError(f"tmux new-session {name} failed: {(r.stderr or r.stdout).strip()}")
+        msg = (r.stderr or r.stdout).strip()
+        if "duplicate session" in msg:
+            raise DuplicateSession(f"tmux session {name} already exists")
+        if "unknown flag" in msg or "usage:" in msg:
+            msg += "  (tmux 3.2+ is required for new-session -e)"
+        raise TmuxError(f"tmux new-session {name} failed: {msg}")
 
 
 def kill_session(name: str) -> None:
@@ -73,12 +81,28 @@ def list_panes() -> list:
     return rows
 
 
-def model_on_screen(text: str) -> str | None:
-    """The model label in the status bar, e.g. `Fable 5.1`, or None."""
+def _compiled(pattern: str | None):
+    pat = pattern or DEFAULT_MODEL_RE
+    rx = _RE_CACHE.get(pat)
+    if rx is None:
+        try:
+            rx = re.compile(pat)
+        except re.error:
+            rx = re.compile(DEFAULT_MODEL_RE)
+        _RE_CACHE[pat] = rx
+    return rx
+
+
+def model_on_screen(text: str, pattern: str | None = None) -> str | None:
+    """The model label in the status bar (group 1 of `model_re`, e.g. `Fable 5.1`), the last match on the
+    screen, or None when no status bar is visible."""
     last = None
-    for m in MODEL_RE.finditer(text or ""):
+    for m in _compiled(pattern).finditer(text or ""):
         last = m
-    return last.group(1).strip() if last else None
+    if not last:
+        return None
+    label = last.group(1) if last.re.groups else last.group(0)
+    return label.strip() or None
 
 
 def model_word(label: str | None) -> str | None:
@@ -95,11 +119,11 @@ def alias_of(model: str) -> str | None:
     return None
 
 
-def wait_for_model(name: str, timeout_s: float, poll_s: float = 1.0) -> str | None:
+def wait_for_model(name: str, timeout_s: float, poll_s: float = 1.0, pattern: str | None = None) -> str | None:
     """Poll the status bar until a model label shows, up to timeout_s; None if it never does."""
     deadline = time.monotonic() + max(0.0, timeout_s)
     while True:
-        label = model_on_screen(capture_pane(name))
+        label = model_on_screen(capture_pane(name), pattern)
         if label:
             return label
         remaining = deadline - time.monotonic()
@@ -108,15 +132,16 @@ def wait_for_model(name: str, timeout_s: float, poll_s: float = 1.0) -> str | No
         time.sleep(min(poll_s, remaining))
 
 
-def launch_line(name: str, cwd: str, env: dict, argv: list, brief_rel: str | None = None) -> str:
-    """The exact shell line a human could paste; with brief_rel the prompt is shown as "$(cat <brief>)"."""
+def launch_line(name: str, cwd: str, env: dict, argv: list, brief_path: str | None = None) -> str:
+    """The exact shell line a human could paste from anywhere; with brief_path (absolute) the prompt is
+    shown as "$(cat <brief>)" instead of its full text."""
     parts = ["tmux", "new-session", "-d", "-s", name, "-c", cwd]
     for k, v in env.items():
         parts += ["-e", f"{k}={v}"]
     quoted = [shlex.quote(p) for p in parts]
     body = list(argv)
-    if brief_rel is not None and body:
-        quoted += [shlex.quote(p) for p in body[:-1]] + [f'"$(cat {shlex.quote(brief_rel)})"']
+    if brief_path is not None and body:
+        quoted += [shlex.quote(p) for p in body[:-1]] + [f'"$(cat {shlex.quote(brief_path)})"']
     else:
         quoted += [shlex.quote(p) for p in body]
     return " ".join(quoted)

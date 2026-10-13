@@ -47,14 +47,16 @@ def claude_argv(sess, name: str, prompt: str) -> list:
     if sess.permission_mode:
         argv += ["--permission-mode", sess.permission_mode]
     argv += list(sess.flags)
-    argv.append(prompt)
+    argv += ["--", prompt]  # `--` ends the options: a brief that starts with '-' is still the prompt
     return argv
 
 
 def brief_text(cfg, sess) -> str:
     """The prompt of a role session: its brief file's contents, else its literal prompt."""
     if sess.brief:
-        p = cfg.path(sess.brief)
+        p = os.path.realpath(cfg.path(sess.brief))
+        if not p.startswith(os.path.realpath(cfg.root) + os.sep):
+            raise LaunchError(f"{sess.role}: brief {sess.brief} resolves outside the project ({p}); briefs live under the project")
         if not os.path.isfile(p):
             raise LaunchError(f"{sess.role}: brief {sess.brief} not found under {cfg.root} "
                               "(write it, or `zouinify briefs render --out .ops/briefs`)")
@@ -90,7 +92,7 @@ class Launcher:
     def report_attached(self, role: str, sess, tmux_name: str) -> None:
         a = agentsmod.find(self.agents(), sess.name, self.cfg.root)
         status = (a or {}).get("status") or "unknown"
-        label = tmux.model_on_screen(tmux.capture_pane(tmux_name))
+        label = tmux.model_on_screen(tmux.capture_pane(tmux_name), self.cfg.model_re)
         note = f"status {status}, model {label or '?'}"
         want = tmux.alias_of(sess.model)
         if label and want and tmux.model_word(label) != want:
@@ -99,30 +101,35 @@ class Launcher:
 
     def start(self, role: str, sess, name: str, tmux_name: str, prompt: str, ticket: str | None = None,
               brief_rel: str | None = None) -> bool:
-        """Create the session, wait for the status bar to show the model, record it. False = check it."""
+        """Create the session, record it, wait for the status bar to show the model. False = the wrong model."""
         env = session_env(self.cfg, name)
         argv = claude_argv(sess, name, prompt)
-        line = tmux.launch_line(tmux_name, self.cfg.root, env, argv, brief_rel)
+        line = tmux.launch_line(tmux_name, self.cfg.root, env, argv, self.cfg.path(brief_rel) if brief_rel else None)
         if self.dry_run:
             self.say(self._row(role, name, tmux_name, "would launch:"))
             self.say("  " + line)
             return True
-        tmux.new_session(tmux_name, self.cfg.root, env, argv)
-        t0 = time.monotonic()
-        label = tmux.wait_for_model(tmux_name, self.wait_s)
-        elapsed = int(round(time.monotonic() - t0))
+        try:
+            tmux.new_session(tmux_name, self.cfg.root, env, argv)
+        except tmux.DuplicateSession:
+            self.say(self._row(role, name, tmux_name, "attached", "it appeared between the check and the launch; not duplicated"))
+            return True
         self.reg.add({"name": name, "tmux": tmux_name, "role": role, "ticket": ticket, "launched_at": _now_iso(),
                       "by": _by(), "model": sess.model, "permission_mode": sess.permission_mode, "cwd": self.cfg.root,
                       "line": line})
+        t0 = time.monotonic()
+        label = tmux.wait_for_model(tmux_name, self.wait_s, pattern=self.cfg.model_re)
+        elapsed = int(round(time.monotonic() - t0))
         want = tmux.alias_of(sess.model)
         if label is None:
             self.say(self._row(role, name, tmux_name, "launched",
-                               f"model not seen in {int(self.wait_s)} s: attach to tmux {tmux_name} and check the status bar"))
-            return False
+                               f"WARNING: no model label on the status bar within {int(self.wait_s)} s "
+                               f"(model_re in .ops/config.yaml); look at tmux {tmux_name}"))
+            return True
         if want and tmux.model_word(label) != want:
             self.say(self._row(role, name, tmux_name, "launched",
                                f"WRONG MODEL: the status bar shows {label}, the config says {sess.model}; "
-                               f"kill it (tmux kill-session -t ={tmux_name}) and check `claude --model`"))
+                               f"stop it and check `claude --model`"))
             return False
         self.say(self._row(role, name, tmux_name, "launched", f"model {label} ({elapsed} s)"))
         return True
@@ -248,6 +255,11 @@ def cmd_down(cfg, names=(), dry_run: bool = False, out=None) -> int:
             say(f"{n:<36} refused: not launcher-registered (only sessions zouinify launched, see {reg.path})")
             refused += 1
             continue
+        if e.get("tmux") in role_of:
+            say(f"{n:<36} refused: its registry entry points at the {role_of[e['tmux']]} session's window ({e['tmux']}): "
+                "tampered or stale registry, never killed")
+            refused += 1
+            continue
         tid = e.get("ticket")
         if not tid:
             say(f"{n:<36} refused: no ticket recorded for it")
@@ -268,7 +280,12 @@ def cmd_down(cfg, names=(), dry_run: bool = False, out=None) -> int:
             say(f"{n:<36} ticket {tid} {st}; would kill (dry-run)")
             killed += 1
             continue
-        tmux.kill_session(e["tmux"])
+        try:
+            tmux.kill_session(e["tmux"])
+        except tmux.TmuxError as err:
+            say(f"{n:<36} FAILED: {err}")
+            refused += 1
+            continue
         reg.remove(e["name"])
         say(f"{n:<36} ticket {tid} {st}; killed")
         killed += 1
