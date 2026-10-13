@@ -38,16 +38,19 @@ Then, inside your project:
 ```bash
 zouinify init                  # asks for name, short tag, branches, model, port, your name; writes .ops/config.yaml,
                                # .ops/briefs/*.md and the .ops/state/ line in .gitignore; never overwrites, nothing outside the repo
+zouinify init --protocol       # shows the plan, then after your typed yes: scripts/ticket.sh (the vendored core), tickets/ticket.env,
+                               # tickets/plugins/none, the rendered tickets/README.md, _TEMPLATE.md, WORKER_BRIEF.md, a CLAUDE.md block;
+                               # you commit them (init commits nothing)
 zouinify config --check        # validates the file (edit it first: repos, human_only, budget)
 zouinify up --dry-run          # shows the exact tmux + claude lines it would run
 zouinify up                    # starts the desk, manager and debug sessions
 ```
 
 `zouinify init --dry-run` prints the plan and the config without writing; `--non-interactive --name N --short S --human H`
-answers the questions from flags (for a session, which has no terminal). Without `init`: copy
-`templates/ops/config.yaml.example` to `.ops/config.yaml` and run `zouinify briefs render`. Needs Python 3.9+ with PyYAML,
-tmux 3.2+, and the `claude` CLI on PATH. The tracked protocol files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` section)
-are the second half of `init` (T-0185): a plan first, then your own yes.
+answers the questions from flags (for a session, which has no terminal). `init --protocol` never runs from a session or without
+a terminal (`--dry-run` shows its plan anywhere); the ticket core it installs is a byte-identical, pinned copy of the upstream
+script (`templates/protocol/MANIFEST`). Without `init`: copy `templates/ops/config.yaml.example` to `.ops/config.yaml` and run
+`zouinify briefs render`. Needs Python 3.9+ with PyYAML, tmux 3.2+, git 2.31+, bash 4+ and the `claude` CLI on PATH.
 
 ## How it fits together
 
@@ -87,6 +90,6 @@ typing in the desk's window.
 
 1. **Week 1:** CLI core (done), read-only panel, the first project's config.
 2. **Week 2:** receipts channel (browser token, audit, rate limit, `zouinify poll`), hooks, optional intranet access.
-3. **Week 3:** launch and kill from the panel via the desk, `zouinify init` for a fresh repo (config + briefs done; the tracked protocol files next), a home page listing your projects.
+3. **Week 3:** launch and kill from the panel via the desk, `zouinify init` for a fresh repo (done: config + briefs, then `--protocol` for the vendored ticket core), a home page listing your projects.
 
 Inspired by [lavish-axi](https://github.com/kunchenguid/lavish-axi): a local page, a long-polling agent, nothing in the cloud.

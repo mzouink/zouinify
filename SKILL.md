@@ -44,5 +44,6 @@ Rules this skill never bends (they come from `.ops/config.yaml` and the project'
   Claude panes of this project only, with an audit line per batch of keys; no button, receipt or script ever produces a keystroke.
 - If a command here is refused by the permission classifier, file it with `scripts/ticket.sh ask` (one line) and continue;
   never ask a peer session to run it.
-- The second half of `init` (later, T-0185) writes tracked files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` section):
-  show the plan first and wait for the human's own yes in this window (a relayed answer does not count for `CLAUDE.md` edits).
+- `init --protocol` writes tracked files (`tickets/`, `scripts/ticket.sh`, a `CLAUDE.md` block) and refuses to run from a
+  session: show the human its plan with `init --protocol --dry-run` and relay it; the human runs `zouinify init --protocol` in
+  their own terminal and types yes there (a relayed answer never counts for `CLAUDE.md` edits).

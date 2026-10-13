@@ -1,4 +1,4 @@
-"""`zouinify protocol render|list` (T-0188): the ticket protocol files from templates/tickets, the deploy plugin's doc fragments
+"""`zouinify protocol render|list` (T-0188): the ticket protocol files from templates/protocol/tickets, the deploy plugin's doc fragments
 and the project-owned sections; written under --out only. Plus the 12-states fix."""
 import os
 import re
@@ -19,7 +19,7 @@ README_S3 = ("**One voice.**", "never address the human in your own window", "on
              "`if you do nothing:`", "one ask at a time", "not the human's own say-so", "`CLAUDE.md` or settings edit", "tickets/WORKER_BRIEF.md")
 BRIEF = ("export TICKET_AS=", "scripts/ticket.sh board", ".claude/worktrees/", "Never edit the main worktree", "Ticket: T-xxxx", "RED on base",
          "gets your diff, never your summary", "never address the human in your own window", "only your own permission prompts",
-         "expect: <last line>", "if you do nothing:", "APPROVE T-xxxx $N", "`backlog -> ready`", "Never claim a `backlog` ticket",
+         "expect: <last line>", "if you do nothing:", "`backlog -> ready`", "Never claim a `backlog` ticket",
          "Read tickets/WORKER_BRIEF.md, then claim T-xxxx", "6. **", "7. **New bugs or ideas:**", "8. **Finish the loop.**",
          "your ask is on the human's list at once", "and only a `P0` -- a live regression", "so mark one only for that", "`dev`",
          "`main` is production")
@@ -87,9 +87,11 @@ class TestProtocol(World):
         self.assertNotIn("sitting", readme.lower())
         self.assertIn("test it (the `tp-debug` session does this)", s1)
         self.assertIn(f"(`{self.root}`)", section(readme, 4), "rule 1 names the repo's absolute path")
-        self.assertIn("2. **Never change the live system yourself.**", section(readme, 4), "the none plugin's rule 2")
-        self.assertIn("8. **Don't trust a cached client.**", section(readme, 4))
-        self.assertIn("| `deployed` | after the human deploys | real output from the live system", section(readme, 5))
+        self.assertIn("2. **Never run anything on the human-only list**", section(readme, 4), "the none plugin's rule 2 (upstream text)")
+        self.assertIn("8. **Verify a deploy where its users see it**", section(readme, 4))
+        self.assertIn("\n| `deployed` | after the human deploys | names the real output of the deploy", section(readme, 5), "the whole row")
+        self.assertIn("\n| `done` | owner or the human | checked live by a non-author", section(readme, 5))
+        self.assertIn("The verbs are `APPLY`, `DEPLOY`", s1, "none ships verbs.md, which replaces the generated sentence")
         self.assertIn("**`main`'s HEAD is always a release**", readme)
         self.assertIn("- `releases/R-YYYY-MM-DD-N.md`", section(readme, 8))
         self.assertTrue(readme.endswith("and why.\n"), repr(readme[-60:]))
@@ -99,13 +101,14 @@ class TestProtocol(World):
                 self.assertIn(needle, brief)
         self.assertNotIn("\n9. ", brief)
         self.assertIn("working in `proj`\nat the same time. The ticket desk (`tp-desk`, tmux `tp-desk`)", brief)
-        self.assertIn("5. **No live mutations.**", brief)
+        self.assertIn("5. **No live mutations.** Nothing on the human-only list runs from a session", brief)
+        self.assertIn("6. **Anything that costs money goes through the desk.**", brief)
         tmpl = self.read_out("_TEMPLATE.md")
         self.assertIn("type: bug                      # bug | feature | process | chore", tmpl)
         self.assertIn("status: backlog                # backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped skipped", tmpl)
         self.assertIn("repos: [backend]               # backend\n", tmpl, "one repo: no 'may list several'")
         self.assertIn("deploy: none                   # none\n", tmpl)
-        self.assertIn("## Deploy handoff -- batch YYYY-MM-DD (T-xxxx, T-yyyy)\nTrunk:     <trunk> @ <sha>", tmpl)
+        self.assertIn("## Deploy handoff -- YYYY-MM-DD (T-xxxx)\nTrunk:   <trunk> @ <sha> (pushed).", tmpl)
 
     def test_project_sections_are_stubbed_then_spliced_verbatim(self):
         self.render()
@@ -143,7 +146,7 @@ class TestProtocol(World):
         self.write(".ops/config.yaml", cfg.replace("  deploy_plugin: none\n", "  deploy_plugin: aws-terraform\n"))
         r = self.render()
         self.assertIn("warning: no docs shipped for deploy plugin aws-terraform", r.stdout)
-        self.assertIn("2. **Never change the live system yourself.**", self.read_out("README.md"))
+        self.assertIn("2. **Never run anything on the human-only list**", self.read_out("README.md"))
         self.assertIn("`plugins/aws-terraform/` -- the deploy plugin", self.read_out("README.md"))
 
     def test_plugin_docs_fill_the_deploy_prose_and_missing_fragments_are_refused(self):
@@ -165,8 +168,8 @@ class TestProtocol(World):
         self.assertIn("2. FRAGMENT rule-no-live-mutations\n3. FRAGMENT rule-protect-artifacts\n", readme)
         self.assertIn("the failing assertion pasted. FRAGMENT rule-deploy-evidence\n", readme)
         self.assertIn("8. FRAGMENT rule-after-deploy\n", readme)
-        self.assertIn("| `deployed` | after the human deploys | FRAGMENT evidence-deployed |", readme)
-        self.assertIn("| `done` | owner, the browser tester, or the human | FRAGMENT evidence-done |", readme)
+        self.assertIn("| `merged` | `ticket.sh merge` only", readme)
+        self.assertIn("\nFRAGMENT evidence-deployed\nFRAGMENT evidence-done\n| `blocked` |", readme, "the two rows are inserted whole")
         self.assertIn("Verbs: `RUN` (cargo), `DECIDE`, `CHECK` (the moon). A\ndecision names", readme, "verbs.md replaces the generated sentence")
         brief = self.read_out("WORKER_BRIEF.md")
         self.assertIn("5. FRAGMENT brief-live-mutations\n6. FRAGMENT brief-paid-runs\n7. **New bugs", brief)

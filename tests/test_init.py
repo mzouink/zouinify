@@ -116,7 +116,7 @@ class TestInit(InitWorld):
         self.assertIn("create   .gitignore", r.stdout)
         self.assertIn("dry run: nothing written", r.stdout)
         self.assertIn('project: {name: "demo", short: "dm"}', r.stdout)
-        self.assertIn("T-0185", r.stdout, "the plan says what init does not write")
+        self.assertIn("come with `zouinify init --protocol`", r.stdout, "the plan says what init does not write")
         self.assertEqual(snapshot(self.root), before)
 
     def test_writes_config_briefs_and_gitignore_and_everything_validates(self):

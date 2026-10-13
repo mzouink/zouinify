@@ -1,10 +1,11 @@
 """The ticket protocol files rendered from templates (T-0188, for T-0185's `init --protocol`): `tickets/README.md`,
-`tickets/_TEMPLATE.md` and `tickets/WORKER_BRIEF.md` from `templates/tickets/*.md.tmpl`, with three kinds of input:
+`tickets/_TEMPLATE.md` and `tickets/WORKER_BRIEF.md` from `templates/protocol/tickets/*.md.tmpl`, with three kinds of input:
 
 - the project's config (names, repos, trunk, prod, verbs, types, deploy kinds, the desk and debug sessions);
-- the deploy plugin's doc fragments, `tickets/plugins/<name>/docs/*.md` in the vendored copy under `templates/tickets/plugins/`
-  (the `none` plugin ships generic ones): the deploy-specific prose of README rules 2, 3, 4 and 8, the evidence rows of
-  section 5, the brief's points 5 and 6 and the `## Deploy handoff` block of the ticket template;
+- the deploy plugin's doc fragments, `tickets/plugins/<name>/docs/*.md`, vendored byte-identical from the upstream core under
+  `templates/protocol/tickets/plugins/` (only `none` ships publicly; a project's own plugin lives in its repository): the
+  deploy-specific prose of README rules 2, 3, 4 and 8, the two whole rows of section 5 for `deployed` and `done`, the brief's
+  points 5 and 6 and the `## Deploy handoff` block of the ticket template;
 - the project-owned sections `## 0. Environments` and `## 7. Deploying` from `<root>/.ops/README.project.md`, spliced in
   verbatim (a project without that file gets a stub telling it where to write them).
 
@@ -23,7 +24,8 @@ from zouinify import ticketenv
 from zouinify.config import ROLE_SESSIONS
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TEMPLATES = os.path.join(REPO, "templates", "tickets")
+PROTOCOL = os.path.join(REPO, "templates", "protocol")          # repo-relative layout: scripts/, tickets/ (T-0185)
+TEMPLATES = os.path.join(PROTOCOL, "tickets")
 PLUGINS = os.path.join(TEMPLATES, "plugins")
 SUFFIX = ".tmpl"                                   # README.md.tmpl, _TEMPLATE.md.tmpl, WORKER_BRIEF.md.tmpl
 FILES = ("README.md", "_TEMPLATE.md", "WORKER_BRIEF.md")

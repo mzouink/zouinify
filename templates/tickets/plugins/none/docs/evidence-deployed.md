@@ -1,1 +1,0 @@
-real output from the live system as the deploy plugin defines it (there is no deploy plugin here: paste the read-back, key or job id that proves the change is live); the handoff's verify commands run, real output pasted

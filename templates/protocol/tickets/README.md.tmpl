@@ -185,8 +185,8 @@ desk, don't work around it.
 | `ready-to-merge` | **a reviewer who did not write the change and saw the diff**: a peer session or a fresh sub-agent given `git diff` / the branch, not the author's summary (the author's own sub-agent briefed with a summary is never evidence) | reviewer named, with the verdict; rebased, `behind trunk = 0`; suites re-run after rebase |
 | `merged` | `ticket.sh merge` only (`move` refuses it without `TICKET_FORCE`) | ff-only merge pushed; `closed_by` = the shas of trunk..new-HEAD read after the merge |
 | `ready-to-deploy` | owner | the Deploy handoff block (see `_TEMPLATE.md`), laid out as the deploy plugin's handoff template says: the command, every change attributed to a ticket, rollback, verify |
-| `deployed` | after the human deploys | {{plugin.evidence_deployed}} |
-| `done` | owner, the browser tester, or the human | {{plugin.evidence_done}} |
+{{plugin.evidence_deployed}}
+{{plugin.evidence_done}}
 | `blocked` | anyone | `blocked_on:` the T- id or the human's question, verbatim |
 | `dropped` | the human, or the desk with the reason | `resolution:` and why |
 | `skipped` | the desk, on the user's word | the user's words, verbatim; `blocked_on:` is kept but never asked, `human` never lists it, `ask` refuses it, `prune` keeps its branch; from any state before `merged`; out only to `backlog` or `ready` (the `ready` gate applies) |

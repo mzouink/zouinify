@@ -1,0 +1,20 @@
+# templates/protocol/MANIFEST -- the vendored ticket protocol core (T-0185): byte-identical copies of the upstream files at the pinned commit.
+# tests/test_vendored.py checks every sha256 below, and diffs each file against `git -C $ZOUINIFY_UPSTREAM_REPO show <pin>:<path>` when that variable names a checkout.
+# Re-pin: copy the files from the new commit, update pin/version/hooks and the sums, one commit, one ticket.
+pin 271bf777119679443700c3374ec9e48176736393
+version 1.0.0
+hooks plugin_evidence_check plugin_plan_key plugin_plan_void plugin_command_void_reason plugin_ask_check plugin_verb_for plugin_expect_line plugin_ignored_valuable_re plugin_deploy_kinds plugin_deploy_check plugin_apply_usage plugin_apply_prepare plugin_apply
+sha256 48c787c7789c3c6b572580e49222fcf70b9dbb52b51b9a0edb777f8cac37e0e4 scripts/ticket.sh
+sha256 fd4f5b875fadb2a23956723736af096ae1ec717c7c8cffc0fbef2a84964bf302 scripts/tests/ticket_world.py
+sha256 4252228c40fb3719f3dd31afcaa0a62ee13076865734b504f883d4dea691d681 scripts/tests/test_ticket_env.py
+sha256 29087ecef58d2911024b87c3b86cb066b614d0059b21264f4d5f818b511e41bb tickets/plugins/none/plugin.sh
+sha256 0a36e00ad5505a2125a9f2482dfc847585d8b0e7655d952cd0b7f620157cf662 tickets/plugins/none/docs/brief-live-mutations.md
+sha256 6ab80d012f4edc6f447d6df97e75334359238162f4e3a787054dcc9183c9dd54 tickets/plugins/none/docs/brief-paid-runs.md
+sha256 3471c40a7be5cd8b6beffa2fe823b7a6f5734f5cc7d46446e948be6ea6ae141c tickets/plugins/none/docs/evidence-deployed.md
+sha256 ecfeba599c68183c88f6a80059b9ee2575f35baf496a9bf45b4f74550fcc0b33 tickets/plugins/none/docs/evidence-done.md
+sha256 ee662be7f51f08927737ae416ac50af56b7b43357a5c2af3cd143bc5272e5c5e tickets/plugins/none/docs/handoff.md
+sha256 1ab00b3ca51e6f391c56148e0eed32cf3e6474d053477aefc53654d03637a8bf tickets/plugins/none/docs/rule-after-deploy.md
+sha256 d5b38b2492ebf2d39ee36c3554a4a680e895fdf9404cdd1ef7dfc74333775239 tickets/plugins/none/docs/rule-deploy-evidence.md
+sha256 b497c0681b9cfb5733a8f1ac021a8638f6fde520cb360a292b1af20699bada9a tickets/plugins/none/docs/rule-no-live-mutations.md
+sha256 f4a4cc6b8f14824f1aa43c3ce76946a876a48d2556070dc921b64bd96fbeb4ba tickets/plugins/none/docs/rule-protect-artifacts.md
+sha256 1250c8172b4d13f32f878ad3af399c8b30790fc1b878d03932e05ca6bf744425 tickets/plugins/none/docs/verbs.md

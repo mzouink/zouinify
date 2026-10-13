@@ -25,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="print the plan and the config it would write; write nothing")
     s.add_argument("--non-interactive", action="store_true", help="no questions: --name, --short and --human are required, the rest "
                                                                    "default to the proposals")
+    s.add_argument("--protocol", action="store_true", help="second step, after the config exists: install the ticket protocol "
+                   "(scripts/ticket.sh, tickets/ticket.env, tickets/plugins/none, the rendered README/_TEMPLATE/WORKER_BRIEF, a CLAUDE.md "
+                   "block) after a printed plan and your typed yes on this terminal; never non-interactive, never from a session")
     for f, h in (("name", "project name"), ("short", "short tag prefixing the session names (1-8 lowercase letters or digits)"),
                  ("trunk", "trunk branch (default: the checked-out branch)"), ("prod", "production branch ('' for none)"),
                  ("model", "model for every session (default fable)"), ("port", "panel port (default 4700 + crc32(root) %% 90, free)"),
@@ -39,11 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--write", nargs="?", const="", metavar="PATH", help="with --env: write it to PATH (default <root>/<tickets dir>/"
                    "ticket.env); refused inside a repository's main worktree; never commits")
 
-    s = sub.add_parser("protocol", help="the ticket protocol files (README, _TEMPLATE, WORKER_BRIEF) rendered from templates/tickets: "
+    s = sub.add_parser("protocol", help="the ticket protocol files (README, _TEMPLATE, WORKER_BRIEF) rendered from templates/protocol/tickets: "
                                         "render --out DIR | list")
     s.add_argument("action", choices=["render", "list"])
     s.add_argument("--out", metavar="DIR", help="render: the directory to write into (required; nothing is written anywhere else)")
-    s.add_argument("--plugin-docs", metavar="DIR", help="render: the deploy plugin's docs directory (default templates/tickets/plugins/"
+    s.add_argument("--plugin-docs", metavar="DIR", help="render: the deploy plugin's docs directory (default templates/protocol/tickets/plugins/"
                    "<tickets.deploy_plugin>/docs, falling back to none)")
     s.add_argument("--project-readme", metavar="FILE", help="render: the project-owned README sections (default <root>/.ops/README.project.md)")
     s.add_argument("--force", action="store_true", help="render: overwrite files under --out that differ")
@@ -111,6 +114,11 @@ def main(argv=None) -> int:
         if args.cmd == "init":                                # before the config load: there is no config yet
             from zouinify import initcmd
             flags = {f: getattr(args, f) for f in initcmd.FIELDS if getattr(args, f) is not None}
+            if args.protocol:
+                if args.non_interactive or flags:
+                    p.error("--protocol takes no --non-interactive and no field flags: it reads .ops/config.yaml and asks for your yes")
+                from zouinify import protoinit
+                return protoinit.cmd_protocol(args.project, dry_run=args.dry_run)
             return initcmd.cmd_init(args.project, flags, dry_run=args.dry_run, non_interactive=args.non_interactive)
         cfg = cfgmod.load(args.project)
         if args.cmd == "config":

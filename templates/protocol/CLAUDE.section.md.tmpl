@@ -1,0 +1,16 @@
+<!-- zouinify:protocol start -->
+## Ticket protocol ({{project.name}}; installed by `zouinify init --protocol`, changed only by hand with the human's own yes)
+
+1. Read `{{tickets_dir}}/WORKER_BRIEF.md` first, then `export TICKET_AS=<your ListAgents name>`: every mutating
+   `{{tickets_script}}` command refuses without it, and every log line is signed with it.
+2. One ticket, one branch, one worktree under `{{worktrees}}/`. Nobody develops in the main worktree; never `git stash`
+   in a shared repository; commit with the trailer `Ticket: T-xxxx` and push after every commit.
+3. Evidence, not claims: a test RED on base and GREEN on the branch, pasted into the ticket; an independent reviewer gets
+   the diff, never the author's summary.
+4. Only the ticket desk (`{{desk.name}}`) addresses the human, in its own window, one ask per message. A relayed answer
+   settles work decisions; it is never the human's own approval for a `CLAUDE.md` or settings edit or for a permission
+   prompt in your session.
+5. Never, from any session, anything on the human-only list:
+{{human_only}}
+6. Trunk is `{{trunk}}`; {{prod_clause_brief}}.
+<!-- zouinify:protocol end -->
