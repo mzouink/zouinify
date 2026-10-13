@@ -37,9 +37,49 @@ TIER2_COMMAND_RE = re.compile(
     rf"\bdeploy_[a-z_]*\.sh\b|\bticket\.sh\s+apply\b|\btf\.sh\s+\S+\s+apply\b|\bgit\s+{FLAGS}push\b|\bgh\s+pr\s+merge\b|"
     rf"\bgh\s+release\s+(?:create|delete)\b|\bgh\s+api\s+[^\n]*-X\s+(?:POST|PUT|DELETE|PATCH)\b|\bmake\s+{FLAGS}deploy\w*\b|"
     rf"\bnpm\s+run\s+deploy\w*\b|\bkubectl\s+{FLAGS}(?:apply|delete|rollout|scale|patch)\b|\bhelm\s+(?:install|upgrade|uninstall|rollback)\b|"
-    rf"\bansible-playbook\b|\baws\s+\S+\s+(?:create|delete|update|put|start|stop|invoke|run|terminate|modify|attach|detach|associate|"
-    rf"reboot|restore|purge|remove|tag|untag|set|enable|disable)-[a-z-]+\b",
+    rf"\bansible-playbook\b|\bgh\s+workflow\s+(?:run|enable|disable)\b|\bgh\s+(?:secret|variable)\s+set\b|\bgh\s+repo\s+(?:delete|rename|edit|archive)\b",
     re.I)
+# `aws ...`: every operation mutates unless it is one of these (global flags may sit anywhere before the service)
+AWS_READONLY_OPS = {("s3", "ls"), ("s3", "presign"), ("sso", "login"), ("sso", "logout"), ("configure", "list"), ("configure", "get"),
+                    ("configure", "list-profiles"), ("logs", "filter-log-events"), ("logs", "tail"), ("sts", "get-caller-identity")}
+AWS_READONLY_PREFIXES = ("get-", "list-", "describe-", "head-", "batch-get-")
+AWS_BOOLEAN_FLAGS = {"--debug", "--version", "--no-verify-ssl", "--no-paginate", "--no-cli-pager", "--no-sign-request",
+                     "--no-cli-auto-prompt", "--cli-auto-prompt", "--dryrun", "--recursive", "--quiet", "--exact-timestamps", "--only-show-errors"}
+SEGMENT_RE = re.compile(r"\s*(?:&&|\|\||\||;|\n)\s*")
+ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def aws_mutating(command: str) -> bool:
+    """True when any `aws` invocation in the command runs an operation that is not read-only."""
+    for segment in SEGMENT_RE.split(command or ""):
+        tokens = [t for t in segment.split() if t]
+        while tokens and ENV_ASSIGN_RE.match(tokens[0]):
+            tokens = tokens[1:]
+        if not tokens or not (tokens[0] == "aws" or tokens[0].endswith("/aws")):
+            continue
+        service, op, i = None, None, 1
+        while i < len(tokens):
+            t = tokens[i]
+            if t.startswith("-"):
+                i += 1
+                takes_value = "=" not in t and not t.startswith("--no-") and t not in AWS_BOOLEAN_FLAGS
+                if takes_value and i < len(tokens) and not tokens[i].startswith("-"):
+                    i += 1
+                continue
+            if service is None:
+                service = t.lower()
+            else:
+                op = t.lower()
+                break
+            i += 1
+        if service in (None, "help"):
+            continue
+        if op is None:
+            return True
+        if (service, op) in AWS_READONLY_OPS or op.startswith(AWS_READONLY_PREFIXES) or op == "help":
+            continue
+        return True
+    return False
 TICKET_IN_NAME_RE = re.compile(r"^t(\d{4})-")
 CARD_KEYS = ("id", "severity", "title", "status", "owner", "claimed", "created", "plan", "deploy", "blocked_on", "closed_by", "repos", "type")
 
@@ -56,7 +96,7 @@ def classify_item(it: dict) -> dict:
     options = re.findall(r'"([^"]+)"', str(it.get("command", ""))) if verb == "DECIDE" else []
     if verb == "APPROVE" or (verb == "DECIDE" and TIER2_DECIDE_RE.search(text)):
         tier, hint = 2, f"type in the desk's tmux window: {it.get('expect') or it.get('command') or ''}".strip()
-    elif verb in ("APPLY", "DEPLOY", "PUSH") or TIER2_COMMAND_RE.search(str(it.get("command", ""))):
+    elif verb in ("APPLY", "DEPLOY", "PUSH") or TIER2_COMMAND_RE.search(str(it.get("command", ""))) or aws_mutating(str(it.get("command", ""))):
         # a production apply, deploy or image push: the human runs the command in their terminal and types the
         # `ok` in the desk's window; never a button, in any version (T-0160 ticket text)
         tier, hint = 2, f"run it in your terminal, then type `{it.get('tickets') or 'T-xxxx'} ok` in the desk's tmux window"

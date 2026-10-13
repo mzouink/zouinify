@@ -211,9 +211,25 @@ class TestApi(PanelWorld):
                     "aws s3 rm s3://b/k", "aws s3 sync . s3://b/", "aws s3 cp f s3://b/f", "gh pr merge 3 --rebase", "make deploy", "make -C infra deploy-prod",
                     "docker --context prod push img", "kubectl -n x apply -f y.yaml", "helm upgrade rel chart", "aws lambda put-function-concurrency --function-name f"):
             self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 2, cmd)
+        # aws: every operation mutates unless read-only; global flags anywhere before the service; env prefixes and chains
+        for cmd in ("aws --profile prod s3 rm s3://b/k", "aws --region us-east-1 lambda update-function-code --function-name f",
+                    "aws dynamodb batch-write-item --request-items file://x", "aws lambda add-permission --function-name f --statement-id s",
+                    "aws s3api copy-object --bucket b --key k --copy-source s", "aws sns publish --topic-arn t --message m",
+                    "aws ec2 revoke-security-group-ingress --group-id g", "aws secretsmanager rotate-secret --secret-id s",
+                    "AWS_PROFILE=prod aws s3 sync . s3://b/", "aws sso login && aws lambda update-function-code --function-name f",
+                    "aws --no-cli-pager --output json iam put-role-policy --role-name r", "aws --profile x --region y --debug ecr put-image --repository-name r",
+                    "gh workflow run deploy.yml", "gh secret set TOKEN", "aws s3"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 2, cmd)
         for cmd in ("cd /x && ./fix.sh", "aws sso login", "aws lambda get-function --function-name f", "git status", "git -C /x log -3",
-                    "terraform -chdir=terraform plan -out=x.tfplan", "aws s3 ls s3://b/", "make test", "kubectl get pods", "gh pr view 3"):
-            self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 1, cmd)
+                    "terraform -chdir=terraform plan -out=x.tfplan", "aws s3 ls s3://b/", "make test", "kubectl get pods", "gh pr view 3",
+                    "aws --profile default sts get-caller-identity", "aws --region us-east-2 lambda get-function --function-name f",
+                    "aws --profile x s3 ls s3://b/", "aws sso login --profile default", "aws --profile x --output json stepfunctions describe-execution --execution-arn a",
+                    "aws logs filter-log-events --log-group-name g", "aws s3api head-object --bucket b --key k", "aws configure list",
+                    "aws --no-cli-pager ecr describe-images --repository-name r", "AWS_PROFILE=x aws --debug iam list-roles", "aws help",
+                    "aws sso login && aws sts get-caller-identity"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 1, cmd)
         self.assertEqual(s["kpis"]["inbox"], 4)          # the items of human --json
 
     def test_snapshot_board_lanes_and_chips(self):
