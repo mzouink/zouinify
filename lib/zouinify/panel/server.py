@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,7 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset
 ALLOW = "GET, HEAD"
 CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'none'"
 REFUSED = {"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW}
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -28,7 +30,25 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- plumbing -------------------------------------------------------------------------------------
     def log_message(self, fmt, *args):  # noqa: D401 - one line per request into the server log
-        panelstate.log(self.server.cfg, f"{self.address_string()} {fmt % args}")
+        msg = CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), fmt % args)
+        panelstate.log(self.server.cfg, f"{self.address_string()} {msg}")
+
+    def host_allowed(self) -> bool:
+        """Only the panel's own origin may talk to it: a page served to a browser under another name (DNS
+        rebinding: `Host: evil.example` resolving to 127.0.0.1) is refused, and so is a foreign Origin."""
+        port = self.server.server_address[1]
+        hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:
+            hosts |= {"127.0.0.1", "localhost"}
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in hosts:
+            return False
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        return not origin or origin in {f"http://{h}" for h in hosts}
+
+    def forbid(self, head: bool = False) -> None:
+        self.send_json(HTTPStatus.FORBIDDEN, {"error": "host or origin not allowed: the panel answers only to 127.0.0.1:<port> "
+                                                       "and localhost:<port> with no foreign Origin"}, head)
 
     def send_bytes(self, status: int, body: bytes, ctype: str, extra: dict | None = None, head: bool = False) -> None:
         self.send_response(status)
@@ -54,6 +74,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.rfile.read(min(length, 1 << 20))
         except ValueError:
             pass
+        if not self.host_allowed():
+            return self.forbid()
         self.send_bytes(HTTPStatus.METHOD_NOT_ALLOWED, json.dumps(REFUSED).encode("utf-8"), "application/json; charset=utf-8", {"Allow": ALLOW})
 
     def do_POST(self):
@@ -84,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(u.path)
         q = urllib.parse.parse_qs(u.query)
         fresh = q.get("fresh", ["0"])[0] in ("1", "true")
+        if not self.host_allowed():
+            return self.forbid(head)
         try:
             if path in ("/", "/index.html"):
                 return self.serve_static("index.html", head)

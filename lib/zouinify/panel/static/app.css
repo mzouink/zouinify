@@ -124,6 +124,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .toast.show { opacity: 1; transform: none; }
 
 /* ---- dashboard ----------------------------------------------------------------------------------------- */
+.dash { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.spacer { flex: 1; }
 .p0banner { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; border-radius: var(--radius-card); background: color-mix(in srgb, var(--accent-red) 14%, var(--bg-surface)); border: 1px solid var(--accent-red); color: var(--text-primary); }
 .p0banner .id { font-family: var(--font-mono); font-weight: 600; }
 .kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }

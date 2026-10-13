@@ -31,6 +31,7 @@ week 3.)
 | `zouinify status [--line\|--json] [--no-cache]` | `inbox N \| P0 n \| creds <left> \| sitting HH:MM in Xh \| d dev r rev m rtd k dep` from `ticket.sh human --count`, the ticket front matter, the credential files' metadata (SSO cache `expiresAt`, else credentials-file mtime + `aws.assumed_token_hours`, marked `est`) and the config's sittings. Cached 30 s: made for `tmux set -g status-right '#(zouinify --project /path/to/repo status --line)'` (the tmux server's cwd is not the project, so name it). `P0` counts the inbox's P0 items, what the human acts on, not every open P0 ticket. |
 | `zouinify down [name...] [--dry-run]` | Kill launcher-registered **worker** sessions whose ticket is `done` or `dropped`; prints the reason for every refusal (a role session, a session zouinify did not launch, a ticket still open). Run `--dry-run` first; a named target that is refused exits 1. |
 | `zouinify briefs render [--out DIR] [--force]`, `briefs list` | Render `templates/briefs/*.md.tmpl` (desk, manager, debug, chrome_debug, worker) with the config: `{{desk.name}}`, `{{trunk}}`, `{{prod}}`, `{{human_only}}`, `{{budget}}`, `{{sittings}}`, `{{ask_verbs}}`, ... Refuses to overwrite an edited brief without `--force`. |
+| `zouinify panel start\|stop\|status\|url` | This project's read-only panel on `http://127.0.0.1:<panel.port>/`, one detached process per project (pid file and log under `.ops/state/`, an entry in `~/.zouinify/projects.json`). `start` probes the port first: this project's panel is reused, another project's or a foreign process is refused, never taken over; `stop` stops only this project's and only a process whose command line is this project's panel. `up` starts it unless `panel.autostart: false` or `--no-panel`. `panel.bind: intranet` is refused until the token exists (T-0162). |
 | `zouinify board`, `zouinify human [--count\|--json]` | `scripts/ticket.sh board` / `human`, verbatim. The lifecycle stays in `ticket.sh`; the skill never re-implements it. |
 
 Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (a relative path inside the project;
@@ -47,35 +48,32 @@ A session that appears between the existence check and the launch is reported as
 direct `ticket_sh()` call or a registry write, and any tmux, ticket, deploy or `zouinify up|launch|down` verb however spelled.
 The panel reads through `lib/zouinify/readonly.py` (captures, pane list, `human --json`, `board --json`) and nothing else.
 
-## The control panel (next)
+## The control panel (v1: read-only)
 
 Read-only for everything a session can see, derived at render time with **zero state of its own**: the human inbox (from
-`ticket.sh human --json`), the board by state, every session of the project with its tmux window, model, state and last visible
-line, the panes waiting at a permission prompt and since when, the apply/deploy log tails, credential time left, the next
-sitting. Sources: `ticket.sh`, `claude agents --json`, `tmux list-panes`/`capture-pane` (redacted), Claude Code hooks
-(`Stop`, `Notification`), the ticket front matter and release records.
+`ticket.sh human --json`, in the command's order, with each item's tier), the board as five lanes (`ready | in-dev | review |
+to deploy | deployed`) plus chips for `backlog`, `blocked`, `done`, `dropped`, every session of the project with its tmux window,
+model (read from the status bar; red when it is not the configured model, `?` when no status bar is on screen), state
+(`waiting for you | working | idle | gone | shell`) and last visible line, the panes waiting at a permission prompt and since when,
+the log tails and the newest-plan rule from `panel.logs` / `panel.plans_glob`, credential time left, the next sitting, the
+deployed tickets with their latest evidence line ("Live checks"), the parsed config and the hook status ("Settings"). Sources:
+`ticket.sh` (read-only modes), `claude agents --json`, `tmux list-panes` / `capture-pane` (redacted server-side), the launcher
+registry, the ticket front matter and release records. The page is static HTML/CSS/JS served by a stdlib server: no build step,
+no framework, no request to any host but the panel's own. Its API: `GET /health`, `GET /api/snapshot`, `GET /api/tickets/<id>`,
+`GET /api/sessions/<name>`, `GET /api/logs?label=<a panel.logs label>`; every other method is 405; a request whose `Host` is not
+`127.0.0.1:<port>` / `localhost:<port>`, or whose `Origin` is foreign, is 403 (DNS rebinding). Inbox tiers: `APPROVE`, `APPLY`,
+`DEPLOY`, `PUSH` and a `DECIDE` that names `CLAUDE.md`/settings are tier 2 and never get a button, in any version. The look, tiers
+and acceptance criteria are in [`UX_SPEC.md`](UX_SPEC.md).
 
-### How a click reaches Claude: receipts, in tiers
-
-The page **never types into a Claude pane** and never runs a launcher, `tmux kill-session`, a mutating `ticket.sh` command,
-`aws`, `terraform`, `docker`, `git push` or a deploy script. A click is queued as a *receipt* that the ticket desk session reads
-with a blocking `zouinify poll` (the lavish-axi long-poll pattern) and treats as **a claim by the page, never as the human's
-word**:
-
-- **Tier 0**: everything shown (read-only).
-- **Tier 1**, clickable: `ok` after a command the human ran in their terminal (the desk re-verifies read-only before moving the
-  ticket), an answer among offered options, "file a ticket" (the desk investigates), "launch worker" / "kill done session" (the
-  desk runs `zouinify launch` / `zouinify down` after its own checks and logs the receipt id on the ticket).
-- **Tier 2**, never clickable: a paid budget, a `CLAUDE.md` or settings change, a production apply or deploy, a permission prompt.
-  The page shows the exact text to type in the desk's own window.
-
-Security model: every session on the workstation runs as the same Unix user, so any write endpoint is callable by a session.
-Writes therefore need a bearer token that exists only in the human's browser (the server stores a hash; the token is printed
-once, on a real TTY, outside any Claude session), every receipt is audited (id, time, token id, source, user agent), receipts are
-read back from the server's memory (a forged file line proves nothing), and there is a rate limit. The panel binds to loopback by
-default; `panel.bind: intranet` is an explicit flag that keeps the token mandatory on every request. Worst case of a stolen
-token: a false tier-1 claim the desk re-verifies, or a worker launched for a ticket that was ready anyway; never a production
-action, never a grant.
+The panel package is held to an **allowlist**, checked in CI and by the tests: `scripts/check_panel_ast.py` parses every file
+under `lib/zouinify/panel/` and refuses any import outside its list, any attribute of an allowed module that is not on that
+module's list (so `http.client`, `http.server.shutil` or `re.functools` are out), any module used as a value (no aliasing), any
+reference to `getattr`/`__import__`/`exec`/`eval`/`compile`, `open`/`print` as values, `*`/`**` call arguments, any file opened
+for writing, any attribute starting with `_` or named `os`/`subprocess`/`sys`/`ticket_sh`/`kill`/`replace`/`remove`/`write`
+(except the response's `wfile`)/...; `scripts/check_panel_guard.sh` adds a regex denylist on every file type. The panel reads
+only through `lib/zouinify/readonly.py` and writes only through `lib/zouinify/panelstate.py`, whose two files sit at
+`<project root>/.ops/state/{panel.json,server.log}`, fixed in code, never following a symlink. With no way to spawn, import
+dynamically or write, a click cannot become a launch, a kill, a keystroke, a ticket move or a deploy.
 
 ## UX specification
 
@@ -94,12 +92,16 @@ lib/zouinify/
   tickets.py  registry.py     read-only ticket access; .ops/state/sessions.json
   launch.py                   up / launch / down -- the only code that creates or kills a session
   status.py  briefs.py        the status line; brief templates
+  panelctl.py                 panel start/stop/status/url and the user-level projects list (the process side, outside panel/)
+  panelstate.py               the server's own pid file and log (the only files the panel package may write)
+  panel/                      the read-only server: sources.py (cached sources), server.py (GET-only HTTP), redact.py, static/
 templates/
   ops/config.yaml.example     the per-project config
   briefs/*.md.tmpl            desk, manager, debug, chrome_debug, worker
   tickets/, scripts/, claude/, hooks/   (week 3: the vendored lifecycle core, the CLAUDE.md section, the hook)
 readonly.py                 the read-only facade the panel may import (captures, pane list, human/board --json)
-scripts/check_panel_guard.sh  CI allowlist: the panel spawns nothing, imports no launcher/tmux, mutates no ticket or registry
+scripts/check_panel_ast.py    CI merge gate: the panel package uses only allowlisted imports and attributes, no dynamic import, no exec, no write
+scripts/check_panel_guard.sh  CI regex denylist on every file type under the panel package
 scripts/check_public.sh       CI + pre-push: no account ids, keys, secrets, e-mails or home paths in tracked files;
                               a project's own names go in ~/.config/zouinify/private-patterns (outside the repo)
 tests/                        throwaway-world tests: fake tmux, fake claude, fake ticket.sh (`python3 -m pytest -q tests`)

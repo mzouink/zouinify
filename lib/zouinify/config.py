@@ -95,7 +95,9 @@ class Config:
 
     @property
     def state_dir(self) -> str:
-        return self.path(self.panel.get("state_dir") or ".ops/state")
+        """<root>/.ops/state, fixed in code: the panel's pid file and log, the launcher registry and the status
+        cache live there; `panel.state_dir` in the config may only say the same (desk condition, T-0160)."""
+        return os.path.join(self.root, ".ops", "state")
 
     def path(self, rel: str) -> str:
         rel = os.path.expanduser(rel)
@@ -340,8 +342,11 @@ def load(root: str | None = None) -> Config:
     elif not _is_str(plans_glob) or os.path.isabs(plans_glob) or str(plans_glob).startswith("~") or ".." in str(plans_glob).split(os.sep):
         errs.append("panel.plans_glob: a relative glob inside the project (e.g. deploy/*.plan), or empty for no plan rule")
         plans_glob = None
+    sd = pn.get("state_dir", ".ops/state")
+    if str(sd).strip().rstrip("/") != ".ops/state":
+        errs.append(f"panel.state_dir: fixed at .ops/state (the panel's pid file and log live there; not configurable), not {sd!r}")
     panel = {"port": port, "bind": bind or "loopback", "link_host": str(pn.get("link_host", "auto")),
-             "state_dir": str(pn.get("state_dir") or ".ops/state"), "refresh_s": refresh_s,
+             "state_dir": ".ops/state", "refresh_s": refresh_s,
              "redact": str(pn.get("redact", "default")), "autostart": bool(pn.get("autostart", True)),
              "logs": logs, "plans_glob": str(plans_glob) if plans_glob else None}
 

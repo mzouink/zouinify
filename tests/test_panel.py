@@ -49,6 +49,8 @@ HUMAN_JSON = [
      "command": "reply \"T-0008 yes CLAUDE.md\" or \"T-0008 no\"", "expect": "T-0008 yes CLAUDE.md", "if_nothing": "cannot merge", "note": ""},
     {"verb": "DECIDE", "tickets": "T-0006", "priority": "P1", "title": "keep or delete", "since": "2026-10-12 15:00",
      "command": "reply \"T-0006 delete\" or \"T-0006 keep\"", "expect": "T-0006 delete", "if_nothing": "stays blocked", "note": ""},
+    {"verb": "RUN", "tickets": "T-0005", "priority": "P2", "title": "run the fix script", "since": "2026-10-13 06:30",
+     "command": "cd /x && ./fix.sh", "expect": "fixed", "if_nothing": "stays broken", "note": ""},
 ]
 
 PROMPT_SCREEN = """\
@@ -152,6 +154,31 @@ class TestApi(PanelWorld):
         self.assertEqual(d["bind"], "loopback")
         self.assertEqual(self.srv.server_address[0], "127.0.0.1")
 
+    def test_host_and_origin_are_checked(self):
+        port = self.srv.server_address[1]
+
+        def raw(host, origin=None, path="/api/snapshot"):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+            conn.putrequest("GET", path, skip_host=True, skip_accept_encoding=True)
+            conn.putheader("Host", host)
+            if origin:
+                conn.putheader("Origin", origin)
+            conn.endheaders()
+            r = conn.getresponse()
+            body = r.read()
+            conn.close()
+            return r.status, body
+        self.assertEqual(raw(f"127.0.0.1:{port}")[0], 200)
+        self.assertEqual(raw(f"localhost:{port}")[0], 200)
+        self.assertEqual(raw(f"127.0.0.1:{port}", origin=f"http://localhost:{port}")[0], 200)
+        st, body = raw("evil.example")
+        self.assertEqual(st, 403, "DNS rebinding: a foreign Host never gets the snapshot")
+        self.assertNotIn(b'"inbox"', body)
+        self.assertEqual(raw(f"evil.example:{port}")[0], 403)
+        self.assertEqual(raw(f"127.0.0.1:{port}", origin="http://evil.example")[0], 403)
+        self.assertEqual(raw("evil.example", path="/")[0], 403)
+        self.assertEqual(raw("evil.example", path="/health")[0], 403)
+
     def test_no_write_path(self):
         for method, path in (("POST", "/api/receipts"), ("POST", "/api/snapshot"), ("POST", "/"), ("PUT", "/api/tickets/T-0001"),
                              ("DELETE", "/api/sessions/x"), ("PATCH", "/health")):
@@ -162,16 +189,21 @@ class TestApi(PanelWorld):
     def test_snapshot_inbox_is_human_json_in_order(self):
         s = self.get_json("/api/snapshot")
         items = s["inbox"]["items"]
-        self.assertEqual([i["verb"] for i in items], ["DEPLOY", "APPROVE", "DECIDE"])
+        self.assertEqual([i["verb"] for i in items], ["DEPLOY", "APPROVE", "DECIDE", "RUN"])
         self.assertEqual([i["tickets"] for i in items], [h["tickets"] for h in HUMAN_JSON])
         for i in items:
             self.assertRegex(i["id"], r"^[0-9a-f]{10}$")
-        self.assertEqual(items[0]["tier"], 1)
+        self.assertEqual(items[0]["tier"], 2, "DEPLOY: the human runs it and types the ok; never a button")
+        self.assertIn("T-0010 ok", items[0]["hint"])
         self.assertEqual(items[1]["tier"], 2)            # APPROVE is always tier 2
         self.assertIn("type in the", items[1]["hint"])
         self.assertEqual(items[2]["tier"], 1)
         self.assertEqual(items[2]["options"], ["T-0006 delete", "T-0006 keep"])
-        self.assertEqual(s["kpis"]["inbox"], 3)          # the items of human --json
+        self.assertEqual(items[3]["tier"], 1)            # RUN: ok after the human ran it (after T-0162)
+        for verb in ("APPLY", "DEPLOY", "PUSH"):
+            from zouinify.panel.sources import classify_item
+            self.assertEqual(classify_item({"verb": verb, "tickets": "T-0001", "command": "x", "expect": "y"})["tier"], 2, verb)
+        self.assertEqual(s["kpis"]["inbox"], 4)          # the items of human --json
 
     def test_snapshot_board_lanes_and_chips(self):
         s = self.get_json("/api/snapshot")
@@ -242,6 +274,15 @@ class TestApi(PanelWorld):
         st, _, _ = self.req("GET", "/api/logs?label=nope")
         self.assertEqual(st, 404)
 
+    def test_non_utf8_capture_does_not_hide_the_sessions(self):
+        with open(os.path.join(self.state, "screen-tp-desk.txt"), "wb") as fh:
+            fh.write(b"> caf\xe9 \xff\xfe broken bytes\n   [Fable 5.1] x | dev\n")
+        s = self.get_json("/api/snapshot?fresh=1")
+        self.assertIsNone(s["sessions"]["error"])
+        rows = {r["name"]: r for r in s["sessions"]["rows"]}
+        self.assertEqual(rows["tp-desk"]["model"], "Fable 5.1")
+        self.assertIn("broken bytes", rows["tp-desk"]["last_line"])
+
     def test_ticket_detail_and_live_checks(self):
         d = self.get_json("/api/tickets/T-0010")
         self.assertEqual(d["front_matter"]["status"], "deployed")
@@ -293,6 +334,67 @@ class TestApi(PanelWorld):
         self.assertEqual(s["header"]["desk"]["name"], "tp-desk")
 
 
+class TestPinnedState(World):
+    """The panel's two files live at <root>/.ops/state, fixed in code, for the real Config only, never through a symlink."""
+
+    def setUp(self):
+        if PANEL_IMPORT_ERROR:
+            self.fail(f"panel package not importable: {PANEL_IMPORT_ERROR!r}")
+        super().setUp()
+        self.env_patch = mock.patch.dict(os.environ, self.env, clear=True)
+        self.env_patch.start()
+        from zouinify import panelstate
+        self.panelstate = panelstate
+        self.cfg = cfgmod.load(self.root)
+
+    def tearDown(self):
+        self.env_patch.stop()
+        super().tearDown()
+
+    def test_state_dir_is_not_configurable(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        for bad in ("~/.claude", "/tmp/elsewhere", "../outside", ".ops/other"):
+            self.write(".ops/config.yaml", cfg.replace("state_dir: .ops/state", f"state_dir: {bad}"))
+            r = self.fail("config", "--check")
+            self.assertIn("fixed at .ops/state", r.stderr, bad)
+        self.write(".ops/config.yaml", cfg)
+        self.assertEqual(self.cfg.state_dir, os.path.join(self.root, ".ops", "state"))
+        self.assertEqual(self.panelstate.server_log_path(self.cfg), os.path.join(self.root, ".ops", "state", "server.log"))
+
+    def test_only_the_real_config_is_accepted(self):
+        import types
+        fake = types.SimpleNamespace(root=self.home, panel={"port": 1}, name="x", state_dir=self.home)
+        with self.assertRaises(TypeError):
+            self.panelstate.state_dir(fake)
+        self.panelstate.log(fake, "x")        # never raises, never writes
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".ops")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "server.log")))
+
+    def test_symlinks_are_never_followed(self):
+        state = os.path.join(self.root, ".ops", "state")
+        os.makedirs(state)
+        target = os.path.join(self.tmp, "victim.log")
+        with open(target, "w") as fh:
+            fh.write("untouched\n")
+        os.symlink(target, os.path.join(state, "server.log"))
+        self.panelstate.log(self.cfg, "hello")
+        with open(target) as fh:
+            self.assertEqual(fh.read(), "untouched\n", "O_NOFOLLOW: the planted symlink target is not written")
+        os.remove(os.path.join(state, "server.log"))
+        os.rmdir(state)
+        os.symlink(self.tmp, state)           # the whole state dir as a symlink
+        with self.assertRaises(OSError):
+            self.panelstate.state_dir(self.cfg)
+        self.panelstate.log(self.cfg, "hello")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "server.log")))
+        os.remove(state)
+        self.panelstate.log(self.cfg, "line\x01with\rcontrol\nchars")
+        with open(os.path.join(state, "server.log")) as fh:
+            text = fh.read()
+        self.assertIn("line\\x01with\\x0dcontrol\\x0achars", text)
+        self.assertEqual(text.count("\n"), 1, "a log line can never inject a second line")
+
+
 class TestLoading(PanelWorld):
     def test_requests_never_block_while_the_refresher_warms_up(self):
         snap = self.srv.snap
@@ -309,7 +411,7 @@ class TestLoading(PanelWorld):
         self.assertTrue(s["sources"]["inbox"]["loading"])
         snap.thread = None                                  # no refresher: the request loads it synchronously
         data, age, err = snap.get("inbox")
-        self.assertEqual(len(data["items"]), 3)
+        self.assertEqual(len(data["items"]), len(HUMAN_JSON))
         self.assertIsNone(err)
         snap.start_refresher()                              # the real refresher warms every source
         deadline = time.time() + 30
@@ -335,6 +437,22 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(r("token_id = a1b2 stays"), "token_id = a1b2 stays")
         self.assertEqual(r("ordinary line with /status 200"), "ordinary line with /status 200")
         self.assertEqual(r(""), "")
+        # the desk's review cases (T-0160)
+        self.assertEqual(r('"aws_secret_access_key": "abc"'), '"aws_secret_access_key": <redacted>')
+        self.assertEqual(r('"SecretAccessKey": "abc", "SessionToken": "def", "AccessKeyId": "ghi"'),
+                         '"SecretAccessKey": <redacted>, "SessionToken": <redacted>, "AccessKeyId": <redacted>')
+        self.assertEqual(r("key " + "ASIA" + "QRSTUVWXYZ123456"), "key <redacted>")
+        self.assertEqual(r("secret_access_key = x"), "secret_access_key = <redacted>")
+        self.assertEqual(r("PASSCODE abc"), "PASSCODE <redacted>")
+        self.assertEqual(r("--password hunter2 --rest"), "--password <redacted> --rest")
+        self.assertEqual(r("--token=abc"), "--token=<redacted>")
+        self.assertEqual(r('password="x y" z'), 'password=<redacted> z')
+        secret40 = "wJalrXUtnFEMI" + "K7MDENGbPxRfiCY" + "EXAMPLEKEY12"
+        self.assertEqual(len(secret40), 40)
+        self.assertEqual(r("sec " + secret40 + " end"), "sec <redacted> end")
+        sha = "a" * 20 + "0123456789" + "b" * 10
+        self.assertEqual(r("commit " + sha), "commit " + sha, "a 40-hex git sha is evidence, not a secret")
+        self.assertEqual(r("blob " + ("Q" * 60 + "q" * 25) + "=="), "blob <redacted>")
 
 
 class TestControl(World):
@@ -440,6 +558,20 @@ class TestControl(World):
             self.assertIn("foreign", r.stderr.lower())
         finally:
             s.close()
+
+    def test_stop_never_kills_a_reused_pid(self):
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            os.makedirs(os.path.join(self.root, ".ops", "state"), exist_ok=True)
+            with open(os.path.join(self.root, ".ops", "state", "panel.json"), "w") as fh:
+                json.dump({"pid": sleeper.pid, "port": self.port, "root": self.root}, fh)
+            r = self.ok("panel", "stop")
+            self.assertIn("another process", r.stdout)
+            self.assertIsNone(sleeper.poll(), "the unrelated process must survive")
+            self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "state", "panel.json")))
+        finally:
+            sleeper.kill()
+            sleeper.wait()
 
     def test_up_starts_the_panel_when_autostart(self):
         self.set_panel(f"port: {self.port}, autostart: true, bind: loopback")

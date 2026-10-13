@@ -158,6 +158,17 @@ def cmd_start(cfg, foreground: bool = False, out=None) -> int:
     return start_detached(cfg, out)
 
 
+def is_our_panel(pid: int, cfg) -> bool:
+    """True when /proc/<pid>/cmdline is this project's foreground panel server (pid reuse is never trusted)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            argv = [p.decode("utf-8", "replace") for p in fh.read().split(b"\0") if p]
+    except OSError:
+        return False
+    return ("panel" in argv and "--foreground" in argv and any(a.endswith("cli.py") for a in argv)
+            and any(state.same_root(a, cfg.root) for a in argv if a.startswith("/")))
+
+
 def cmd_stop(cfg, out=None) -> int:
     out = out or sys.stdout
     port = cfg.panel["port"]
@@ -168,6 +179,12 @@ def cmd_stop(cfg, out=None) -> int:
     pid = (h or {}).get("pid") if isinstance(h, dict) and h.get("root") else (pj or {}).get("pid")
     if not pid:
         print("panel not running", file=out)
+        state.remove_panel_json(cfg)
+        unregister(cfg)
+        return 0
+    if not is_our_panel(int(pid), cfg):
+        print(f"panel not running: pid {pid} from panel.json belongs to another process now (pid reuse); not killed; "
+              "stale panel.json removed", file=out)
         state.remove_panel_json(cfg)
         unregister(cfg)
         return 0

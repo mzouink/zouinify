@@ -45,7 +45,11 @@ def classify_item(it: dict) -> dict:
     options = re.findall(r'"([^"]+)"', str(it.get("command", ""))) if verb == "DECIDE" else []
     if verb == "APPROVE" or (verb == "DECIDE" and TIER2_DECIDE_RE.search(text)):
         tier, hint = 2, f"type in the desk's tmux window: {it.get('expect') or it.get('command') or ''}".strip()
-    elif verb in ("APPLY", "DEPLOY", "PUSH", "RUN", "SSO"):
+    elif verb in ("APPLY", "DEPLOY", "PUSH"):
+        # a production apply, deploy or image push: the human runs the command in their terminal and types the
+        # `ok` in the desk's window; never a button, in any version (T-0160 ticket text)
+        tier, hint = 2, f"run it in your terminal, then type `{it.get('tickets') or 'T-xxxx'} ok` in the desk's tmux window"
+    elif verb in ("RUN", "SSO"):
         tier, hint = 1, "run it in your terminal, then OK (available after receipts, T-0162)"
     elif verb == "CHECK":
         tier, hint = 1, "do the check, then OK (available after receipts, T-0162)"
@@ -441,7 +445,7 @@ class Snapshot:
         now = readonly.now_local(cfg)
         sitting = readonly.next_sitting(cfg, now)
         if sitting:
-            at = now.replace(hour=int(sitting["at"][:2]), minute=int(sitting["at"][3:]), second=0, microsecond=0)
+            at = dt.datetime.combine(now.date(), dt.time(int(sitting["at"][:2]), int(sitting["at"][3:])), tzinfo=now.tzinfo)
             if at <= now:
                 at = at + dt.timedelta(days=1)
             sitting["at_iso"] = at.isoformat()

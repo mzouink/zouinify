@@ -31,7 +31,7 @@ class DuplicateSession(TmuxError):
 
 def _run(args: list, timeout: float = 20) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run([TMUX, *args], capture_output=True, text=True, timeout=timeout)
+        return subprocess.run([TMUX, *args], capture_output=True, text=True, errors="replace", timeout=timeout)
     except FileNotFoundError as e:
         raise TmuxError(f"{TMUX}: not found on PATH") from e
     except subprocess.TimeoutExpired as e:
