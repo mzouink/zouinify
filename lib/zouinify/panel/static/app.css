@@ -78,6 +78,8 @@ button { font: inherit; color: inherit; }
 .badge.sev.P1 { color: var(--accent-amber); border-color: var(--accent-amber); }
 .badge.sev.P2 { color: var(--accent-blue); border-color: var(--accent-blue); }
 .badge.sev.P3 { color: var(--text-muted); }
+.badge.mine { color: var(--accent-teal); border-color: var(--accent-teal); }
+.badge.other { color: var(--text-muted); border-style: dashed; }
 .badge.verb { font-family: var(--font-mono); }
 .badge.verb.APPLY, .badge.verb.DEPLOY, .badge.verb.PUSH { color: var(--accent-teal); border-color: var(--accent-teal); }
 .badge.verb.RUN { color: var(--accent-blue); border-color: var(--accent-blue); }

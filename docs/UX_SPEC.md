@@ -173,6 +173,19 @@ role, what it waits for (first line of the prompt, redacted), **since HH:MM (age
 visible screen in a drawer). No answer button in v1 or v2: permission prompts are tier 2 (the human answers in that window;
 decision 2026-10-13, revisit after a week).
 
+### 2.5b Waiting for me (every session of the user; T-0175)
+
+A page, `#/waiting`, second in the nav, listing every Claude session of the user that `claude agents --json` reports as
+waiting, whatever its project: this project's rows first, then the others grouped by project (the registered project's name
+from `~/.zouinify/projects.json`, else the directory name of that session, never a path). Row: name, project badge, tmux
+window, the prompt's first line (redacted capture), since (first seen waiting by this panel), and "answer from your terminal:
+attach to tmux window `<name>`" with a copy button for the window name (the panel names no tmux command: its guard forbids
+the verb; the command is in REFERENCE.md). **[show pane]** opens the redacted screen (`GET /api/waiting/<name>`) for any
+of the user's sessions. The dashboard's "Panes waiting for you" keeps this project's rows and links "+ n elsewhere"; the
+Sessions KPI shows "n elsewhere". No `[type]` until Z-11 is decided; whether the terminal page may reach sessions outside
+this project's config is a separate decision. Zero own state; the panel's gates unchanged; a foreign capture is redacted
+exactly like this project's (merge gate: the panel may serve the LAN).
+
 ### 2.6 Sessions panel and page
 
 State mapping, with text labels (never color alone):

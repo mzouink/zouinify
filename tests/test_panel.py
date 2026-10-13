@@ -107,6 +107,19 @@ class PanelWorld(World):
         self.ok("launch", "worker", "T-0001")
         with open(os.path.join(self.state, "screen-t0001-first-ready-ticket.txt"), "w") as fh:
             fh.write(PROMPT_SCREEN)
+        # two sessions of the same user waiting ELSEWHERE (T-0175, "Waiting for me"): one with a tmux window in a
+        # registered zouinify project, whose screen holds a prompt and a secret; one with no window, in a plain directory
+        self.foreign_cwd = os.path.join(self.tmp, "elsewhere", "proj2")
+        os.makedirs(self.foreign_cwd)
+        subprocess.run(["tmux", "new-session", "-d", "-s", "elsewhere-bf", "-c", self.foreign_cwd, "claude", "--model", "fable", "--", "elsewhere"],
+                       env=self.env, check=True, capture_output=True)
+        with open(os.path.join(self.state, "sessions.json")) as fh:
+            foreign_pid = json.load(fh)["elsewhere-bf"]["pid"]
+        with open(os.path.join(self.state, "screen-elsewhere-bf.txt"), "w") as fh:
+            fh.write(PROMPT_SCREEN + SECRET_SCREEN)
+        os.makedirs(os.path.join(self.home, ".zouinify"), exist_ok=True)
+        with open(os.path.join(self.home, ".zouinify", "projects.json"), "w") as fh:
+            json.dump([{"name": "proj-two", "short": "p2", "root": self.foreign_cwd, "port": 4701, "pid": 1, "url": "http://127.0.0.1:4701/"}], fh)
         self.agents = os.path.join(self.tmp, "agents.json")
         with open(self.agents, "w") as fh:
             json.dump([
@@ -114,6 +127,8 @@ class PanelWorld(World):
                 {"name": "t0001-first-ready-ticket", "cwd": os.path.join(self.root, ".claude", "worktrees", "t0001-first-ready-ticket"), "status": "waiting", "pid": 1, "kind": "interactive"},
                 {"name": "tp-debug", "cwd": self.root, "status": "idle", "pid": 2, "kind": "interactive"},
                 {"name": "other-project", "cwd": self.tmp, "status": "idle", "pid": 3, "kind": "interactive"},
+                {"name": "elsewhere-bf", "cwd": self.foreign_cwd, "status": "waiting", "pid": foreign_pid, "kind": "interactive"},
+                {"name": "lonely-xy", "cwd": os.path.join(self.tmp, "other3"), "status": "waiting", "pid": 7, "kind": "interactive"},
             ], fh)
         self.env["FAKE_CLAUDE_AGENTS"] = self.agents
         self.env_patch = mock.patch.dict(os.environ, self.env, clear=True)
@@ -279,6 +294,57 @@ class TestApi(PanelWorld):
         self.assertIn("tp-manager", [r["name"] for r in gone], "a configured role that is not running shows as gone")
         self.assertEqual(s["kpis"]["waiting"], 1)
         self.assertEqual(s["kpis"]["working"], 1)
+
+    def test_waiting_for_me_across_projects(self):
+        """T-0175: every waiting session of the user, this project first; foreign rows carry a project label and never a path."""
+        s = self.get_json("/api/snapshot")
+        w = s["waiting_all"]
+        names = [r["name"] for r in w["rows"]]
+        self.assertEqual(names[0], "t0001-first-ready-ticket", "this project's rows come first")
+        self.assertEqual(sorted(names), ["elsewhere-bf", "lonely-xy", "t0001-first-ready-ticket"])
+        by = {r["name"]: r for r in w["rows"]}
+        mine = by["t0001-first-ready-ticket"]
+        self.assertTrue(mine["in_project"])
+        self.assertEqual(mine["project"], self.cfg.name)
+        self.assertEqual(mine["tmux"], "t0001-first-ready-ticket")
+        self.assertEqual((mine["role"], mine["ticket"]), ("worker", "T-0001"), "this project's rows are the dashboard's own")
+        self.assertEqual(mine["waiting_for"], "Do you want to proceed?", "the question above the options, not the footer")
+        e = by["elsewhere-bf"]
+        self.assertFalse(e["in_project"])
+        self.assertEqual((e["project"], e["registered"]), ("proj-two", True), "a registered zouinify project is named")
+        self.assertEqual(e["tmux"], "elsewhere-bf", "the window is found through the pane list, no registry entry needed")
+        self.assertNotIn("attach", e, "the panel names no tmux command; the page shows the window name")
+        self.assertEqual(e["waiting_for"], "Do you want to proceed?")
+        lo = by["lonely-xy"]
+        self.assertEqual((lo["project"], lo["registered"], lo["tmux"]), ("other3", False, None),
+                         "no window: the directory name only, nothing to attach to")
+        for r in w["rows"]:
+            self.assertTrue(r["since"], r["name"])
+            if not r["in_project"]:
+                self.assertNotIn("cwd", r)
+                self.assertNotIn(self.tmp, json.dumps(r), "a foreign row never carries a path")
+        self.assertEqual(w["elsewhere"], 2)
+        self.assertEqual(s["kpis"]["waiting_elsewhere"], 2)
+        self.assertEqual(s["kpis"]["waiting"], 1, "the project KPI ignores foreign sessions")
+        self.assertEqual([r["name"] for r in s["waiting"]], ["t0001-first-ready-ticket"], "the dashboard panel keeps this project's rows")
+        self.assertNotIn("elsewhere-bf", {r["name"] for r in s["sessions"]["rows"]}, "the sessions table stays per project")
+        d = self.get_json("/api/waiting/elsewhere-bf")
+        self.assertIn("aws_secret_access_key = <redacted>", d["screen"], "a foreign capture is redacted like every other")
+        self.assertNotIn(FAKE_SESSION_TOKEN, d["screen"])
+        self.assertIn("Bearer <redacted>", d["screen"])
+        self.assertNotIn(self.tmp, json.dumps(d))
+        self.assertNotIn("cwd", d)
+        st, _, _ = self.req("GET", "/api/waiting/tp-desk")
+        self.assertEqual(st, 404, "a session that is not waiting has no waiting detail")
+        st, _, _ = self.req("GET", "/api/waiting/no-such")
+        self.assertEqual(st, 404)
+        st, _, _ = self.req("POST", "/api/waiting/elsewhere-bf", body=b"{}")
+        self.assertEqual(st, 405, "still no write path")
+        _, _, js = self.req("GET", "/static/app.js")
+        self.assertIn(b"#/waiting", js)
+        self.assertIn(b"Waiting for me", js)
+        self.assertIn(b"copy window name", js)
+        self.assertNotIn(b"send-keys", js)
 
     def test_redaction_everywhere(self):
         with open(os.path.join(self.state, "screen-tp-desk.txt"), "w") as fh:

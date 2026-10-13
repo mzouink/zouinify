@@ -202,33 +202,133 @@ def last_body_line(screen: str) -> str:
     return body[-1].strip()[:160] if body else ""
 
 
+OPTION_RE = re.compile(r"^\s*(?:❯\s*)?[1-9]\.\s+\S")
+BOX_RE = re.compile(r"^\s*│\s?|\s*│\s*$")
+
+
 def waiting_line(screen: str) -> str:
-    for l in screen.splitlines():
+    """What the pane waits for, in one line: for an option dialog (a permission prompt, an AskUserQuestion), the question
+    right above the first option, preferring a line that ends with "?"; otherwise the first prompt-like line."""
+    lines = screen.splitlines()
+    first_opt = next((i for i, l in enumerate(lines) if OPTION_RE.match(l)), None)
+    if first_opt is not None:
+        above = []
+        for l in reversed(lines[max(0, first_opt - 8):first_opt]):
+            t = BOX_RE.sub("", l).strip()
+            if not t or CHROME_RE.match(l) or t.startswith("☐") or t.startswith("☑"):
+                if above:
+                    break
+                continue
+            above.append(t)
+        q = next((t for t in above if t.endswith("?")), None) or (above[0] if above else "")
+        if q:
+            return q[:160]
+    for l in lines:
         if PROMPT_RE.search(l):
             return l.strip()[:160]
     return ""
 
 
+def project_roots(cfg) -> set:
+    """The real paths a session's cwd must be under to belong to this project: the root and every configured repo."""
+    return {os.path.realpath(cfg.root)} | {os.path.realpath(cfg.path(r["path"])) for r in cfg.repos}
+
+
+def under(cwd: str, roots) -> bool:
+    rc = os.path.realpath(cwd or "")
+    return any(rc == r or rc.startswith(r + os.sep) for r in roots)
+
+
+def pane_index(panes: list) -> dict:
+    """pane pid -> pane row, for the /proc parent walk from a session's pid to its tmux window."""
+    by_pid: dict = {}
+    for p in panes:
+        try:
+            by_pid[int(p["pane_pid"])] = p
+        except (ValueError, KeyError):
+            pass
+    return by_pid
+
+
+def registered_projects() -> list:
+    """`~/.zouinify/projects.json`, written whenever one of this user's project panels starts; read-only here.
+    Rows: {name, short, root, port, ...}. Missing or unreadable -> []."""
+    path = os.path.join(os.path.expanduser("~"), ".zouinify", "projects.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            rows = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict) and r.get("root")]
+
+
+def project_label(cwd: str, projects: list) -> tuple:
+    """(label, registered): a registered project's name when `cwd` is under its root, else the cwd's last path
+    segment only. Nothing more of a foreign path is ever exposed (T-0175 merge gate: the panel may serve the LAN)."""
+    rc = os.path.realpath(cwd or "")
+    for p in projects:
+        root = os.path.realpath(str(p.get("root") or ""))
+        if root and (rc == root or rc.startswith(root + os.sep)):
+            return str(p.get("name") or os.path.basename(root)), True
+    return (os.path.basename(rc.rstrip(os.sep)) or "?"), False
+
+
+def foreign_waiting_source(cfg) -> dict:
+    """The user's Claude sessions OUTSIDE this project that `claude agents --json` reports as waiting (T-0175, "Waiting for
+    me"): name, tmux window (pane list + /proc walk), project label, the prompt's first line from a redacted capture. Only
+    these few panes are captured (a capture costs real time with dozens of sessions), so a foreign dialog that `claude
+    agents` still calls idle is not seen; this project's rows come from the sessions source, with its screen heuristics.
+    A foreign row carries the project label only, never its cwd. `since` is filled by the Snapshot (first seen waiting).
+    The page shows the window name for the human to attach to from a terminal; the panel names no tmux command."""
+    agents = readonly.list_agents()
+    roots = project_roots(cfg)
+    waiting = [a for a in agents if str(a.get("status") or "") == "waiting" and a.get("name")
+               and not under(str(a.get("cwd") or ""), roots)]
+    if not waiting:
+        return {"rows": []}
+    pane_by_pid = pane_index(readonly.list_panes())
+    projects = registered_projects()
+    rows: list = []
+    seen: set = set()
+    for a in waiting:
+        name = str(a.get("name"))
+        if name in seen:
+            continue
+        seen.add(name)
+        pane = walk_to_pane(a.get("pid"), pane_by_pid)
+        tmux_name = pane["session"] if pane else None
+        screen = redact(readonly.capture_pane(tmux_name)) if tmux_name else ""
+        label, registered = project_label(str(a.get("cwd") or ""), projects)
+        rows.append({"name": name, "tmux": tmux_name, "project": label, "registered": registered, "in_project": False,
+                     "role": "", "ticket": "", "waiting_for": waiting_line(screen) or last_body_line(screen), "since": "",
+                     "started_at": a.get("startedAt")})
+    rows.sort(key=lambda r: (r["project"], r["name"]))
+    return {"rows": rows}
+
+
+def waiting_row(cfg, r: dict) -> dict:
+    """A row of this project's waiting list in the shape of the "Waiting for me" page."""
+    return {"name": r["name"], "tmux": r.get("tmux"), "project": cfg.name, "registered": True, "in_project": True,
+            "role": r.get("role", ""), "ticket": r.get("ticket", ""), "waiting_for": r.get("waiting_for", ""),
+            "since": r.get("since", ""), "started_at": r.get("started_at")}
+
+
 def sessions_source(cfg) -> dict:
     agents = readonly.list_agents()
     panes = readonly.list_panes()
-    pane_by_pid = {}
-    for p in panes:
-        try:
-            pane_by_pid[int(p["pane_pid"])] = p
-        except (ValueError, KeyError):
-            pass
+    pane_by_pid = pane_index(panes)
     pane_cmd = {p["session"]: p.get("command", "") for p in panes}
     reg = readonly.registry_entries(cfg)
     reg_by_name = {e["name"]: e for e in reg}
     roles = cfg.role_sessions()
     role_by_name = {s.name: r for r, s in roles.items() if s.name}
     role_by_tmux = {s.tmux: r for r, s in roles.items() if s.tmux}
-    roots = {os.path.realpath(cfg.root)} | {os.path.realpath(cfg.path(r["path"])) for r in cfg.repos}
+    roots = project_roots(cfg)
 
     def mine(cwd: str) -> bool:
-        rc = os.path.realpath(cwd or "")
-        return any(rc == r or rc.startswith(r + os.sep) for r in roots)
+        return under(cwd, roots)
 
     owners: dict = {}
     for f in readonly.ticket_files(cfg):
@@ -382,6 +482,7 @@ class Snapshot:
         r = int(cfg.panel.get("refresh_s") or 30)
         self.src = {
             "inbox": {"fn": inbox_source, "ttl": r}, "board": {"fn": board_source, "ttl": r}, "sessions": {"fn": sessions_source, "ttl": r},
+            "foreign_waiting": {"fn": foreign_waiting_source, "ttl": r},
             "creds": {"fn": creds_source, "ttl": 60}, "logs": {"fn": logs_source, "ttl": 20}, "releases": {"fn": releases_source, "ttl": 60},
             "freeze": {"fn": freeze_source, "ttl": r}, "trunk": {"fn": trunk_sha, "ttl": 60},
         }
@@ -389,20 +490,21 @@ class Snapshot:
             s.update({"data": None, "at": 0.0, "error": None, "loaded": False, "lock": threading.Lock()})
         self.stop_event = threading.Event()
         self.thread = None
-        # when each session was first seen waiting (derived from the refreshes; forgotten when it stops waiting)
-        self.waiting_since: dict = {}
+        # when each session was first seen waiting, per source (derived from the refreshes; forgotten when it stops waiting)
+        self.waiting_since: dict = {"sessions": {}, "foreign_waiting": {}}
 
-    def mark_waiting(self, data: dict) -> dict:
+    def mark_waiting(self, data: dict, source: str = "sessions") -> dict:
         now = panelstate.now_iso()
+        seen_since = self.waiting_since[source]
         names = set()
         for r in (data or {}).get("rows", []):
-            if r.get("state") == "waiting":
+            if r.get("state", "waiting") == "waiting":
                 names.add(r["name"])
-                r["since"] = self.waiting_since.setdefault(r["name"], now)
+                r["since"] = seen_since.setdefault(r["name"], now)
             else:
                 r["since"] = ""
-        for n in [n for n in self.waiting_since if n not in names]:
-            self.waiting_since.pop(n, None)
+        for n in [n for n in seen_since if n not in names]:
+            seen_since.pop(n, None)
         return data
 
     # -- refresh --------------------------------------------------------------------------------------
@@ -413,8 +515,8 @@ class Snapshot:
         try:
             try:
                 s["data"] = s["fn"](self.cfg)
-                if name == "sessions":
-                    s["data"] = self.mark_waiting(s["data"])
+                if name in self.waiting_since:
+                    s["data"] = self.mark_waiting(s["data"], name)
                 s["error"] = None
             except Exception as e:  # noqa: BLE001 - a failing source is shown as an error, never a crash
                 s["error"] = f"{type(e).__name__}: {e}"[:300]
@@ -484,6 +586,7 @@ class Snapshot:
         inbox, _, inbox_err = self.get("inbox", fresh)
         board, _, board_err = self.get("board", fresh)
         sessions, _, sess_err = self.get("sessions", fresh)
+        foreign, _, foreign_err = self.get("foreign_waiting", fresh)
         creds, _, _ = self.get("creds", fresh)
         logs, _, _ = self.get("logs", fresh)
         releases, _, _ = self.get("releases", fresh)
@@ -495,6 +598,8 @@ class Snapshot:
         rows = (sessions or {}).get("rows", [])
         now = readonly.now_local(cfg)
         waiting = [r for r in rows if r["state"] == "waiting"]
+        foreign_rows = (foreign or {}).get("rows", [])
+        waiting_all = [waiting_row(cfg, r) for r in waiting] + foreign_rows
         by_state: dict = {}
         for r in rows:
             by_state[r["state"]] = by_state.get(r["state"], 0) + 1
@@ -514,15 +619,16 @@ class Snapshot:
                                 "presence": "n/a (the desk polls receipts from T-0162 on)"}},
             "kpis": {"inbox": inbox.get("count"), "p0": inbox.get("p0", 0), "p0_open_tickets": len(board["p0"]),
                      "waiting": by_state.get("waiting", 0), "working": by_state.get("working", 0), "idle": by_state.get("idle", 0),
-                     "gone": by_state.get("gone", 0), "shell": by_state.get("shell", 0),
+                     "gone": by_state.get("gone", 0), "shell": by_state.get("shell", 0), "waiting_elsewhere": len(foreign_rows),
                      "to_deploy": len(board["lanes"].get("to deploy", [])), "deployed": counts.get("deployed", 0),
                      "sessions": len(rows), "tickets": board["total"]},
             "p0": board["p0"], "inbox": {"items": inbox["items"], "count": inbox.get("count"), "error": inbox_err},
             "board": {k: board[k] for k in ("lanes", "chips", "counts", "other", "newest_plan", "void_plans", "source", "warnings", "total")},
             "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
+            "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},
             "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": live_checks(cfg, board),
             "config": {k: v for k, v in cfg.to_dict().items() if k != "warnings"}, "hook": hook_status(),
-            "sources": self.sources_meta(), "errors": {"inbox": inbox_err, "board": board_err, "sessions": sess_err},
+            "sources": self.sources_meta(), "errors": {"inbox": inbox_err, "board": board_err, "sessions": sess_err, "foreign_waiting": foreign_err},
         }
 
     def ticket(self, tid: str):
@@ -535,6 +641,21 @@ class Snapshot:
         sec = ticket_sections(path)
         return {"id": tid, "file": os.path.relpath(path, self.cfg.root), "front_matter": fm, "log": sec["log"][:10], "log_total": len(sec["log"]),
                 "handoff": sec["handoff"], "problem": sec["problem"]}
+
+    def waiting_detail(self, name: str, fresh: bool = False):
+        """One row of the "Waiting for me" list with its redacted screen; None when that session is not waiting now."""
+        mine = ((self.get("sessions", fresh)[0] or {}).get("rows", []))
+        row = next((r for r in mine if r["name"] == name and r.get("state") == "waiting"), None)
+        if row:
+            d = waiting_row(self.cfg, row)
+        else:
+            rows = ((self.get("foreign_waiting", fresh)[0] or {}).get("rows", []))
+            row = next((r for r in rows if r["name"] == name), None)
+            if not row:
+                return None
+            d = dict(row)
+        d["screen"] = redact(readonly.capture_pane(row["tmux"])) if row.get("tmux") else ""
+        return d
 
     def session(self, name: str, fresh: bool = False):
         rows = ((self.get("sessions", fresh)[0] or {}).get("rows", []))

@@ -1,5 +1,5 @@
 """The HTTP server of the panel: stdlib only, GET/HEAD only -- any other method is 405. Routes: `/` and
-`/static/*` (the page), `/health`, `/api/snapshot`, `/api/tickets/<id>`, `/api/sessions/<name>`,
+`/static/*` (the page), `/health`, `/api/snapshot`, `/api/tickets/<id>`, `/api/waiting/<name>`, `/api/sessions/<name>`,
 `/api/logs?label=<a panel.logs label>`. Everything else is 404.
 
 Binding (T-0165): `panel.bind: loopback` (the default) listens on 127.0.0.1 and needs no token. `panel.bind:
@@ -232,6 +232,12 @@ class Handler(BaseHTTPRequestHandler):
                 if d:
                     return self.send_json(HTTPStatus.OK, d, head)
                 return self.send_json(HTTPStatus.NOT_FOUND, {"error": "no such session of this project"}, head)
+            if path.startswith("/api/waiting/"):
+                name = path[len("/api/waiting/"):]
+                d = snap.waiting_detail(name, fresh=fresh) if name and "/" not in name else None
+                if d:
+                    return self.send_json(HTTPStatus.OK, d, head)
+                return self.send_json(HTTPStatus.NOT_FOUND, {"error": "no session of yours is waiting under that name"}, head)
             if path == "/api/logs":
                 label = q.get("label", [""])[0]
                 logs, _, _ = snap.get("logs", fresh)

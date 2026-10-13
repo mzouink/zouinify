@@ -75,6 +75,14 @@ only through `lib/zouinify/readonly.py` and writes only through `lib/zouinify/pa
 `<project root>/.ops/state/{panel.json,server.log}`, fixed in code, never following a symlink. With no way to spawn, import
 dynamically or write, a click cannot become a launch, a kill, a keystroke, a ticket move or a deploy.
 
+### Waiting for me (T-0175)
+
+`#/waiting` lists every Claude session of yours that `claude agents --json` reports as waiting on you, across all your
+projects, this project first. Each row names the tmux window; answer from your own terminal with
+`tmux attach -t <window>` (the page copies the window name; the panel itself never names or runs a tmux command). Rows
+of other projects show the project name from `~/.zouinify/projects.json`, or the directory name, never a path; their
+screens are redacted exactly like this project's.
+
 ## UX specification
 
 The panel's look, screen anatomy, tiers of clickable actions and acceptance criteria are in
