@@ -21,6 +21,7 @@ def parse_ops(payload) -> list:
     if len(ops) > OPS_MAX:
         raise ValueError(f"ops: at most {OPS_MAX} items per batch")
     out = []
+    prev = None
     for i, op in enumerate(ops):
         if not isinstance(op, dict) or len(op) != 1:
             raise ValueError(f"ops[{i}]: exactly one of t or k")
@@ -32,6 +33,8 @@ def parse_ops(payload) -> list:
                 raise ValueError(f"ops[{i}].t: at most {TEXT_MAX} characters")
             if not t.isprintable() or any(ord(c) < 32 or ord(c) == 127 for c in t):
                 raise ValueError(f"ops[{i}].t: printable text only, no control or zero-width characters")
+            if prev == ("k", "Escape") and t[0] in "[O":
+                raise ValueError(f"ops[{i}].t: text starting with '{t[0]}' right after Escape would form an escape sequence")
             out.append(("t", t))
         elif "k" in op:
             k = op["k"]
@@ -40,4 +43,5 @@ def parse_ops(payload) -> list:
             out.append(("k", k))
         else:
             raise ValueError(f"ops[{i}]: exactly one of t or k")
+        prev = out[-1]
     return out

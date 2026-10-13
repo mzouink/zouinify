@@ -72,26 +72,64 @@ def capture_pane(name: str) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
+PANE_FIELDS = ("pane_id", "pane_active", "window_active", "pane_current_command", "pane_pid", "window_index", "pane_index")
+PANE_ID_RE = re.compile(r"^%\d+$")
+
+
+def panes_of(name: str) -> list:
+    """EVERY pane of the session across all its windows (`list-panes -s`), as [{pane_id, active, window_active, command,
+    pane_pid, window, index}]; [] when no such session. The terminal page (T-0181) refuses a session with more than
+    one pane: a check on "the" pane and a send to "the" pane must name the same %pane_id."""
+    r = _run(["list-panes", "-s", "-t", f"={name}", "-F", "\t".join("#{%s}" % f for f in PANE_FIELDS)])
+    if r.returncode != 0:
+        return []
+    rows = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != len(PANE_FIELDS):
+            continue
+        rows.append({"pane_id": parts[0], "active": parts[1] == "1", "window_active": parts[2] == "1", "command": parts[3],
+                     "pane_pid": parts[4], "window": parts[5], "index": parts[6]})
+    return rows
+
+
 def pane_command(name: str):
-    """The current command of the session's active pane (`claude`, `node`, `bash`, ...), or None when no such session."""
-    for p in list_panes():
-        if p["session"] == name:
-            return p.get("command") or ""
-    return None
+    """The current command of the session's pane when it has exactly one (`claude`, `node`, `bash`, ...); None when
+    there is no such session; "" when it has several panes (ambiguous: the terminal page refuses those)."""
+    panes = panes_of(name)
+    if not panes:
+        return None
+    return panes[0].get("command") or "" if len(panes) == 1 else ""
 
 
-def send_keys(name: str, ops: list) -> int:
-    """Type into the session's active pane: the terminal page's one write (T-0181), the human's own keystrokes
-    after the unlock. Each op is ("t", text) -- sent literally with -l, after `--` so a leading dash is text -- or
-    ("k", KeyName) from zouinify.term.keys's allowlist. One tmux call per op, in order; returns their number."""
+def _pane_target(pane_id: str) -> str:
+    if not PANE_ID_RE.match(str(pane_id)):
+        raise TmuxError(f"not a tmux pane id: {pane_id!r}")
+    return str(pane_id)
+
+
+def capture_pane_id(pane_id: str) -> str:
+    """The visible screen of ONE pane, by its server-wide %id (never a session or window name)."""
+    r = _run(["capture-pane", "-p", "-t", _pane_target(pane_id)])
+    return r.stdout if r.returncode == 0 else ""
+
+
+def send_keys(pane_id: str, ops: list) -> int:
+    """Type into ONE pane by its %id: the terminal page's one write (T-0181), the human's own keystrokes after the
+    unlock, into the pane zouinify.term.targets inspected a moment ago. Each op is ("t", text) -- sent literally with -l,
+    after `--` so a leading dash is text -- or ("k", KeyName) from zouinify.term.keys's allowlist. One tmux call per op,
+    in order; returns the number sent; a failure mid-batch raises TmuxError with .sent = how many went before it."""
+    target = _pane_target(pane_id)
     n = 0
     for kind, value in ops:
         if kind == "t":
-            r = _run(["send-keys", "-t", f"={name}:", "-l", "--", value])
+            r = _run(["send-keys", "-t", target, "-l", "--", value])
         else:
-            r = _run(["send-keys", "-t", f"={name}:", value])
+            r = _run(["send-keys", "-t", target, value])
         if r.returncode != 0:
-            raise TmuxError(f"tmux send-keys into {name} failed: {(r.stderr or r.stdout).strip()}")
+            err = TmuxError(f"tmux send-keys into {target} failed after {n} op(s): {(r.stderr or r.stdout).strip()}")
+            err.sent = n
+            raise err
         n += 1
     return n
 

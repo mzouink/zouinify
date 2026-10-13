@@ -17,6 +17,7 @@ check and the limiter are zouinify.webauth's. The process side (start/stop, the 
 zouinify.termctl; this module only serves."""
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -29,6 +30,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from zouinify import ZouinifyError, panelstate, tmux, webauth
+from zouinify.tmux import TmuxError
 from zouinify.panel.redact import redact
 from zouinify.term import keys as keysmod
 from zouinify.term import targets as targetsmod
@@ -42,6 +44,8 @@ UNLOCK_WINDOW_S = 60.0
 LOCKOUT_S = 900              # ... and a lockout of that address
 BODY_MAX = 65536
 SOCKET_TIMEOUT_S = 30
+UNLOCK_SLOTS = 2             # concurrent PBKDF2 verifications per process; beyond that an unlock attempt is told to retry (L3)
+UNLOCK_SLOT_WAIT_S = 3.0
 ALLOW = "GET, HEAD, POST"
 CSP = webauth.CSP
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -67,6 +71,8 @@ class TermServer(ThreadingHTTPServer):
         self.unlock_limiter = webauth.RateLimiter(budget=UNLOCK_BUDGET, window_s=UNLOCK_WINDOW_S, weights={"header": 1.0, "cookie": 1.0, None: 1.0})
         self.limiter = webauth.RateLimiter()
         self.lockout: dict = {}         # ip -> unix time until which unlock attempts are refused
+        self.unlock_slots = threading.BoundedSemaphore(UNLOCK_SLOTS)
+        self.audit_key = secrets.token_bytes(32)   # per process: typed text is audited as length + HMAC, never in plain (M1)
         self.unlocks: dict = {}         # unlock id -> {ip, ua, at, last}
         self.attachments: dict = {}     # tid -> {unlock, target, at, last}
         self.lock = threading.Lock()
@@ -181,6 +187,10 @@ class Handler(BaseHTTPRequestHandler):
         rec.update(fields)
         panelstate.term_audit(self.server.cfg, rec)
 
+    def text_digest(self, text: str) -> str:
+        """16 hex characters of HMAC-SHA256(per-process key, text): correlates batches, never reveals a typed password."""
+        return hmac.new(self.server.audit_key, text.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+
     def send_bytes(self, status: int, body: bytes, ctype: str, extra: dict | None = None, head: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -277,9 +287,9 @@ class Handler(BaseHTTPRequestHandler):
             if method in ("GET", "HEAD"):
                 if path == "/term/health":
                     return self.send_json(HTTPStatus.OK, {"ok": True, "service": "zouinify-term", "version": panelstate.version(),
-                                                          "root": srv.cfg.root, "project": srv.cfg.name, "bind": srv.bind, "tls": srv.tls,
-                                                          "port": srv.server_address[1], "pid": panelstate.pid(), "started_at": srv.started_at,
-                                                          "targets": "workers", "unlock_required": True}, head)
+                                                          "root_sha": root_sha(srv.cfg.root), "project": srv.cfg.name, "bind": srv.bind,
+                                                          "tls": srv.tls, "port": srv.server_address[1], "pid": panelstate.pid(),
+                                                          "started_at": srv.started_at, "targets": "workers", "unlock_required": True}, head)
                 if path in ("/term", "/term/", "/term/index.html"):
                     return self.serve_static("term.html", head)
                 if path.startswith("/term/static/"):
@@ -365,7 +375,15 @@ class Handler(BaseHTTPRequestHandler):
         if not panelstate.term_secret_configured(srv.cfg):
             self.audit("refused", reason="unlock-no-secret")
             return self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": NO_SECRET_MSG})
-        if panelstate.term_secret_matches(srv.cfg, pp):
+        if not srv.unlock_slots.acquire(timeout=UNLOCK_SLOT_WAIT_S):
+            self.audit("refused", reason="unlock-busy")
+            return self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "too many unlock attempts are being checked right now: try again in a moment"},
+                                  extra={"Retry-After": "2"})
+        try:
+            matched = panelstate.term_secret_matches(srv.cfg, pp)
+        finally:
+            srv.unlock_slots.release()
+        if matched:
             uid = srv.new_unlock(ip, self.ua())
             self.audit("unlock", unlock8=uid[:8], secret_id=panelstate.term_secret_id(srv.cfg))
             return self.send_json(HTTPStatus.OK, {"ok": True, "unlock8": uid[:8], "idle_s": srv.times["unlock_idle_s"], "max_s": srv.times["unlock_max_s"]},
@@ -393,21 +411,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(HTTPStatus.NOT_FOUND, {"error": "target not offered", "reason": why})
         tid = srv.new_attachment(uid, target)
         srv.touch(uid)
-        self.audit("open", tid8=tid[:8], unlock8=uid[:8], target=target["name"], tmux=target["tmux"], ticket=target.get("ticket", ""))
-        return self.send_json(HTTPStatus.OK, {"tid": tid, "tid8": tid[:8], "target": target["name"], "tmux": target["tmux"],
+        self.audit("open", tid8=tid[:8], unlock8=uid[:8], target=target["name"], tmux=target["tmux"], pane=target["pane_id"],
+                   ticket=target.get("ticket", ""))
+        return self.send_json(HTTPStatus.OK, {"tid": tid, "tid8": tid[:8], "target": target["name"], "tmux": target["tmux"], "pane": target["pane_id"],
                                               "ticket": target.get("ticket", ""), "closes_in_s": srv.closes_in(tid)})
 
     def attached(self, uid: str, tid: str):
-        """(attachment, None) or (None, reason) -- the target is re-checked live every time."""
+        """(attachment, None) or (None, reason) -- the target is re-inspected every time, against the %pane_id seen at open."""
         srv: TermServer = self.server
         a = srv.attachment(tid, uid)
         if not a:
             return None, "closed: unknown attachment, or it expired (idle or maximum time)"
-        ok, why = targetsmod.live(srv.cfg, a["target"])
-        if not ok:
+        ok, why, pane = targetsmod.inspect(srv.cfg, a["target"], expect_pane=a["target"]["pane_id"])
+        if not ok or pane["pane_id"] != a["target"]["pane_id"]:
             srv.drop_attachment(tid)
-            self.audit("close", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], reason=why)
-            return None, f"closed: {why}"
+            self.audit("close", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], pane=a["target"]["pane_id"], reason=why or "pane changed")
+            return None, f"closed: {why or 'the pane changed'}"
         return a, None
 
     def screen(self, uid: str, tid: str, head: bool) -> None:
@@ -415,10 +434,10 @@ class Handler(BaseHTTPRequestHandler):
         a, err = self.attached(uid, tid)
         if err:
             return self.send_json(HTTPStatus.GONE, {"error": err}, head)
-        text = redact(tmux.capture_pane(a["target"]["tmux"]))
+        text = redact(tmux.capture_pane_id(a["target"]["pane_id"]))
         srv.touch(uid)                          # a screen poll keeps the unlock alive, not the attachment: idle means no keystroke
         return self.send_json(HTTPStatus.OK, {"text": text, "at": panelstate.now_iso(), "tid8": tid[:8], "target": a["target"]["name"],
-                                              "tmux": a["target"]["tmux"], "closes_in_s": srv.closes_in(tid)}, head)
+                                              "tmux": a["target"]["tmux"], "pane": a["target"]["pane_id"], "closes_in_s": srv.closes_in(tid)}, head)
 
     def keys(self, uid: str, tid: str) -> None:
         srv: TermServer = self.server
@@ -433,10 +452,19 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             self.audit("refused", reason=f"keys: {e}", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"])
             return self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
-        n = tmux.send_keys(a["target"]["tmux"], ops)
+        text = "".join(v for k, v in ops if k == "t")
+        names = [v for k, v in ops if k == "k"]
+        try:
+            n = tmux.send_keys(a["target"]["pane_id"], ops)
+        except TmuxError as e:
+            sent = int(getattr(e, "sent", 0) or 0)
+            srv.touch(uid, tid)
+            self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], tmux=a["target"]["tmux"], pane=a["target"]["pane_id"],
+                       text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=sent, m=len(ops), partial=True, reason=str(e)[:200])
+            return self.send_json(HTTPStatus.BAD_GATEWAY, {"error": f"tmux refused mid-batch after {sent} of {len(ops)} ops: {e}"[:300], "sent": sent})
         srv.touch(uid, tid)
-        self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], tmux=a["target"]["tmux"],
-                   text="".join(v for k, v in ops if k == "t"), keys=[v for k, v in ops if k == "k"], n=n)
+        self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=a["target"]["name"], tmux=a["target"]["tmux"], pane=a["target"]["pane_id"],
+                   text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops))
         return self.send_json(HTTPStatus.OK, {"ok": True, "sent": n, "closes_in_s": srv.closes_in(tid)})
 
     def close(self, uid: str, tid: str) -> None:
@@ -456,6 +484,12 @@ class Handler(BaseHTTPRequestHandler):
             body = fh.read()
         ctype = CONTENT_TYPES.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
         return self.send_bytes(HTTPStatus.OK, body, ctype, head=head)
+
+
+def root_sha(root: str) -> str:
+    """16 hex characters identifying the project root without exposing the path (L4): what /term/health shows and
+    what the process side compares."""
+    return hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
 
 
 def bind_address(bind: str) -> str:

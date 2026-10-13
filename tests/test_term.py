@@ -78,7 +78,8 @@ class TermWorld(World):
         self.ok("launch", "worker", "T-0001")       # t0001-first-ready-ticket, registered as a worker
         self.other = os.path.join(self.tmp, "other")
         os.makedirs(self.other)
-        for name, cwd in (("t0003-shell-worker", self.root), ("t0004-other-project", self.other), ("renamed-window", self.root)):
+        for name, cwd in (("t0003-shell-worker", self.root), ("t0004-other-project", self.other), ("renamed-window", self.root),
+                          ("t0006-wrong-tree", self.root), ("t0007-no-agent", self.root)):
             subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", cwd, "claude", "--model", "fable", "--", name],
                            env=self.env, check=True, capture_output=True)
         with open(os.path.join(self.state, "cmd-t0003-shell-worker.txt"), "w") as fh:
@@ -95,6 +96,8 @@ class TermWorld(World):
             {"name": "t0004-other-project", "cwd": self.other, "status": "waiting", "pid": pids["t0004-other-project"], "kind": "interactive"},
             # a worker named by the pattern whose tmux window carries another name (a session from before the launcher)
             {"name": "t0005-renamed-worker", "cwd": self.root, "status": "waiting", "pid": pids["renamed-window"], "kind": "interactive"},
+            # a worker-named pane whose process tree is NOT the agent (the agent pid is unrelated to the pane's)
+            {"name": "t0006-wrong-tree", "cwd": self.root, "status": "waiting", "pid": 1, "kind": "interactive"},
         ]
         self.agents = os.path.join(self.tmp, "agents.json")
         with open(self.agents, "w") as fh:
@@ -161,7 +164,9 @@ class TestTermApi(TermWorld):
         st, _, d = self.req("GET", "/term/health")
         self.assertEqual(st, 200)
         self.assertEqual((d["service"], d["targets"], d["unlock_required"], d["tls"]), ("zouinify-term", "workers", True, False))
-        self.assertNotIn("hash", json.dumps(d).lower())
+        self.assertNotIn("root", d, "the absolute root is never exposed (L4)")
+        self.assertRegex(d["root_sha"], r"^[0-9a-f]{16}$")
+        self.assertNotIn(self.root, json.dumps(d))
         st, hdr, body = self.req("GET", "/term/")
         self.assertEqual(st, 200)
         self.assertIn("text/html", hdr["Content-Type"])
@@ -219,8 +224,10 @@ class TestTermApi(TermWorld):
         st, _, d = self.req("GET", "/term/targets", cookie=cookie)
         self.assertEqual(st, 200)
         by = {t["name"]: t for t in d["targets"]}
-        self.assertEqual(sorted(by), ["t0001-first-ready-ticket", "t0003-shell-worker", "t0005-renamed-worker"],
-                         "the desk and another project's session are never listed")
+        self.assertEqual(sorted(by), ["t0001-first-ready-ticket", "t0003-shell-worker", "t0005-renamed-worker", "t0006-wrong-tree"],
+                         "the desk, another project's session and a worker-named window with no live agent are never listed")
+        self.assertFalse(by["t0006-wrong-tree"]["live"])
+        self.assertIn("process tree", by["t0006-wrong-tree"]["reason"])
         self.assertEqual((by["t0005-renamed-worker"]["tmux"], by["t0005-renamed-worker"]["live"], by["t0005-renamed-worker"]["ticket"]),
                          ("renamed-window", True, "T-0005"), "a worker's window is found through its pid when the names differ")
         self.assertTrue(by["t0001-first-ready-ticket"]["live"])
@@ -233,13 +240,14 @@ class TestTermApi(TermWorld):
         cookie, _ = self.unlock()
         cases = (("tp-desk", "role sessions"), ("tp-manager", "role sessions"), ("tp-chrome", "role sessions"),
                  ("t0003-shell-worker", "bash"), ("t0004-other-project", "not a worker session"), ("nope", "not a worker session"),
+                 ("t0006-wrong-tree", "process tree"), ("t0007-no-agent", "not a worker session"),
                  ("../x", "not a session name"), ("", "required"))
         for name, why in cases:
             st, _, d = self.req("POST", "/term/open", {"target": name}, cookie=cookie)
             self.assertEqual(st, 404 if name else 400, (name, d))
             self.assertIn(why, (d.get("reason") or d.get("error") or ""), name)
         refused = [a for a in self.audit() if a["event"] == "refused" and str(a.get("reason", "")).startswith("target:")]
-        self.assertEqual(len(refused), 7)
+        self.assertEqual(len(refused), 9)
         self.assertEqual(self.sent(), [], "nothing was ever typed")
 
     def test_open_screen_keys_close(self):
@@ -248,6 +256,8 @@ class TestTermApi(TermWorld):
         self.assertEqual(st, 200, d)
         tid = d["tid"]
         self.assertEqual((len(tid), d["target"], d["tmux"], d["ticket"]), (64, "t0001-first-ready-ticket", "t0001-first-ready-ticket", "T-0001"))
+        self.assertRegex(d["pane"], r"^%\d+$", "one concrete pane is pinned at open")
+        pane = d["pane"]
         self.assertEqual(self.audit()[-1]["event"], "open")
         st, _, s = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
         self.assertEqual(st, 200)
@@ -258,11 +268,14 @@ class TestTermApi(TermWorld):
         self.assertEqual(st, 200, k)
         self.assertEqual(k["sent"], 2)
         calls = self.sent()
-        self.assertEqual(calls, [["send-keys", "-t", "=t0001-first-ready-ticket:", "-l", "--", "2"],
-                                 ["send-keys", "-t", "=t0001-first-ready-ticket:", "Enter"]])
+        self.assertEqual(calls, [["send-keys", "-t", pane, "-l", "--", "2"], ["send-keys", "-t", pane, "Enter"]],
+                         "keys go to the pinned %pane_id, never to a session or window name")
         last = self.audit()[-1]
-        self.assertEqual((last["event"], last["tid8"], last["target"], last["text"], last["keys"], last["n"]),
-                         ("keys", tid[:8], "t0001-first-ready-ticket", "2", ["Enter"], 2))
+        self.assertEqual((last["event"], last["tid8"], last["target"], last["keys"], last["n"], last["m"], last["pane"]),
+                         ("keys", tid[:8], "t0001-first-ready-ticket", ["Enter"], 2, 2, pane))
+        self.assertNotIn("text", last, "typed text is never audited in plain (M1)")
+        self.assertEqual(last["text_len"], 1)
+        self.assertRegex(last["text_hmac"], r"^[0-9a-f]{16}$")
         st, _, _ = self.req("POST", f"/term/{tid}/close", {}, cookie=cookie)
         self.assertEqual(st, 200)
         self.assertEqual(self.audit()[-1]["reason"], "user")
@@ -276,7 +289,7 @@ class TestTermApi(TermWorld):
         cookie, _ = self.unlock()
         st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
         tid = d["tid"]
-        bad = ([{"k": "C-d"}], [{"k": "C-z"}], [{"k": "C-\\"}], [{"k": "C-b"}], [{"t": "\x1b[A"}], [{"t": "a​b"}], [{"t": ""}],
+        bad = ([{"k": "C-d"}], [{"k": "C-z"}], [{"k": "C-\\"}], [{"k": "C-b"}], [{"k": "Escape"}, {"t": "[A"}], [{"k": "Escape"}, {"t": "OA"}], [{"t": "\x1b[A"}], [{"t": "a​b"}], [{"t": ""}],
                [{"t": "x" * 2001}], [{"t": "a", "k": "Enter"}], [{"x": 1}], [], [{"k": "Enter"}] * 51, "nope")
         for ops in bad:
             st, _, d = self.req("POST", f"/term/{tid}/keys", {"ops": ops}, cookie=cookie)
@@ -313,6 +326,86 @@ class TestTermApi(TermWorld):
         self.assertIn("bash", d["error"])
         self.assertEqual(self.sent(), [], "nothing reaches a pane that is not claude")
         self.assertIn("bash", self.audit()[-1]["reason"])
+
+    def test_a_split_or_second_window_is_refused_and_closes_the_attachment(self):
+        """Review B1: a worker could `split-window` a nested `tmux attach` into another session; the check and the send
+        must name the same pane, and a session with more than one pane is never typed into."""
+        cookie, _ = self.unlock()
+        planted = os.path.join(self.state, "panes-t0001-first-ready-ticket.json")
+        with open(planted, "w") as fh:
+            json.dump([{"id": "%9001", "cmd": "tmux", "active": 1, "pid": 9001}], fh)   # the split holds the active pane
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 404, d)
+        self.assertIn("2 panes", d["reason"])
+        st, _, t = self.req("GET", "/term/targets", cookie=cookie)
+        row = next(x for x in t["targets"] if x["name"] == "t0001-first-ready-ticket")
+        self.assertFalse(row["live"])
+        os.remove(planted)
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        tid = d["tid"]
+        with open(planted, "w") as fh:
+            json.dump([{"id": "%9001", "cmd": "tmux", "active": 1, "pid": 9001}], fh)   # split after the open
+        st, _, s = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+        self.assertEqual(st, 410, s)
+        self.assertIn("2 panes", s["error"])
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual(st, 410)
+        self.assertEqual(self.sent(), [], "nothing was typed into a session with a second pane")
+        self.assertTrue(any(a["event"] == "close" and "2 panes" in a.get("reason", "") for a in self.audit()))
+
+    def test_a_partial_batch_is_audited(self):
+        """Review M3: when tmux fails mid-batch the audit says how many ops went."""
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        tid = d["tid"]
+        with open(os.path.join(self.state, "fail-send-t0001-first-ready-ticket.txt"), "w") as fh:
+            fh.write("boom\n")
+        st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "ok"}, {"t": "boom"}, {"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual(st, 502, k)
+        self.assertEqual(k["sent"], 1)
+        last = self.audit()[-1]
+        self.assertEqual((last["event"], last["n"], last["m"], last["partial"]), ("keys", 1, 3, True))
+        self.assertNotIn("text", last)
+        self.assertEqual(len(self.sent()), 2, "the failing call is the second and last one")
+
+    def test_audit_command_prints_no_typed_text(self):
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        tid = d["tid"]
+        st, _, _ = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "hunter2"}, {"k": "Enter"}]}, cookie=cookie)
+        self.assertEqual(st, 200)
+        import io
+        out = io.StringIO()
+        termctl.cmd_audit(self.cfg, since="10m", out=out)
+        text = out.getvalue()
+        self.assertIn("text_len=7", text)
+        self.assertIn("keys=Enter", text)
+        self.assertNotIn("hunter2", text)
+        with open(os.path.join(self.root, ".ops", "state", "term_audit.jsonl")) as fh:
+            self.assertNotIn("hunter2", fh.read())
+
+    def test_concurrent_unlock_checks_are_capped(self):
+        """Review L3: PBKDF2 is deliberately slow; only UNLOCK_SLOTS verifications run at once, the rest are told to retry."""
+        real = panelstate.term_secret_matches
+
+        def slow(cfg, presented):
+            time.sleep(0.8)
+            return real(cfg, presented)
+
+        results = []
+        with mock.patch.object(term_server.panelstate, "term_secret_matches", slow), mock.patch.object(term_server, "UNLOCK_SLOT_WAIT_S", 0.1):
+            def go():
+                st, _, _ = self.req("POST", "/term/unlock", {"passphrase": PASS})
+                results.append(st)
+            threads = [threading.Thread(target=go) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+        self.assertEqual(sorted(set(results)), [200, 503], results)
+        self.assertEqual(results.count(200), term_server.UNLOCK_SLOTS)
+        self.assertTrue(any(a["event"] == "refused" and a["reason"] == "unlock-busy" for a in self.audit()))
 
     def test_lock_ends_everything(self):
         cookie, _ = self.unlock()

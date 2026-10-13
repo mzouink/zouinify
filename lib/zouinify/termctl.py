@@ -5,6 +5,7 @@ zouinify.term.server and may be imported only here."""
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import secrets
@@ -24,6 +25,15 @@ NO_SECRET_MSG = ("no passphrase is set for the terminal page: run `zouinify term
                  "(it shows the passphrase once; a Claude session never does), then start it")
 NOT_ENABLED_MSG = "terminal.enabled is false in .ops/config.yaml: set it to true to run the terminal page for this project"
 ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"       # no 0/o/1/l/i: typeable on a phone from a screen
+
+
+def root_sha(root: str) -> str:
+    return hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
+
+
+def ours(cfg, h) -> bool:
+    """A /term/health answer of THIS project's terminal page (the root is never in it: its hash is)."""
+    return isinstance(h, dict) and h.get("service") == "zouinify-term" and h.get("root_sha") == root_sha(cfg.root)
 
 
 def scheme(cfg) -> str:
@@ -90,7 +100,7 @@ def probe(cfg, port: int | None = None, timeout: float = 1.5):
         d = json.loads(body)
     except ValueError:
         return {"foreign": True, "detail": "non-JSON /term/health"}
-    if isinstance(d, dict) and d.get("service") == "zouinify-term" and d.get("root"):
+    if isinstance(d, dict) and d.get("service") == "zouinify-term" and d.get("root_sha"):
         return d
     return {"foreign": True, "detail": "a /term/health that is not a zouinify terminal"}
 
@@ -117,7 +127,7 @@ def start_detached(cfg, out) -> int:
     deadline = time.time() + 20
     while time.time() < deadline:
         h = probe(cfg, timeout=0.5)
-        if isinstance(h, dict) and h.get("root") and state.same_root(h["root"], cfg.root):
+        if ours(cfg, h):
             print(f"terminal page started: {public_url(cfg)}  (pid {h.get('pid')}, workers only, passphrase required from every address, "
                   f"{cfg.terminal.get('bind')}{', TLS' if h.get('tls') else ''}; log {state.term_log_path(cfg)})", file=out)
             if h.get("tls"):
@@ -168,11 +178,11 @@ def cmd_start(cfg, foreground: bool = False, out=None) -> int:
               "unlock cookie on every request. Set terminal.tls: auto (default) to serve HTTPS with a self-signed certificate.", file=out)
     port = cfg.terminal["port"]
     h = probe(cfg)
-    if isinstance(h, dict) and h.get("root"):
-        if state.same_root(h["root"], cfg.root):
+    if isinstance(h, dict) and h.get("root_sha"):
+        if ours(cfg, h):
             print(f"terminal page already running: {public_url(cfg)}  (pid {h.get('pid')}, since {h.get('started_at')})", file=out)
             return 0
-        raise ZouinifyError(f"port {port} is held by another project's terminal page ({h.get('project')}: {h['root']}); "
+        raise ZouinifyError(f"port {port} is held by another project's terminal page ({h.get('project')}); "
                             "pick another terminal.port in .ops/config.yaml -- a port is never taken over")
     if isinstance(h, dict) and h.get("foreign"):
         raise ZouinifyError(f"port {port} is held by a foreign process ({h.get('detail')}); pick another terminal.port -- never reused")
@@ -198,9 +208,9 @@ def cmd_stop(cfg, out=None) -> int:
     port = cfg.terminal["port"]
     h = probe(cfg)
     tj = state.read_term_json(cfg)
-    if isinstance(h, dict) and h.get("root") and not state.same_root(h["root"], cfg.root):
-        raise ZouinifyError(f"port {port} serves another project's terminal page ({h['root']}); zouinify never stops another project's server")
-    pid = (h or {}).get("pid") if isinstance(h, dict) and h.get("root") else (tj or {}).get("pid")
+    if isinstance(h, dict) and h.get("root_sha") and not ours(cfg, h):
+        raise ZouinifyError(f"port {port} serves another project's terminal page ({h.get('project')}); zouinify never stops another project's server")
+    pid = (h or {}).get("pid") if ours(cfg, h) else (tj or {}).get("pid")
     if not pid:
         print("terminal page not running", file=out)
         state.remove_term_json(cfg)
@@ -230,12 +240,12 @@ def cmd_status(cfg, out=None) -> int:
     out = out or sys.stdout
     h = probe(cfg)
     secret = "set" if state.term_secret_configured(cfg) else "NOT set"
-    if isinstance(h, dict) and h.get("root"):
-        if state.same_root(h["root"], cfg.root):
+    if isinstance(h, dict) and h.get("root_sha"):
+        if ours(cfg, h):
             print(f"terminal page running: {public_url(cfg)}  pid {h.get('pid')}  since {h.get('started_at')}  bind {h.get('bind')}"
                   f"{'  TLS' if h.get('tls') else ''}  targets workers  passphrase {secret}  version {h.get('version')}", file=out)
             return 0
-        print(f"port {cfg.terminal['port']} serves ANOTHER project's terminal page: {h['root']}", file=out)
+        print(f"port {cfg.terminal['port']} serves ANOTHER project's terminal page: {h.get('project')}", file=out)
         return 1
     if isinstance(h, dict):
         print(f"port {cfg.terminal['port']} is held by a foreign process ({h.get('detail')})", file=out)
@@ -285,9 +295,11 @@ def cmd_audit(cfg, since: str = "10m", target: str | None = None, out=None) -> i
                     continue
                 n += 1
                 keys = " ".join(rec.get("keys") or []) if isinstance(rec.get("keys"), list) else ""
+                # typed text is never printed: its length and HMAC only (a human may have typed a password into a prompt)
                 print(f"{rec.get('at')} {rec.get('event', '?'):8s} tid={rec.get('tid8', '-'):8s} unlock={rec.get('unlock8', '-'):8s} "
                       f"ip={rec.get('ip', '-')} target={rec.get('target', '-')}"
-                      + (f" text={rec.get('text')!r}" if rec.get("text") else "") + (f" keys={keys}" if keys else "")
+                      + (f" text_len={rec.get('text_len')} text_hmac={rec.get('text_hmac')}" if rec.get("text_len") else "")
+                      + (f" keys={keys}" if keys else "") + (" PARTIAL" if rec.get("partial") else "")
                       + (f" reason={rec.get('reason')}" if rec.get("reason") else ""), file=out)
     except OSError:
         pass
@@ -303,11 +315,11 @@ def ensure_started(cfg, dry_run: bool = False, out=None) -> bool:
         print(f"terminal      not started: {NO_SECRET_MSG}", file=out)
         return False
     h = probe(cfg)
-    if isinstance(h, dict) and h.get("root"):
-        if state.same_root(h["root"], cfg.root):
+    if isinstance(h, dict) and h.get("root_sha"):
+        if ours(cfg, h):
             print(f"terminal      running  {public_url(cfg)}  (pid {h.get('pid')}, workers only)", file=out)
             return True
-        print(f"terminal      REFUSED: port {cfg.terminal['port']} serves another project's terminal page ({h['root']}); change terminal.port", file=out)
+        print(f"terminal      REFUSED: port {cfg.terminal['port']} serves another project's terminal page ({h.get('project')}); change terminal.port", file=out)
         return False
     if isinstance(h, dict):
         print(f"terminal      REFUSED: port {cfg.terminal['port']} is held by a foreign process ({h.get('detail')}); change terminal.port", file=out)
