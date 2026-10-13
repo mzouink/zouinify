@@ -6,9 +6,11 @@ Binding (T-0165): `panel.bind: loopback` (the default) listens on 127.0.0.1 and 
 intranet` listens on 0.0.0.0 and requires the browser token on EVERY request from a non-loopback peer, the page
 and its static files included: `Authorization: Bearer <token>` or the `zouinify_token` cookie, compared in
 constant time through zouinify.panelstate (the panel never sees the hash). A token-less navigation to `/` gets a
-401 unlock page whose only script stores the `#t=` fragment as a SameSite=Strict cookie and reloads; the fragment
-never reaches the server, so no token ever appears in a log or a URL the server sees. Repeated refusals from one
-address are rate-limited (429), every refusal is an AUDIT line in server.log, a foreign Host or Origin is 403.
+401 unlock page whose only script sends the `#t=` fragment once as a Bearer header to GET /api/unlock; the server
+answers with the cookie itself (HttpOnly, SameSite=Strict: no script on this host name can read it, and cookies
+ignore ports) and the page reloads. The fragment never reaches the server, so no token ever appears in a log or a
+URL the server sees. Repeated refusals from one address are rate-limited (429), every refusal is an AUDIT line in
+server.log, a foreign Host or Origin is 403.
 The process side (start/stop, token rotation, signals) lives in zouinify.panelctl; this module only serves."""
 from __future__ import annotations
 
@@ -30,28 +32,37 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json"}
 ALLOW = "GET, HEAD"
-CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'none'"
+CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'"
 REFUSED = {"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW}
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-QUERY_RE = re.compile(r"\?[^ \"]*")     # a mistyped /?t=<token> must never reach the log
+QUERY_RE = re.compile(r"[?#][^ \"]*")   # a mistyped /?t=<token>, or a hand-built /#t=<token>, must never reach the log
 COOKIE = "zouinify_token"
+COOKIE_MAX_AGE_S = 90 * 24 * 3600
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
-RATE_LIMIT = 10          # refusals per window per address ...
-RATE_WINDOW_S = 60.0     # ... before 429 for the rest of the window
+RATE_LIMIT = 10          # weighted refusals per window per address before 429 for the rest of the window: ...
+NO_TOKEN_WEIGHT = 0.2    # ... a wrong token counts 1, a missing one 0.2 (a first visit is the unlock page plus a favicon)
+RATE_WINDOW_S = 60.0
+SOCKET_TIMEOUT_S = 30    # a half-open LAN connection must not pin a thread forever
 LOOPBACK_PEERS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 # The unlock page: the 401 answer to a token-less navigation. Its only script reads the #t= fragment (which the
-# server never sees), stores it as a SameSite=Strict cookie and reloads; without a fragment it explains.
+# server never sees), sends it once as a Bearer header to /api/unlock (the server sets the HttpOnly cookie) and
+# reloads; without a fragment, or when the token is not the current one, it explains. No page script ever touches
+# document.cookie.
 UNLOCK_SCRIPT = (
     "(function(){var m=location.hash.match(/[#&]t=([A-Za-z0-9_-]{32,256})/);var el=document.getElementById('msg');"
     "if(!m){el.textContent='No valid token in this browser. Open the exact address printed by `zouinify panel token rotate` "
     "in your own terminal (it ends with #t=...).';return;}"
-    "document.cookie='" + COOKIE + "='+m[1]+'; Path=/; SameSite=Strict; Max-Age=7776000';"
-    "history.replaceState(null,'',location.pathname+location.search);location.reload();})();")
-UNLOCK_CSP = ("default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-"
-              + base64.b64encode(hashlib.sha256(UNLOCK_SCRIPT.encode("utf-8")).digest()).decode("ascii") + "'; form-action 'none'")
+    "fetch('/api/unlock',{headers:{Authorization:'Bearer '+m[1]},cache:'no-store'}).then(function(r){"
+    "if(r.ok){history.replaceState(null,'',location.pathname+location.search);location.reload();return;}"
+    "el.textContent=r.status===429?'Too many refused requests from this address: wait a minute, then open the address again.'"
+    ":'This token is not the current one (rotated since?). Run `zouinify panel token rotate` in your own terminal and open the new address.';"
+    "}).catch(function(){el.textContent='Could not reach the panel to unlock this browser; reload to try again.';});})();")
+UNLOCK_CSP = ("default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'sha256-"
+              + base64.b64encode(hashlib.sha256(UNLOCK_SCRIPT.encode("utf-8")).digest()).decode("ascii")
+              + "'; form-action 'none'; frame-ancestors 'none'")
 UNLOCK_HTML = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-               "<title>zouinify</title><style>body{background:#081321;color:#eef6ff;font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px}"
+               "<link rel=\"icon\" href=\"data:,\"><title>zouinify</title><style>body{background:#081321;color:#eef6ff;font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px}"
                "main{max-width:36rem;margin:10vh auto}code{color:#26e0d0}</style></head><body><main><h1>zouin<span style=\"color:#26e0d0\">ify</span></h1>"
                "<p id=\"msg\">Unlocking this browser with the token from the address…</p>"
                "<p>Read-only panel on the lab network: a browser token is required on every request. Nothing here can launch, "
@@ -62,16 +73,17 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "zouinify-panel/" + panelstate.version()
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    timeout = SOCKET_TIMEOUT_S       # StreamRequestHandler applies it to the connection: idle or half-open peers are dropped
     auth_label = ""
 
     # -- plumbing -------------------------------------------------------------------------------------
     def log_message(self, fmt, *args):  # noqa: D401 - one line per request into the server log, never a token
-        msg = QUERY_RE.sub("?<query-redacted>", CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), fmt % args))
+        msg = QUERY_RE.sub(lambda m: m.group()[0] + "<query-redacted>", CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), fmt % args))
         panelstate.log(self.server.cfg, f"{self.address_string()} {msg}{self.auth_label}")
 
     def audit(self, status: int, reason: str) -> None:
         ua = CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:80]
-        path = CONTROL_RE.sub("", self.path.split("?", 1)[0])[:120]
+        path = CONTROL_RE.sub("", re.split(r"[?#]", self.path, maxsplit=1)[0])[:120]
         panelstate.log(self.server.cfg, f"AUDIT {status} {reason} ip={self.client_address[0]} {self.command} {path} ua=\"{ua}\"")
 
     def peer_is_loopback(self) -> bool:
@@ -92,11 +104,17 @@ class Handler(BaseHTTPRequestHandler):
         origin = (self.headers.get("Origin") or "").strip().lower()
         return not origin or origin in {f"http://{h}" for h in hosts}
 
-    def presented_token(self):
+    def bearer_token(self):
+        """The `Authorization: Bearer <token>` value when well-formed, else None."""
         auth = self.headers.get("Authorization") or ""
-        if auth[:7].lower() == "bearer ":
-            tok = auth[7:].strip()
-            return tok if TOKEN_RE.match(tok) else None
+        if auth[:7].lower() != "bearer ":
+            return None
+        tok = auth[7:].strip()
+        return tok if TOKEN_RE.match(tok) else None
+
+    def presented_token(self):
+        if (self.headers.get("Authorization") or "")[:7].lower() == "bearer ":
+            return self.bearer_token()        # a malformed Bearer never falls back to the cookie
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
             if k == COOKIE and TOKEN_RE.match(v.strip()):
@@ -115,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             return 429, "rate-limited"
         tok = self.presented_token()
         if not tok:
-            srv.note_failure(ip)
+            srv.note_failure(ip, NO_TOKEN_WEIGHT)
             return 401, "no-token"
         if panelstate.token_matches(srv.cfg, tok):
             self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
@@ -157,6 +175,19 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "token missing or wrong: open the address printed by "
                                                                  "`zouinify panel token rotate` in your own terminal"},
                               head, {"WWW-Authenticate": "Bearer realm=\"zouinify\""})
+
+    def unlock(self, head: bool) -> None:
+        """GET /api/unlock with `Authorization: Bearer <token>`: the server sets the token cookie itself, HttpOnly, so
+        no script served under this host name (cookies ignore ports: another server's page on another port) can read
+        it. On the LAN authorize() has already verified the bearer; on loopback it is verified here."""
+        tok = self.bearer_token()
+        if not tok or not panelstate.token_matches(self.server.cfg, tok):
+            self.audit(401, "unlock-without-bearer")
+            return self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "unlock needs the current token as `Authorization: Bearer <token>`"},
+                                  head, {"WWW-Authenticate": "Bearer realm=\"zouinify\""})
+        cookie = f"{COOKIE}={tok}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE_S}"
+        return self.send_json(HTTPStatus.OK, {"ok": True, "cookie": COOKIE, "token_id": panelstate.token_id(self.server.cfg)}, head,
+                              {"Set-Cookie": cookie})
 
     def refuse(self) -> None:
         try:
@@ -211,6 +242,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_static("index.html", head)
             if path.startswith("/static/"):
                 return self.serve_static(path[len("/static/"):], head)
+            if path == "/api/unlock":
+                return self.unlock(head)
             if path == "/health":
                 return self.send_json(HTTPStatus.OK, {"ok": True, "service": "zouinify-panel", "version": panelstate.version(),
                                                       "root": snap.cfg.root, "project": snap.cfg.name, "bind": snap.bind, "port": snap.port,
@@ -268,17 +301,20 @@ class PanelServer(ThreadingHTTPServer):
         self.failures_lock = threading.Lock()
 
     def rate_limited(self, ip: str) -> bool:
+        """Weighted refusals in the window: wrong tokens weigh 1, missing ones NO_TOKEN_WEIGHT (ordinary first visits)."""
         now = time.time()
         with self.failures_lock:
-            recent = [t for t in self.failures.get(ip, []) if now - t < RATE_WINDOW_S]
+            recent = [(t, w) for t, w in self.failures.get(ip, []) if now - t < RATE_WINDOW_S]
             self.failures[ip] = recent
-            return len(recent) >= RATE_LIMIT
+            return sum(w for _, w in recent) >= RATE_LIMIT
 
-    def note_failure(self, ip: str) -> None:
+    def note_failure(self, ip: str, weight: float = 1.0) -> None:
         with self.failures_lock:
-            self.failures.setdefault(ip, []).append(time.time())
+            lst = self.failures.setdefault(ip, [])
+            lst.append((time.time(), weight))
+            del lst[:-100]                   # per address: never more than a window's worth
             if len(self.failures) > 1000:   # never grow without bound
-                self.failures = {k: v for k, v in self.failures.items() if v and time.time() - v[-1] < RATE_WINDOW_S}
+                self.failures = {k: v for k, v in self.failures.items() if v and time.time() - v[-1][0] < RATE_WINDOW_S}
 
 
 def bind_address(bind: str) -> str:

@@ -38,8 +38,9 @@ READONLY_API = {
     "read_human_json", "read_board_json", "fail", "version", "TERMINAL", "ROLE_SESSIONS", "READ_ONLY_TICKET_SH",
 }
 PANELSTATE_API = {"version", "pid", "now_iso", "url", "state_dir", "panel_json_path", "server_log_path", "same_root", "log",
-                  "write_panel_json", "read_panel_json", "remove_panel_json", "hook_installed",
-                  "token_matches", "token_id", "token_configured"}   # never set_token: rotation is the process side's
+                  "write_panel_json", "remove_panel_json", "hook_installed",
+                  "token_matches", "token_id", "token_configured"}   # never set_token (rotation is the process side's)
+                                                                    # nor read_panel_json (it returns the token hash)
 MODULES = {
     "__future__": {"annotations"},
     "http": {"HTTPStatus", "server"},

@@ -136,11 +136,20 @@ class TestIntranetToken(IntranetServer):
         self.assertEqual(st, 401)
         self.assertIn("text/html", hdr.get("Content-Type", ""))
         html = body.decode()
-        self.assertIn("zouinify_token=", html, "the unlock page stores the #t= fragment as the cookie")
+        self.assertIn("fetch('/api/unlock'", html, "the unlock page hands the #t= fragment to the server once, as a Bearer header")
+        self.assertIn("Authorization:'Bearer '", html)
+        self.assertNotIn("document.cookie", html, "page script never writes the cookie: the server sets it HttpOnly")
         self.assertIn("location.reload()", html)
+        self.assertIn('<link rel="icon" href="data:,">', html, "no /favicon.ico request eating the refusal budget")
         self.assertNotIn("inbox", html)
-        self.assertRegex(hdr.get("Content-Security-Policy", ""), r"script-src 'sha256-[A-Za-z0-9+/=]+'", "only the unlock script may run")
-        self.assertNotIn("'unsafe-inline'", hdr["Content-Security-Policy"].split("script-src")[1])
+        csp = hdr.get("Content-Security-Policy", "")
+        self.assertRegex(csp, r"script-src 'sha256-[A-Za-z0-9+/=]+'", "only the unlock script may run")
+        self.assertNotIn("'unsafe-inline'", csp.split("script-src")[1])
+        self.assertIn("connect-src 'self'", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        st, hdr, _ = self.req("/", headers={"Cookie": "zouinify_token=" + GOOD})
+        self.assertEqual(st, 200)
+        self.assertIn("frame-ancestors 'none'", hdr.get("Content-Security-Policy", ""), "the page itself cannot be framed either")
         st, _, _ = self.req("/api/snapshot", headers={"Authorization": "Bearer " + OTHER})
         self.assertEqual(st, 401)
         st, _, _ = self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD[:-1]})
@@ -163,6 +172,93 @@ class TestIntranetToken(IntranetServer):
         self.assertIn("?<query-redacted>", self.server_log())
         self.assertNotIn(OTHER, self.server_log())
         self.assertIn(" token=" + panelstate.token_id(self.cfg), self.server_log(), "accepted requests carry the token id")
+
+    def test_unlock_sets_an_httponly_cookie_the_page_never_touches(self):
+        st, hdr, body = self.req("/api/unlock", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200)
+        ck = hdr.get("Set-Cookie", "")
+        self.assertTrue(ck.startswith("zouinify_token=" + GOOD + ";"), ck)
+        for attr in ("HttpOnly", "SameSite=Strict", "Path=/", "Max-Age="):
+            self.assertIn(attr, ck)
+        self.assertNotIn(GOOD, body.decode(), "the body names the token id only")
+        self.assertEqual(json.loads(body)["token_id"], panelstate.token_id(self.cfg))
+        self.assertEqual(self.req("/", headers={"Cookie": ck.split(";")[0]})[0], 200, "the cookie the server set unlocks the page")
+        # without the bearer there is no cookie: not for a valid cookie (LAN), not for a wrong bearer, not from loopback
+        st, hdr, _ = self.req("/api/unlock", headers={"Cookie": "zouinify_token=" + GOOD})
+        self.assertEqual(st, 401)
+        self.assertNotIn("Set-Cookie", hdr)
+        st, hdr, _ = self.req("/api/unlock", headers={"Authorization": "Bearer " + OTHER})
+        self.assertEqual(st, 401)
+        self.assertNotIn("Set-Cookie", hdr)
+        st, hdr, _ = self.req("/api/unlock", via="loopback")
+        self.assertEqual(st, 401)
+        self.assertNotIn("Set-Cookie", hdr)
+        st, hdr, _ = self.req("/api/unlock", via="loopback", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200, "a loopback browser may unlock itself too (the rotate address opened on the workstation)")
+        self.assertIn("HttpOnly", hdr.get("Set-Cookie", ""))
+        self.assertNotIn(GOOD, self.server_log())
+        self.assertIn("AUDIT 401 unlock-without-bearer", self.server_log())
+        app_js = open(os.path.join(REPO, "lib", "zouinify", "panel", "static", "app.js"), encoding="utf-8").read()
+        self.assertNotIn("document.cookie", app_js, "no page script writes the cookie")
+        self.assertIn("/api/unlock", app_js)
+        self.assertNotIn("document.cookie", panel_server.UNLOCK_HTML)
+
+    def test_first_visits_do_not_trip_the_rate_limit(self):
+        self.assertLess(12 * panel_server.NO_TOKEN_WEIGHT, panel_server.RATE_LIMIT)
+        for i in range(12):                                   # six first visits: the unlock page plus a favicon each
+            self.assertEqual(self.req("/" if i % 2 == 0 else "/favicon.ico")[0], 401, i)
+        st, _, _ = self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200, "token-less visits weigh little: the right token still works")
+        wrong = 0
+        while self.req("/api/snapshot", headers={"Authorization": "Bearer " + OTHER})[0] == 401:
+            wrong += 1
+            self.assertLessEqual(wrong, panel_server.RATE_LIMIT, "wrong tokens still trip the limit within RATE_LIMIT tries")
+        self.assertGreaterEqual(wrong, panel_server.RATE_LIMIT - 3, "the first visits used only a fraction of the budget")
+        self.assertEqual(self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD})[0], 429)
+
+    def test_a_literal_fragment_in_the_request_line_never_reaches_the_log(self):
+        st, _, _ = self.req("/#t=" + GOOD)                    # no browser sends a fragment; a hand-built client might
+        self.assertEqual(st, 401)
+        st, _, _ = self.req("/api/snapshot#t=" + GOOD, headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200)
+        log = self.server_log()
+        self.assertNotIn(GOOD, log)
+        self.assertIn("#<query-redacted>", log)
+        self.assertRegex(log, r"AUDIT 401 no-token ip=127\.0\.0\.1 GET / ua=")
+
+    def test_half_open_connection_is_dropped(self):
+        self.assertEqual(panel_server.Handler.timeout, panel_server.SOCKET_TIMEOUT_S)
+        self.assertEqual(panel_server.SOCKET_TIMEOUT_S, 30)
+        with mock.patch.object(panel_server.Handler, "timeout", 0.5):
+            s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            s.sendall(b"GET /heal")                           # half a request line, never finished
+            t0 = time.time()
+            data = s.recv(1024)                               # the server drops the connection: EOF, no answer
+            s.close()
+        self.assertEqual(data, b"")
+        self.assertLess(time.time() - t0, 8)
+
+    def test_redactor_knows_the_token_shapes(self):
+        from zouinify.panel.redact import redact
+        sample = "t0165-sample-" + "x" * 30            # a token-shaped value without the word "token" (FLAG_RE would eat the next word)
+        self.assertEqual(redact("open http://ws:4790/#t=" + sample + " now"), "open http://ws:4790/#t=<redacted> now")
+        self.assertEqual(redact("Cookie: zouinify_token=" + sample), "Cookie: zouinify_token=<redacted>")
+        self.assertNotIn(sample, redact("?t=" + sample))
+        self.assertNotIn(GOOD, redact("Authorization: Bearer " + GOOD))
+        self.assertEqual(redact("?t=abc&x=1"), "?t=abc&x=1", "short values are not tokens")
+
+    def test_start_and_status_print_the_lan_address_when_running(self):
+        import io
+        from zouinify import panelctl
+        self.fake_remote = False                              # the process side probes 127.0.0.1
+        self.cfg.panel["port"] = self.port
+        out = io.StringIO()
+        self.assertEqual(panelctl.cmd_start(self.cfg, out=out), 0)
+        self.assertIn(f"panel already running: http://lanhost.test:{self.port}/", out.getvalue())
+        out = io.StringIO()
+        self.assertEqual(panelctl.cmd_status(self.cfg, out=out), 0)
+        self.assertIn(f"panel running: http://lanhost.test:{self.port}/", out.getvalue())
+        self.assertNotIn("127.0.0.1", out.getvalue())
 
     def test_keep_alive_does_not_carry_the_token_label(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
@@ -256,10 +352,21 @@ class TestTokenRotateCli(World):
         self.assertIn("never inside a Claude session", r.stderr)
         r = self.z("panel", "token", "rotate", env=dict(self.plain, CLAUDE_CODE_MESSAGING_TOKEN="x"))
         self.assertNotEqual(r.returncode, 0)
+        r = self.z("panel", "token", "rotate", env=dict(self.plain, CLAUDECODE=""))     # set but empty still means a session
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("never inside a Claude session", r.stderr)
         r = self.z("panel", "token", "rotate", env=self.plain)           # pipes, not a TTY
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("real terminal", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "state", "panel.json")), "nothing recorded on a refusal")
+
+    def test_panel_actions_reject_a_stray_argument(self):
+        r = self.z("panel", "start", "junk", env=self.plain)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("takes no argument", r.stderr)
+        r = self.z("panel", "url", "rotate", env=self.plain)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".ops", "state", "panel.json")))
 
     def rotate_on_a_pty(self):
         master, slave = pty.openpty()
@@ -312,7 +419,7 @@ class TestTokenRotateCli(World):
         return token2
 
     def test_start_needs_the_token_and_nothing_prints_it(self):
-        r = self.fail("panel", "start", env=self.plain)
+        r = self.nz("panel", "start", env=self.plain)
         self.assertIn("panel token rotate", r.stderr)
         r = self.z("up", "desk", env=self.plain)                     # autostart on, no token: sessions start, the panel does not
         self.assertEqual(r.returncode, 1, "up exits 1 when the panel it was asked to start did not start")

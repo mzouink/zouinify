@@ -182,6 +182,8 @@ if __name__ == "__main__":
 # every string trick the desk planted against the regex guard; each one must fail the AST allowlist
 AST_OFFENDING = [
     "import subprocess",
+    "from zouinify import panelstate\nh = panelstate.read_panel_json(cfg)",      # returns the token hash
+    "from zouinify import panelstate\npanelstate.set_token(cfg, 'x')",
     "import os\nos.system('tmux kill-server')",
     "import sys\nsys.modules['o' + 's'].system('x')",
     "import os\nf = getattr(os, 'sys' + 'tem')",

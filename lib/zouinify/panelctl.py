@@ -29,7 +29,9 @@ NO_TOKEN_MSG = ("panel.bind is intranet and no browser token is set: run `zouini
 
 
 def in_claude_session() -> bool:
-    return bool(os.environ.get("CLAUDECODE")) or any(k.startswith("CLAUDE_CODE_") for k in os.environ)
+    """Set (even empty) means a Claude Code session: the token must not land in a transcript by accident. This is
+    a guard against accidents, not a boundary: a same-user process can scrub its environment (and read .ops/state)."""
+    return "CLAUDECODE" in os.environ or any(k.startswith("CLAUDE_CODE_") for k in os.environ)
 
 
 def link_host(cfg) -> str:
@@ -226,7 +228,7 @@ def cmd_start(cfg, foreground: bool = False, out=None) -> int:
     h = probe(port)
     if isinstance(h, dict) and h.get("root"):
         if state.same_root(h["root"], cfg.root):
-            print(f"panel already running: {state.url(cfg)}  (pid {h.get('pid')}, since {h.get('started_at')})", file=out)
+            print(f"panel already running: {public_url(cfg)}  (pid {h.get('pid')}, since {h.get('started_at')})", file=out)
             return 0
         raise ZouinifyError(f"port {port} is held by another project's panel ({h.get('project')}: {h['root']}); "
                             "pick another panel.port in .ops/config.yaml -- a port is never taken over")
@@ -290,7 +292,7 @@ def cmd_status(cfg, out=None) -> int:
     h = probe(cfg.panel["port"])
     if isinstance(h, dict) and h.get("root"):
         if state.same_root(h["root"], cfg.root):
-            print(f"panel running: {state.url(cfg)}  pid {h.get('pid')}  since {h.get('started_at')}  bind {h.get('bind')}  "
+            print(f"panel running: {public_url(cfg)}  pid {h.get('pid')}  since {h.get('started_at')}  bind {h.get('bind')}  "
                   f"version {h.get('version')}", file=out)
             return 0
         print(f"port {cfg.panel['port']} serves ANOTHER project's panel: {h['root']}", file=out)
@@ -298,7 +300,7 @@ def cmd_status(cfg, out=None) -> int:
     if isinstance(h, dict):
         print(f"port {cfg.panel['port']} is held by a foreign process ({h.get('detail')})", file=out)
         return 1
-    print(f"panel not running (would serve {state.url(cfg)}; start: zouinify panel start)", file=out)
+    print(f"panel not running (would serve {public_url(cfg)}; start: zouinify panel start)", file=out)
     return 1
 
 

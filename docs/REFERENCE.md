@@ -88,22 +88,27 @@ workstation runs as the same user and can read the same data directly). `panel.b
 listen on 0.0.0.0 for the lab network (a phone, a laptop), and then **every request from a non-loopback address needs the
 browser token**, the page and its static files included:
 
-1. In your own terminal, never inside a Claude session (the command refuses when `CLAUDECODE` is set or stdin is not a TTY):
-   `zouinify panel token rotate`. It generates 32 random bytes, keeps only `sha256(token)` and a 4-hex token id in
+1. In your own terminal, never inside a Claude session (the command refuses when `CLAUDECODE` is set or stdin is not a TTY;
+   that refusal keeps the token out of a session transcript by accident, it is no boundary against a deliberate same-user
+   process, which can read `.ops/state/` anyway): `zouinify panel token rotate`. It generates 32 random bytes, keeps only `sha256(token)` and a 4-hex token id in
    `.ops/state/panel.json` (mode 0600), prints `http://<link_host>:<port>/#t=<token>` once and clears the screen after Enter.
 2. Open that address on the device. The `#t=` fragment never reaches the server; a token-less navigation gets a 401 unlock
-   page whose only script (pinned by a CSP hash) stores the token as a `SameSite=Strict` cookie and reloads. From then on every
-   request carries it (the cookie, or `Authorization: Bearer <token>`); the server compares it in constant time.
-3. Wrong or missing token: 401 and an `AUDIT` line in `server.log` with the source address (never the token). More than 10
-   refusals in a minute from one address: 429 for the rest of the minute. A `Host` other than 127.0.0.1, localhost, the
+   page whose only script (pinned by a CSP hash) sends the token once as `Authorization: Bearer` to `GET /api/unlock`; the
+   server answers with the `zouinify_token` cookie, `HttpOnly` and `SameSite=Strict`, and the page reloads. From then on
+   every request carries it (the cookie, or `Authorization: Bearer <token>`); the server compares it in constant time.
+3. Wrong or missing token: 401 and an `AUDIT` line in `server.log` with the source address (never the token). Refusals from
+   one address are budgeted per minute (a wrong token counts 1, a missing one 0.2, budget 10): beyond it, 429 for the rest
+   of the minute. Idle or half-open connections are dropped after 30 s. A `Host` other than 127.0.0.1, localhost, the
    configured `link_host`, the machine's names or its IPv4 addresses, or a foreign `Origin`: 403 (DNS rebinding). Rotate any
    time with the same command; running servers pick the new hash up without a restart, old tokens stop at once.
 
 Two facts to know before you rely on it. **Loopback is token-free in both modes**, and that means any other *local user* of
 the workstation (or anyone with an ssh -L to it) reaches the panel without a token: the read-only panel shows what every
 same-user process could read anyway, but on a shared machine other accounts can read it too (true since the first panel). And
-**the cookie is not HttpOnly and cookies ignore ports**: any other web server reachable under the same host name can read it
-from a page it serves; keep the LAN name of the panel for the panel. A loopback token or a peer-uid check is a follow-up ticket.
+**cookies ignore ports**: the cookie is `HttpOnly`, so a page served by another web server under the same host name cannot
+read it, but the browser attaches it to that page's same-site requests to the panel; those are refused by the Origin check
+(fetch), cannot be framed (`frame-ancestors 'none'`) and the panel is read-only anyway. Keep the LAN name of the panel for
+the panel all the same. A loopback token or a peer-uid check is a follow-up ticket.
 
 `zouinify panel start` and `zouinify up` refuse to start an intranet panel without a token and point at the command; neither
 ever prints a token. `zouinify panel url` prints the address without it. Writes stay 405 in both modes; tier-2 items never get

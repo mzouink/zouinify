@@ -1,7 +1,7 @@
 ---
 name: zouinify
 description: Project management pipeline for multi-session Claude Code work -- tickets (backlog -> done via scripts/ticket.sh), a tmux session set (desk, manager, debug, chrome_debug, workers) and a local read-only control panel. Use for `/zouinify config|up|launch|status|down|briefs|panel|board|human` or when asked to launch a worker, start the standard sessions, start or find the panel, show the board or the human inbox, or set up ticket-based management in a repo.
-argument-hint: config [--check|--json] | up [role...] [--dry-run] [--no-panel] | launch <worker T-xxxx|desk|manager|debug|chrome_debug> [--receipt ID] [--dry-run] | status [--line|--json] | down [name...] [--dry-run] | briefs render [--out DIR] | panel start|stop|status|url | board | human [--count|--json]
+argument-hint: config [--check|--json] | up [role...] [--dry-run] [--no-panel] | launch <worker T-xxxx|desk|manager|debug|chrome_debug> [--receipt ID] [--dry-run] | status [--line|--json] | down [name...] [--dry-run] | briefs render [--out DIR] | panel start|stop|status|url|token rotate | board | human [--count|--json]
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/bin/zouinify *), Bash(scripts/ticket.sh board), Bash(scripts/ticket.sh human *), Bash(tmux list-*), Bash(tmux has-session *), Bash(claude agents *)
 disable-model-invocation: false
 ---
@@ -10,8 +10,9 @@ disable-model-invocation: false
 
 Run `${CLAUDE_SKILL_DIR}/bin/zouinify $ARGUMENTS` from the project root (the directory holding `.ops/config.yaml`, or any
 directory under it) and relay its output verbatim. Commands today: `config`, `up`, `launch`, `status`, `down`, `briefs`,
-`panel start|stop|status|url` (the read-only control panel, loopback only), `board`, `human`, `version`. Receipts (`poll`,
-the token, the intranet bind) and `init` are later steps and are not available yet.
+`panel start|stop|status|url|token rotate` (the read-only control panel: loopback by default, `panel.bind: intranet` with
+the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`. Receipts (`poll`) and `init` are later steps and
+are not available yet.
 
 Rules this skill never bends (they come from `.ops/config.yaml` and the project's `tickets/README.md`):
 

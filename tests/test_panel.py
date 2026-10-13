@@ -577,10 +577,11 @@ class TestControl(World):
         self.assertIn("not running", r.stdout)
         self.assertTrue(os.path.exists(os.path.join(self.root, ".ops", "state", "server.log")))
 
-    def test_intranet_bind_refused_in_v1(self):
+    def test_intranet_bind_needs_the_token(self):
         self.set_panel(f"port: {self.port}, autostart: false, bind: intranet")
         r = self.nz("panel", "start")
-        self.assertIn("T-0162", r.stderr)
+        self.assertIn("panel token rotate", r.stderr, "T-0165: intranet starts only with a browser token")
+        self.assertNotIn("#t=", r.stderr)
         self.assertIsNone(self.health(self.port)[0])
 
     def test_foreign_port_refused(self):

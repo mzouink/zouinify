@@ -111,6 +111,8 @@ def main(argv=None) -> int:
             return briefs.cmd_render(cfg, args.out, force=args.force)
         if args.cmd == "panel":
             from zouinify import panelctl
+            if args.action != "token" and args.what:
+                p.error(f"panel {args.action} takes no argument (got {args.what!r})")
             if args.action == "start":
                 return panelctl.cmd_start(cfg, foreground=args.foreground)
             if args.action == "stop":

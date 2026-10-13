@@ -30,6 +30,8 @@ PEM_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]
 PEM_OPEN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*\Z", re.S)
 SHAPES = [
     (re.compile(rf"(?i)\b({SCHEMES})\s+[A-Za-z0-9._~+/=-]{{4,}}(?:,\s*[a-z]+=\S+)*"), lambda m: f"{m.group(1)} <redacted>"),
+    # the panel's own browser token (T-0165): the `#t=` address printed by `panel token rotate`, the cookie
+    (re.compile(r"((?:[#&?]t|zouinify_token)=)[A-Za-z0-9_-]{32,256}"), r"\1<redacted>"),
     (re.compile(r"sk-ant-[A-Za-z0-9_-]+"), "<redacted>"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "<redacted>"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "<redacted>"),
