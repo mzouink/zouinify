@@ -542,7 +542,13 @@ class TestHarness(World):
 
     def test_no_helper_shadows_testcase(self):
         inherited = set(dir(unittest.TestCase)) - {"setUp", "tearDown", "setUpClass", "tearDownClass", "__doc__", "__module__"}
-        for cls in (World, *World.__subclasses__()):
+        classes, todo = [], [World]
+        while todo:                                   # every descendant, not only the direct subclasses
+            cls = todo.pop()
+            classes.append(cls)
+            todo.extend(cls.__subclasses__())
+        self.assertGreater(len(classes), 1)
+        for cls in classes:
             shadowed = sorted(set(vars(cls)) & inherited)
             self.assertFalse(shadowed, f"{cls.__name__} redefines unittest.TestCase attribute(s) {shadowed}")
         self.assertIs(type(self).fail, unittest.TestCase.fail)
