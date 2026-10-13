@@ -56,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("what", nargs="?", help="with `token`: rotate (prints the new browser token once, on your own terminal)")
     s.add_argument("--foreground", action="store_true", help="serve in this process (the detached start uses it)")
 
+    s = sub.add_parser("term", help="the terminal page of this project (types into WORKER panes only): start | stop | status | url | secret rotate | audit")
+    s.add_argument("action", choices=["start", "stop", "status", "url", "secret", "audit"])
+    s.add_argument("what", nargs="?", help="with `secret`: rotate (shows the new passphrase once, on your own terminal)")
+    s.add_argument("--foreground", action="store_true", help="serve in this process (the detached start uses it)")
+    s.add_argument("--since", default="10m", help="with `audit`: how far back, e.g. 10m, 2h, 1d (default 10m)")
+    s.add_argument("--target", metavar="NAME", help="with `audit`: only this worker session")
+
     sub.add_parser("board", help="scripts/ticket.sh board, verbatim (extra arguments pass through)")
     sub.add_parser("human", help="scripts/ticket.sh human, verbatim (extra arguments pass through)")
     sub.add_parser("version", help="print the version")
@@ -124,6 +131,23 @@ def main(argv=None) -> int:
                     p.error("usage: zouinify panel token rotate")
                 return panelctl.cmd_token_rotate(cfg)
             return panelctl.cmd_url(cfg)
+        if args.cmd == "term":
+            from zouinify import termctl
+            if args.action != "secret" and args.what:
+                p.error(f"term {args.action} takes no argument (got {args.what!r})")
+            if args.action == "start":
+                return termctl.cmd_start(cfg, foreground=args.foreground)
+            if args.action == "stop":
+                return termctl.cmd_stop(cfg)
+            if args.action == "status":
+                return termctl.cmd_status(cfg)
+            if args.action == "secret":
+                if args.what != "rotate":
+                    p.error("usage: zouinify term secret rotate")
+                return termctl.cmd_secret_rotate(cfg)
+            if args.action == "audit":
+                return termctl.cmd_audit(cfg, since=args.since, target=args.target)
+            return termctl.cmd_url(cfg)
         if args.cmd in ("board", "human"):
             from zouinify import tickets
             r = tickets.ticket_sh(cfg, [args.cmd, *extra], capture=False)

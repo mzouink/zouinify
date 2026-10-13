@@ -83,6 +83,7 @@ class Config:
     model_re: str
     sessions: dict
     panel: dict
+    terminal: dict
     aws: dict | None
     contact: dict
     warnings: list = field(default_factory=list)
@@ -113,7 +114,7 @@ class Config:
                             "ask_verbs": self.ask_verbs, "deploy_kinds": self.deploy_kinds},
                 "human_only": self.human_only, "budget": self.budget,
                 "model": self.model, "model_re": self.model_re, "sessions": {r: s.to_dict() for r, s in self.sessions.items()},
-                "panel": self.panel, "aws": self.aws, "contact": self.contact, "warnings": self.warnings}
+                "panel": self.panel, "terminal": self.terminal, "aws": self.aws, "contact": self.contact, "warnings": self.warnings}
 
 
 def _is_str(v) -> bool:
@@ -341,6 +342,43 @@ def load(root: str | None = None) -> Config:
              "redact": str(pn.get("redact", "default")), "autostart": bool(pn.get("autostart", True)),
              "logs": logs, "plans_glob": str(plans_glob) if plans_glob else None}
 
+    # the terminal page (T-0181): a separate process that forwards the human's keystrokes into WORKER panes only
+    tn = raw.get("terminal") if isinstance(raw.get("terminal"), dict) else {}
+    term_bind = BIND_ALIASES.get(str(tn.get("bind", "loopback")))
+    if term_bind is None:
+        errs.append("terminal.bind: loopback (the default) or intranet")
+    try:
+        term_port = int(tn.get("port") or ((port + 1) if port else 0))
+        if not 1024 <= term_port <= 65535:
+            raise ValueError
+    except (TypeError, ValueError):
+        errs.append("terminal.port: an integer between 1024 and 65535 (default panel.port + 1)")
+        term_port = 0
+    if term_port and term_port == port:
+        errs.append("terminal.port: must differ from panel.port")
+    term_tls = str(tn.get("tls", "auto")).strip().lower()
+    if term_tls not in ("auto", "off"):
+        errs.append("terminal.tls: auto (self-signed HTTPS when bound to the intranet) or off")
+    term_targets = str(tn.get("targets", "workers")).strip().lower()
+    if term_targets != "workers":
+        errs.append("terminal.targets: only `workers` exists: the role sessions (desk, manager, debug, chrome_debug) are never "
+                    "reachable from the browser (user decision 2026-10-13)")
+    term_exclude = _strlist(tn.get("exclude"), "terminal.exclude", errs, [])
+    term_times = {}
+    for key, default in (("idle_close_s", 300), ("max_open_s", 1800), ("unlock_idle_s", 600), ("unlock_max_s", 28800)):
+        try:
+            raw_v = tn.get(key, default)
+            v = int(default if raw_v is None else raw_v)      # 0 is a value (and refused below), not "unset"
+            if v <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errs.append(f"terminal.{key}: a positive integer (seconds)")
+            v = default
+        term_times[key] = v
+    terminal = {"enabled": bool(tn.get("enabled", False)), "port": term_port, "bind": term_bind or "loopback", "tls": term_tls,
+                "autostart": bool(tn.get("autostart", False)), "targets": "workers", "exclude": term_exclude}
+    terminal.update(term_times)
+
     aws = raw.get("aws") if isinstance(raw.get("aws"), dict) else None
     if aws is not None:
         try:
@@ -356,7 +394,7 @@ def load(root: str | None = None) -> Config:
     return Config(root=root, name=str(name), short=str(short), repos=clean_repos, trunk=trunk, prod=prod,
                   tickets_dir=tickets_dir, tickets_script=tickets_script, worktrees=worktrees, ask_verbs=ask_verbs,
                   deploy_kinds=deploy_kinds, human_only=human_only, budget=budget,
-                  model=str(model) if model else None, model_re=str(model_re), sessions=sessions, panel=panel, aws=aws, contact=contact,
+                  model=str(model) if model else None, model_re=str(model_re), sessions=sessions, panel=panel, terminal=terminal, aws=aws, contact=contact,
                   warnings=warns)
 
 

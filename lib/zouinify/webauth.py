@@ -48,16 +48,17 @@ def _hosts(port: int, lan_names) -> set:
     return hosts
 
 
-def host_allowed(headers, port: int, lan_names) -> bool:
+def host_allowed(headers, port: int, lan_names, scheme: str = "http") -> bool:
     """Only the server's own names may address it: 127.0.0.1 / localhost with the port, plus the LAN names the process
     side computed when bound to the intranet. A page served under another name (DNS rebinding) and any foreign
-    Origin are refused. `headers` is anything with .get() over header names (http.server's message object)."""
+    Origin are refused. `headers` is anything with .get() over header names (http.server's message object).
+    `scheme` is the one this server speaks (the terminal page says "https" when it serves TLS)."""
     hosts = _hosts(port, lan_names)
     host = (headers.get("Host") or "").strip().lower()
     if host not in hosts:
         return False
     origin = (headers.get("Origin") or "").strip().lower()
-    return not origin or origin in {f"http://{h}" for h in hosts}
+    return not origin or origin in {f"{scheme}://{h}" for h in hosts}
 
 
 def bearer_token(headers):

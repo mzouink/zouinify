@@ -25,6 +25,8 @@ from zouinify.config import Config
 STATE_REL = (".ops", "state")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 TOKEN_FIELDS = ("token_hash", "token_id", "token_rotated_at")
+TERM_FIELDS = ("secret_hash", "secret_salt", "secret_rounds", "secret_id", "secret_rotated_at")
+PBKDF2_ROUNDS = 600_000
 
 
 def version() -> str:
@@ -262,3 +264,136 @@ def append_event(cfg, event: dict) -> None:
                 fh.write(line)
     except (OSError, TypeError, ValueError):
         pass
+# -- the terminal page (T-0181): its own files next to the panel's, its own secret, never the panel's token ----------
+# term.json: pid, port, url, bind, tls of the running `zouinify term` process + the passphrase hash (PBKDF2-HMAC-SHA256,
+# 600k rounds, 16-byte salt) and a 4-hex id; term.log: one line per request; term_audit.jsonl: one JSON line per unlock,
+# open, batch of keys, close and refusal. The panel package may call `term_info()` only (no secret in it).
+
+def term_json_path(cfg) -> str:
+    return os.path.join(state_dir(cfg), "term.json")
+
+
+def term_log_path(cfg) -> str:
+    return os.path.join(state_dir(cfg), "term.log")
+
+
+def term_audit_path(cfg) -> str:
+    return os.path.join(state_dir(cfg), "term_audit.jsonl")
+
+
+def term_log(cfg, text: str) -> None:
+    """Append one line to term.log (control characters escaped, symlinks never followed); never raises."""
+    try:
+        d = state_dir(cfg)
+        os.makedirs(d, exist_ok=True)
+        safe = CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), str(text))
+        fd = os.open(os.path.join(d, "term.log"), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(f"{dt.datetime.now().isoformat(timespec='seconds')} {safe}\n")
+    except (OSError, TypeError):
+        pass
+
+
+def term_audit(cfg, event: dict) -> None:
+    """Append one JSON line to term_audit.jsonl (0600, O_NOFOLLOW): {at, event, unlock8, tid8, target, ip, user_agent,
+    text, keys, reason, ...}; strings have their control characters escaped; never the passphrase; never raises."""
+    try:
+        d = state_dir(cfg)
+        os.makedirs(d, exist_ok=True)
+        rec = {"at": now_iso()}
+        for k, v in event.items():
+            rec[str(k)] = CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), v) if isinstance(v, str) else v
+        fd = os.open(os.path.join(d, "term_audit.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, sort_keys=True, default=str) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def read_term_json(cfg):
+    try:
+        with open(term_json_path(cfg), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def write_term_json(cfg, port: int, pid_: int, started_at: str, bind: str, tls: bool, url_: str) -> None:
+    """The runtime fields of a running terminal process; the secret fields already there are kept."""
+    with _locked(cfg):
+        cur = read_term_json(cfg) or {}
+        d = {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": bind, "tls": bool(tls), "url": url_,
+             "started_at": started_at, "version": __version__, "targets": "workers"}
+        for k in TERM_FIELDS:
+            if cur.get(k):
+                d[k] = cur[k]
+        _write_json(term_json_path(cfg), d)
+
+
+def remove_term_json(cfg, pid_: int | None = None) -> None:
+    """Drop the runtime fields of a stopped terminal process; the secret survives restarts."""
+    try:
+        with _locked(cfg):
+            d = read_term_json(cfg)
+            if d is None:
+                return
+            if pid_ is not None and d.get("pid") != pid_:
+                return
+            keep = {k: d[k] for k in TERM_FIELDS if d.get(k)}
+            if keep:
+                keep.update({"root": cfg.root, "project": cfg.name})
+                _write_json(term_json_path(cfg), keep)
+            else:
+                os.remove(term_json_path(cfg))
+    except OSError:
+        pass
+
+
+def set_term_secret(cfg, passphrase: str) -> str:
+    """Record PBKDF2-HMAC-SHA256(passphrase) with a fresh 16-byte salt in term.json (0600). Called by zouinify.termctl
+    on a real TTY only; the passphrase is shown there once and never stored. Returns the 4-hex secret id."""
+    _check(cfg)
+    if not isinstance(passphrase, str) or len(passphrase) < 12:
+        raise ValueError("a passphrase is at least 12 characters")
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, PBKDF2_ROUNDS).hex()
+    with _locked(cfg):
+        cur = read_term_json(cfg) or {}
+        cur.update({"secret_hash": h, "secret_salt": salt.hex(), "secret_rounds": PBKDF2_ROUNDS, "secret_id": h[-4:],
+                    "secret_rotated_at": now_iso(), "root": cfg.root, "project": cfg.name})
+        _write_json(term_json_path(cfg), cur)
+    return h[-4:]
+
+
+def term_secret_configured(cfg) -> bool:
+    d = read_term_json(cfg) or {}
+    return bool(d.get("secret_hash") and d.get("secret_salt"))
+
+
+def term_secret_id(cfg):
+    d = read_term_json(cfg) or {}
+    return d.get("secret_id") or None
+
+
+def term_secret_matches(cfg, presented) -> bool:
+    """Constant-time comparison of PBKDF2(presented, stored salt) with the stored hash; False when none is set."""
+    d = read_term_json(cfg) or {}
+    h, salt = d.get("secret_hash"), d.get("secret_salt")
+    if not h or not salt or not isinstance(presented, str) or not presented or len(presented) > 256:
+        return False
+    try:
+        rounds = int(d.get("secret_rounds") or PBKDF2_ROUNDS)
+        got = hashlib.pbkdf2_hmac("sha256", presented.encode("utf-8"), bytes.fromhex(str(salt)), rounds).hex()
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(got, str(h))
+
+
+def term_info(cfg) -> dict:
+    """What the panel may know about this project's terminal page (T-0181): whether it is enabled and running, and its
+    address, so the waiting rows of WORKER sessions can link to it. Never a secret, never the hash."""
+    t = getattr(cfg, "terminal", None) or {}
+    d = read_term_json(cfg) or {}
+    pid_ = d.get("pid")
+    running = bool(pid_) and os.path.exists(f"/proc/{pid_}") and bool(d.get("url"))
+    return {"enabled": bool(t.get("enabled")), "running": running, "url": str(d.get("url") or "") if running else "", "targets": "workers"}

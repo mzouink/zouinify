@@ -20,7 +20,9 @@ waiting, and what the tickets are doing. It is a Claude Code skill (`/zouinify .
   `up` twice never opens a second copy.
 - **One page for the human.** The inbox of things only you can do, the board, every session with its state, panes waiting for
   you, the apply and deploy logs.
-- **Safe by construction.** The page never types into a Claude session and never deploys anything. A click is a receipt the
+- **Answer a worker from your phone.** A separate, passphrase-locked terminal page types into a worker's pane for you; the
+  desk and the other role windows are never reachable from it.
+- **Safe by construction.** The panel never types into a Claude session and never deploys anything. A click is a receipt the
   desk session verifies; approvals and production actions stay typed by you.
 
 ## Quick start

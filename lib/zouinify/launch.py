@@ -175,6 +175,9 @@ def cmd_up(cfg, roles=(), dry_run: bool = False, wait_s: float = 30.0, out=None,
             L.say(f"hook          not in {path}: add this yourself (a session must not edit your settings); it tells the panel "
                   "when a session answers or waits (T-0163):")
             L.say(panelstate.hook_snippet())
+    if panel and cfg.terminal.get("enabled") and cfg.terminal.get("autostart"):
+        from zouinify import termctl
+        ok = termctl.ensure_started(cfg, dry_run=dry_run, out=L.out) and ok
     return 0 if ok or dry_run else 1
 
 

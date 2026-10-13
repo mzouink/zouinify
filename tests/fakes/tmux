@@ -155,8 +155,10 @@ def main(argv):
     if cmd == "list-panes":
         fmt = args[args.index("-F") + 1]
         for name, s in d.items():
+            planted = os.path.join(STATE, f"cmd-{name}.txt")
+            command = open(planted).read().strip() if os.path.exists(planted) else os.environ.get("FAKE_TMUX_PANE_CMD", "claude")
             print(fmt.replace("#{session_name}", name).replace("#{pane_pid}", str(s["pid"]))
-                  .replace("#{pane_current_command}", "claude"))
+                  .replace("#{pane_current_command}", command))
         return 0
     if cmd == "list-sessions":
         for name in d:
@@ -168,6 +170,14 @@ def main(argv):
             print(f"{k}={v}")
         return 0
     if cmd == "send-keys":
+        # FORBIDDEN by default (the CLI and the panel never type); the terminal page's tests opt in with
+        # ZOUINIFY_FAKE_TMUX_ALLOW_SEND_KEYS=1 -- every call is in calls.log either way (T-0181)
+        if os.environ.get("ZOUINIFY_FAKE_TMUX_ALLOW_SEND_KEYS") == "1":
+            t = resolve(d, args)
+            if t is None:
+                print(f"can't find pane: {args[args.index('-t') + 1]}", file=sys.stderr)
+                return 1
+            return 0
         print("FORBIDDEN: send-keys", file=sys.stderr)
         return 2
     print(f"fake tmux: unsupported command {cmd}", file=sys.stderr)

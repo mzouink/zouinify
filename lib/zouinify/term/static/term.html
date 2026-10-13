@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>zouinify terminal</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/term/static/term.css">
+</head>
+<body>
+<header class="top">
+  <span class="wordmark">zouin<span class="ify">ify</span> <span class="muted">terminal</span></span>
+  <span id="who" class="muted"></span>
+  <span class="grow"></span>
+  <button type="button" class="btn ghost" id="lock" hidden>lock</button>
+</header>
+<main>
+  <section id="unlock" hidden>
+    <h1>Unlock</h1>
+    <p>This page types into <strong>worker</strong> sessions of one project, as if you sat at that tmux window. It needs the
+      passphrase shown once by <code>zouinify term secret rotate</code> in your own terminal. The desk, manager and debug
+      windows are never reachable from here.</p>
+    <form id="unlock-form">
+      <label for="passphrase">Passphrase</label>
+      <input id="passphrase" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      <button type="submit" class="btn">Unlock</button>
+    </form>
+    <p id="unlock-msg" class="msg" role="status"></p>
+  </section>
+
+  <section id="pick" hidden>
+    <h1>Worker sessions</h1>
+    <p class="muted">Only this project's worker sessions whose pane runs claude are offered; the list is checked live.</p>
+    <ul id="targets" class="targets"></ul>
+    <p id="pick-msg" class="msg" role="status"></p>
+    <button type="button" class="btn ghost" id="refresh">refresh</button>
+  </section>
+
+  <section id="term" hidden>
+    <div class="banner" role="alert">typing goes straight into <span id="target" class="mono"></span> <span class="muted">(tmux window <span id="tmux" class="mono"></span>, attachment <span id="tid8" class="mono"></span>, closes in <span id="closes"></span> s without a keystroke)</span></div>
+    <pre id="screen" class="screen" aria-live="off"></pre>
+    <div class="keybar" aria-label="keys">
+      <button type="button" class="key" data-text="1">1</button>
+      <button type="button" class="key" data-text="2">2</button>
+      <button type="button" class="key" data-text="3">3</button>
+      <button type="button" class="key" data-text="4">4</button>
+      <button type="button" class="key" data-text="5">5</button>
+      <button type="button" class="key" data-text="y">y</button>
+      <button type="button" class="key" data-text="n">n</button>
+      <button type="button" class="key" data-key="Enter">Enter</button>
+      <button type="button" class="key" data-key="Escape">Esc</button>
+      <button type="button" class="key" data-key="Up">&uarr;</button>
+      <button type="button" class="key" data-key="Down">&darr;</button>
+      <button type="button" class="key" data-key="Left">&larr;</button>
+      <button type="button" class="key" data-key="Right">&rarr;</button>
+      <button type="button" class="key" data-key="Tab">Tab</button>
+      <button type="button" class="key" data-key="BSpace">&#9003;</button>
+      <button type="button" class="key" data-key="C-c">Ctrl-C</button>
+    </div>
+    <form id="type-form" class="typerow">
+      <input id="text" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="type here; Enter sends text + Enter, Shift+Enter sends text only" aria-label="text to type">
+      <button type="submit" class="btn">send</button>
+      <button type="button" class="btn ghost" id="close">close</button>
+    </form>
+    <p id="term-msg" class="msg" role="status"></p>
+  </section>
+
+  <section id="closed" hidden>
+    <h1>Closed</h1>
+    <p id="closed-msg"></p>
+    <button type="button" class="btn" id="again">pick a session</button>
+  </section>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<noscript><p class="msg">The terminal page needs JavaScript.</p></noscript>
+<script src="/term/static/term.js"></script>
+</body>
+</html>

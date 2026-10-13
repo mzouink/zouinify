@@ -16,6 +16,7 @@ REPO = os.environ.get("ZOUINIFY_REPO_UNDER_TEST") or os.path.dirname(HERE)
 PANEL_GUARD = os.path.join(REPO, "scripts", "check_panel_guard.sh")
 PANEL_AST = os.path.join(REPO, "scripts", "check_panel_ast.py")
 PUBLIC_GUARD = os.path.join(REPO, "scripts", "check_public.sh")
+TERM_GUARD = os.path.join(REPO, "scripts", "check_term_guard.sh")
 NO_PRIVATE = {"ZOUINIFY_PRIVATE_PATTERNS": os.path.join(tempfile.gettempdir(), "zouinify-no-such-pattern-file")}
 
 # every way a panel could try to launch, kill, type, mutate a ticket or deploy; each one must fail the guard
@@ -524,3 +525,54 @@ _variant_tests(TestPanelAst, "ast_sibling", AST_OFFENDING_WITH_SIBLINGS, "check_
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTermGuard(unittest.TestCase):
+    """T-0181: the terminal package may type into worker panes and do nothing else."""
+
+    def setUp(self):
+        self.assertTrue(os.access(TERM_GUARD, os.X_OK), f"no executable guard at {TERM_GUARD}")
+
+    def test_repo_passes(self):
+        r = subprocess.run([TERM_GUARD], cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def check_offending(self, fname, bad):
+        tmp = tempfile.mkdtemp()
+        try:
+            d = os.path.join(tmp, "term")
+            os.makedirs(d)
+            with open(os.path.join(d, fname), "w") as fh:
+                fh.write(f"# term\n{bad}\n")
+            ctl = os.path.join(tmp, "termctl.py")
+            with open(ctl, "w") as fh:
+                fh.write("# empty\n")
+            r = subprocess.run([TERM_GUARD, d, ctl], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0, f"should fail on: {bad}")
+            self.assertIn("FAIL", r.stdout, bad)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_offending_variants(self):
+        for fname, bad in (("server.py", 'tmux.kill_session("x")'), ("server.py", '["tmux", "kill-session", "-t", "x"]'),
+                           ("server.py", '["tmux", "new-session", "-d"]'), ("server.py", "from zouinify import launch"),
+                           ("server.py", "ticket_sh(cfg, ['move'])"), ("server.py", '"scripts/ticket.sh move T-1 done"'),
+                           ("server.py", '["terraform", "apply"]'), ("server.py", '["git", "push"]'),
+                           ("server.py", "import subprocess"), ("keys.py", "os.system('x')"), ("server.py", "openssl req -x509"),
+                           ("page.js", 'fetch("/api/kill-session")')):
+            self.check_offending(fname, bad)
+
+    def test_tls_may_spawn_openssl_and_the_rest_may_not(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            d = os.path.join(tmp, "term")
+            os.makedirs(d)
+            with open(os.path.join(d, "tls.py"), "w") as fh:
+                fh.write("import subprocess\nsubprocess.run(['openssl', 'req'])\n")
+            ctl = os.path.join(tmp, "termctl.py")
+            with open(ctl, "w") as fh:
+                fh.write("import subprocess\n")
+            r = subprocess.run([TERM_GUARD, d, ctl], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout)
+        finally:
+            shutil.rmtree(tmp)

@@ -1,8 +1,9 @@
 """Thin wrappers around the tmux binary ($ZOUINIFY_TMUX overrides the name; the tests put a fake on PATH).
 
-Only zouinify.launch may call new_session / kill_session; nothing here ever types into a pane
-(send-keys does not exist in this module on purpose). The panel never imports this module: it reads
-through zouinify.readonly, and scripts/check_panel_guard.sh fails CI on any other path.
+Only zouinify.launch may call new_session / kill_session. `send_keys` exists since T-0181 for ONE caller, the
+terminal page (zouinify.term.server), which forwards the human's own keystrokes after the passphrase unlock into
+worker panes only; nothing else types into a pane. The panel never imports this module: it reads through
+zouinify.readonly, and scripts/check_panel_guard.sh fails CI on any other path.
 
 Requires tmux 3.2+ (`new-session -e` sets the session's environment); an older tmux fails loudly.
 """
@@ -69,6 +70,30 @@ def capture_pane(name: str) -> str:
     The target is `=name:` -- for a target-pane, a bare `=name` is read as a pane name, not an exact session."""
     r = _run(["capture-pane", "-p", "-t", f"={name}:"])
     return r.stdout if r.returncode == 0 else ""
+
+
+def pane_command(name: str):
+    """The current command of the session's active pane (`claude`, `node`, `bash`, ...), or None when no such session."""
+    for p in list_panes():
+        if p["session"] == name:
+            return p.get("command") or ""
+    return None
+
+
+def send_keys(name: str, ops: list) -> int:
+    """Type into the session's active pane: the terminal page's one write (T-0181), the human's own keystrokes
+    after the unlock. Each op is ("t", text) -- sent literally with -l, after `--` so a leading dash is text -- or
+    ("k", KeyName) from zouinify.term.keys's allowlist. One tmux call per op, in order; returns their number."""
+    n = 0
+    for kind, value in ops:
+        if kind == "t":
+            r = _run(["send-keys", "-t", f"={name}:", "-l", "--", value])
+        else:
+            r = _run(["send-keys", "-t", f"={name}:", value])
+        if r.returncode != 0:
+            raise TmuxError(f"tmux send-keys into {name} failed: {(r.stderr or r.stdout).strip()}")
+        n += 1
+    return n
 
 
 def list_panes() -> list:

@@ -947,6 +947,7 @@ class Snapshot:
             "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},
             "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": live_checks(cfg, board),
             "config": {k: v for k, v in cfg.to_dict().items() if k != "warnings"}, "hook": hook_status(self.events, self.hook_port),
+            "terminal": panelstate.term_info(cfg),
             "sources": self.sources_meta(), "errors": {"inbox": inbox_err, "board": board_err, "sessions": sess_err, "foreign_waiting": foreign_err},
         }
 

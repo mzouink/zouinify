@@ -20,12 +20,11 @@ Rules the UI can never violate, in one place:
 3. **Tiers.** Tier 1, clickable after T-0162: `ok` after a command the human ran in their terminal, an answer among offered
    options, "send to desk" (file a ticket, ask a question), "launch worker" (on a `ready` card), "kill" (on a session whose
    ticket is `done`). Tier 2, **never clickable**: a paid budget, a `CLAUDE.md`/settings yes, a prod apply/deploy/push, a worker's
-   permission prompt. Tier-2 items show the exact text to type, with a copy button and, when the terminal page is enabled
-   (2.5a), a **[type it]** link that opens the desk's pane there with the text pre-filled; nothing is sent until the human
-   presses Enter in that page. Tier 2 is typed, never clicked, wherever it is typed.
-4. **One voice.** Receipts and chat go to the desk only. Nothing on the page addresses a worker. The terminal page (2.5a)
-   is the exception the user chose on 2026-10-13: it reaches any Claude pane of the project because the human is typing,
-   exactly as from `tmux attach`.
+   permission prompt. Tier-2 items show the exact text to type in the desk's tmux window, with a copy button. The terminal
+   page never reaches the desk's pane (user decision 2026-10-13, "Z-11 yes workers"), so tier 2 stays typed there.
+4. **One voice.** Receipts and chat go to the desk only. Nothing on the page addresses a worker, except the terminal page
+   (2.5a): it reaches WORKER panes only, because the human is typing there, exactly as from `tmux attach`; the desk,
+   manager and debug panes stay out of its reach, enforced in code.
 5. **No secrets.** Pane captures are redacted server-side; the UI never renders env, credentials, tfvars or tokens; the
    credential tile shows time left and the identity ARN's role name only.
 
@@ -176,13 +175,13 @@ full-width with the drawer on the right.
 Sessions of this project whose state is `waiting` (`claude agents --json` status, or a `Notification(permission_prompt |
 idle_prompt)` hook without a later `Stop`/`UserPromptSubmit`, or the prompt heuristics on the captured screen). Row: name,
 role, what it waits for (first line of the prompt, redacted), **since HH:MM (age)**, ticket, **[show pane]** (the redacted
-visible screen in a drawer) and, when `terminal.enabled` is true, **[type]**: a link to the terminal page for that pane
-(2.5a). No answer *button*, in any version: a permission prompt or an option dialog is answered by the human's own keystrokes,
+visible screen in a drawer) and, when `terminal.enabled` is true, **[type]**: a link to the terminal page for that pane when
+it is a WORKER session (2.5a). No answer *button*, in any version: a permission prompt or an option dialog is answered by the human's own keystrokes,
 in the terminal page or in tmux, never by a click the page turns into keys. (Decision 2026-10-13 morning: "never from the page";
 revised by the user the same afternoon: "enable the option to answer sessions from the website directly, e.g. a terminal
 session". The revision adds the terminal page; it does not add buttons.)
 
-### 2.5a The terminal page (`zouinify term`; user decision 2026-10-13)
+### 2.5a The terminal page (`zouinify term`; user decision 2026-10-13, "Z-11 yes workers"; T-0181)
 
 **What it is.** A browser page attached to one tmux pane of this project: the pane's visible screen (refreshed every 300 ms,
 redacted like every capture), a text field and a key bar (`1`-`5`, `y`, `n`, Enter, Esc, arrows, Tab, Backspace, Ctrl-C).
@@ -203,13 +202,13 @@ panel's behaviour stays byte-identical. The terminal package gets its own CI all
 human's user and can reach loopback ports; a `--chrome` session can drive the human's own browser. Hence:
 
 - **its own secret, never the panel's token.** `zouinify term secret rotate`, in the human's own terminal (refused with
-  `CLAUDECODE` set or without a TTY, like the token), generates a six-word passphrase (about 77 bits), shows it once, clears the
-  screen after Enter and keeps only a PBKDF2-HMAC-SHA256 hash (600k rounds, 16-byte salt) in `.ops/state/term.json` (0600,
+  `CLAUDECODE` set or without a TTY, like the token), generates a passphrase of four five-character groups (about 99 bits, readable from a screen, typeable on a phone),
+  shows it once, clears the screen after Enter and keeps only a PBKDF2-HMAC-SHA256 hash (600k rounds, 16-byte salt) in `.ops/state/term.json` (0600,
   under flock, next to the token code in `panelstate.py`). The browser never stores the passphrase: the unlock screen sends it
   once per browser session to `POST /term/unlock`; the server answers with an `HttpOnly`, `SameSite=Strict` cookie bound to a
   server-side unlock record (`terminal.unlock_idle_s`, 600, without a keystroke; `terminal.unlock_max_s`, 28800, at most; gone
-  when the process stops). Wrong passphrases are budgeted per address (5 per minute, then 429 and a 15-minute lockout of that
-  address) and audited. The unlock is required from every address, loopback included (other local users exist);
+  when the process stops). The fifth wrong passphrase within a minute from one address answers 429 and locks that address out for 15
+  minutes; every attempt is audited. The unlock is required from every address, loopback included (other local users exist);
 - **loopback by default; the LAN is an explicit flag.** `terminal.bind: loopback | intranet`, its own key (default `loopback`,
   independent of `panel.bind`). On `intranet` the passphrase travels once per browser session and the cookie afterwards; with
   `terminal.tls: auto` (the default) the process serves HTTPS on `intranet` with a self-signed certificate it generates once with
@@ -219,12 +218,13 @@ human's user and can reach loopback ports; a `--chrome` session can drive the hu
 - an open pane is a server-side attachment id (`tid`, 32 random bytes) under the unlock, bound to one target, closed after
   `terminal.idle_close_s` (300) without a keystroke and after `terminal.max_open_s` (1800) regardless; **`zouinify term stop` is
   the kill switch**: it ends the process, every unlock and every attachment at once, and the cookie is then worthless;
-- **targets are only this project's sessions as named in `.ops/config.yaml`**: the role sessions' configured names and the
-  workers the launcher registered under the worker pattern; each is checked live before every batch: a tmux session of that
-  name whose pane runs `claude` with its cwd under the project root. Never an arbitrary tmux target, never a shell pane (so no
-  human-only command can be typed through it), never another user's session (tmux servers are per Unix user; none is
-  reachable). `terminal.targets: all | workers` (default `all`: the desk and the role sessions too, the user's decision) and
-  `terminal.exclude: [names]`;
+- **targets are WORKER sessions of this project only** (the user's decision, "Z-11 yes workers"): a session the launcher
+  registered with role `worker`, or a live Claude session named by the configured worker pattern (`t{num}-{slug}`) with its
+  cwd under the project; each is checked live before every batch: its tmux session exists and its pane runs `claude`.
+  The configured role sessions (desk, manager, debug, chrome_debug) are refused by name AND by tmux window whatever the
+  registry says, enforced in code (`zouinify.term.targets`) and pinned by a test; so is a shell pane (no human-only command
+  can be typed through it), a session of another project, an arbitrary tmux target, a name in `terminal.exclude`, and
+  another user's session (tmux servers are per Unix user; none is reachable). `terminal.targets` accepts `workers` only;
 - keys are an allowlist: printable text (at most 2000 characters per batch, no control characters) and the named keys
   `Enter Escape Up Down Left Right Tab BSpace Home End PageUp PageDown Space C-c C-u`; never `C-d`, `C-z`, `C-\`, never a tmux
   prefix, never a raw escape sequence; a batch is an ordered list of `{t: "text"}` and `{k: "Name"}` items;
@@ -246,8 +246,7 @@ point.
 **UI.** A full page on its own origin, opened in a new tab from `[type]` (on the phone it is the whole screen): a header with
 the target's name, role, ticket and state; the screen in mono (`pre`, redacted; the pane has no scrollback, so none is shown);
 the key bar with 44 px targets; the text field (Enter sends the text and Enter, Shift+Enter sends the text only, empty field
-and Enter sends Enter alone); a close button; the red banner. `?text=` pre-fills the field from a tier-2 inbox item
-(**[type it]**); nothing is sent until the human presses Enter. The unlock screen (the passphrase) is the first screen of a browser session, not of every open; it names the project and the
+and Enter sends Enter alone); a close button; the red banner. `?text=` pre-fills the field; nothing is sent until the human presses Enter. The unlock screen (the passphrase) is the first screen of a browser session, not of every open; it names the project and the
 bind mode.
 
 A later refinement, not in the first version: a `PermissionRequest` hook that lets the human allow or deny a worker's tool call

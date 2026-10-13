@@ -128,6 +128,7 @@ class World(unittest.TestCase):
 
     desk_pm = "permission_mode: auto, "
     worker_pm = "permission_mode: auto,"
+    ALLOWS_SEND_KEYS = False      # only the terminal page's world (tests/test_term.py) may see a send-keys call (T-0181)
 
     def setUp(self):
         self.assertTrue(os.path.isfile(ZOUINIFY) and os.access(ZOUINIFY, os.X_OK),
@@ -166,7 +167,8 @@ class World(unittest.TestCase):
 
     def tearDown(self):
         calls = self.tmux_calls()
-        self.assertFalse([c for c in calls if c and c[0] == "send-keys"], "the CLI must never run tmux send-keys")
+        if not self.ALLOWS_SEND_KEYS:
+            self.assertFalse([c for c in calls if c and c[0] == "send-keys"], "the CLI must never run tmux send-keys")
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- helpers ------------------------------------------------------------------------------

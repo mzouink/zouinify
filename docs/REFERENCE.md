@@ -159,25 +159,42 @@ a button. **HTTP on the LAN is clear text**: use it on the lab network only; fro
 <workstation>` to the loopback panel. Worst case of a stolen token: reading the board, the inbox and the redacted pane
 captures; never a launch, a kill, a keystroke, a ticket move or a deploy, because no endpoint does those.
 
-## Typing into a pane: the terminal page (planned, Z-11)
+## Typing into a worker's pane: the terminal page (`zouinify term`, T-0181)
 
-The panel itself never produces a keystroke: that gate (`check_panel_guard.sh`, `check_panel_ast.py`) stays. The user asked on
-2026-10-13 to answer waiting sessions from the website directly, so a second, separate process, `zouinify term`, will serve a
-**terminal page**: one Claude pane of this project, its screen refreshed every 300 ms (redacted), a text field and a key bar;
-what you type goes to the pane with `tmux send-keys`, like typing after `tmux attach`, without attaching a client. It has its
-own secret, never the panel's token: `zouinify term secret rotate` in your own terminal shows a six-word passphrase once and
-keeps a PBKDF2 hash in `.ops/state/term.json`; you type it once per browser session and get an `HttpOnly` cookie (10 idle
-minutes, 8 h at most). `terminal.bind` is loopback by default; `intranet` is an explicit flag and serves HTTPS with a
-self-signed certificate (`terminal.tls: auto`; the browser warns once per device) so the passphrase never crosses the LAN in
-clear; with `tls: off` it crosses once per browser session and the cookie on every request. Only sessions named in
-`.ops/config.yaml` (roles) or registered by the launcher (workers) are offered, each checked live to be a `claude` pane of this
-project; keys are an allowlist (no `Ctrl-D`); an open pane closes after 5 idle minutes; every unlock, open and batch of keys
-is audited in `.ops/state/term_audit.jsonl` with an id the page shows (`zouinify term audit` prints the recent lines so the
-desk can cite it); `zouinify term stop` ends the process and every unlock at once. What it cannot prevent: any Claude session
-on this host could already run `tmux send-keys` itself, so this adds LAN and browser exposure, not a new capability for
-sessions; and a Claude session that drives your Chrome can type into a terminal tab you left open and unlocked in that same
-browser profile (use the phone or a profile without the extension for anything sensitive). Specification: `docs/UX_SPEC.md`
-2.5a.
+The panel itself never produces a keystroke: that gate (`check_panel_guard.sh`, `check_panel_ast.py`) stays, and the panel
+only links. A second, separate process, `zouinify term`, serves the **terminal page**: one WORKER session of this project,
+its screen refreshed every 300 ms (redacted), a key bar and a text field; what you type goes to that pane with
+`tmux send-keys`, like typing after `tmux attach`, without attaching a client. The user's decision of 2026-10-13 ("Z-11
+yes workers") binds it: the desk, manager, debug and chrome_debug windows are never offered and never reachable, enforced
+in code (`lib/zouinify/term/targets.py`) and by a test, so approvals and tier-2 answers for the desk stay typed in the
+desk's tmux window.
+
+- **Its own secret.** `zouinify term secret rotate` in your own terminal (refused inside a Claude session or without a TTY)
+  shows a passphrase once (four groups of five characters) and keeps a PBKDF2 hash in `.ops/state/term.json`. You type it
+  on the unlock screen once per browser session; the server answers with an `HttpOnly`, `SameSite=Strict` cookie that
+  expires after 10 idle minutes and 8 hours at most. The unlock is required from every address, loopback included. The
+  fifth wrong passphrase within a minute locks that address out for 15 minutes.
+- **Loopback by default.** `terminal.bind: intranet` is its own explicit flag; on the LAN the page serves HTTPS with a
+  self-signed certificate made once with `openssl` (`terminal.tls: auto`; the browser warns once per device). Without
+  `openssl` it refuses to bind the LAN unless you set `terminal.tls: off` knowingly (the passphrase then crosses the LAN in
+  clear once per browser session, the cookie on every request).
+- **Workers only, checked live.** A target is a worker session the launcher registered, or a live Claude session named by
+  the worker pattern under the project; before every batch its tmux session must exist and its pane must run `claude`
+  (a worker that dropped to a shell is closed). Keys are an allowlist: printable text and Enter, Esc, arrows, Tab,
+  Backspace, Home, End, PageUp, PageDown, Space, Ctrl-C, Ctrl-U; never Ctrl-D.
+- **Audit and kill switch.** Every unlock, open, batch of keys, close and refusal is one JSON line in
+  `.ops/state/term_audit.jsonl` with the unlock id, the attachment id, the address, the target and the time; the page
+  shows the attachment id and `zouinify term audit [--since 10m] [--target NAME]` prints the recent lines, so a session's
+  log line can cite `term <tid8>`. An open pane closes after 5 idle minutes and 30 minutes at most; `zouinify term stop`
+  ends the process, every unlock and every attachment at once (the passphrase hash stays).
+- **Commands.** `zouinify term start|stop|status|url`, `zouinify term secret rotate`, `zouinify term audit`; `up` starts it
+  when `terminal.enabled` and `terminal.autostart` are on. Config block: `terminal: {enabled, port (default panel.port + 1),
+  bind, tls, autostart, targets: workers, exclude, idle_close_s, max_open_s, unlock_idle_s, unlock_max_s}`.
+- **What it cannot prevent.** Any Claude session on this host could already run `tmux send-keys` itself, so this adds LAN
+  and browser exposure, not a new capability for sessions; a Claude session that drives your Chrome can type into a
+  terminal tab you left open and unlocked in that same browser profile (use the phone or a profile without the extension
+  for anything sensitive; the idle times bound it). Specification: `docs/UX_SPEC.md` 2.5a; its own CI allowlist is
+  `scripts/check_term_guard.sh`.
 
 ## Layout
 
