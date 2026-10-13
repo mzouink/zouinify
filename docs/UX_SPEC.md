@@ -62,9 +62,9 @@ framework, no CDN** (the page must work on a LAN with no internet and must not l
 
 ```
 ┌──────────────┬──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ zouin|ify    │ rai · trunk dev @167bfca · FREEZE off · creds ~1h51 (estimate) · desk: polling · data 12 s ago · 🔒 │
+│ zouin|ify    │ mp  · trunk dev @a1b2c3d · FREEZE off · creds ~1h51 (estimate) · desk: polling · data 12 s ago · 🔒 │
 │              ├──────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ▣ Dashboard  │ !! P0 T-0146 LIVE REGRESSION ... · DEPLOY waiting since 19:50 (10h)                            │
+│ ▣ Dashboard  │ !! P0 T-0146 live regression     · DEPLOY waiting since 19:50 (10h)                            │
 │ ◫ Tickets    │ ┌ For you ──────────┐ ┌ Sessions ─────────────┐ ┌ Deploy & verify ───────────────┐           │
 │ >_ Sessions  │ │ 12 items · 1 P0   │ │ 1 waiting for you     │ │ 3 to deploy · 19 deployed      │           │
 │ ✓ Live checks│ │ next sitting 09:30│ │ 2 working · 4 idle    │ │ awaiting a live check          │           │
@@ -72,17 +72,17 @@ framework, no CDN** (the page must work on a LAN with no internet and must not l
 │ ◔ Desk chat  │ Tickets   backlog 26 · blocked 1 · done 90 · dropped 3                              [Send to desk]│
 │ ⚙ Settings   │ ┌ ready 4 ─┬ in-dev 1 ─┬ review 1 ──┬ to deploy 5 ─┬ deployed 19 ─┐                            │
 │              │ │ T-0155 P1│ T-0125 P2 │ T-0119 P1  │ T-0145 P1    │ T-0139 P0    │  (horizontal scroll < 1440)│
-│              │ │ T-0156 P2│ s1-stage… │ s1-stage…  │ plan 10-12…  │ T-0141 P2    │                            │
+│              │ │ T-0156 P2│ t0119-wo… │ t0119-wo…  │ plan 10-12…  │ T-0141 P2    │                            │
 │              │ └──────────┴───────────┴────────────┴──────────────┴──────────────┘                            │
 │              │ ┌ Inbox (ticket.sh human) ───────────────────────────┐ ┌ Panes waiting for you ─┐ ┌ Next sitting ┐│
-│              │ │ 1 DEPLOY T-0146 P0 … [copy cmd] expect … [OK]       │ │ s1-stage-guard  perm   │ │  09:30 ET    ││
+│              │ │ 1 DEPLOY T-0146 P0 … [copy cmd] expect … [OK]       │ │ t0119-worker    perm   │ │  09:30 ET    ││
 │              │ │ 2 APPROVE T-0119 P1 … type in tickets window: … [copy]│ │  since 14:40 (16h)     │ │  in 2h38     ││
-│              │ │ 3 APPLY T-0145 P1 … [copy cmd] expect … [OK]        │ │ upload-errors  2d      │ │ freezes 09:20││
+│              │ │ 3 APPLY T-0145 P1 … [copy cmd] expect … [OK]        │ │ t0117-worker   2d      │ │ freezes 09:20││
 │              │ └─────────────────────────────────────────────────────┘ └────────────────────────┘ └──────────────┘│
 │              │ ┌ Sessions ─────────────────────────────────────────────┐ ┌ Desk chat ─────────────────────────┐ │
-│              │ │ desk  rna-atlas-inference-6b  tickets  Opus  working  │ │ you: is T-0145 safe to apply?       │ │
-│              │ │ worker s1-stage-guard  Fable  WAITING  T-0119  14:40  │ │ desk (a1b2c3): yes, plan is newest…│ │
-│              │ │ debug inference_debug  Fable  idle  T-0011            │ │ [ ask the desk … ]          [send]  │ │
+│              │ │ desk  mp-desk                 tickets  Opus  working  │ │ you: is T-0145 safe to apply?       │ │
+│              │ │ worker t0119-worker    Fable  WAITING  T-0119  14:40  │ │ desk (a1b2c3): yes, plan is newest…│ │
+│              │ │ debug mp-debug         Fable  idle  T-0011            │ │ [ ask the desk … ]          [send]  │ │
 │              │ └───────────────────────────────────────────────────────┘ └────────────────────────────────────┘ │
 └──────────────┴──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -91,7 +91,7 @@ framework, no CDN** (the page must work on a LAN with no internet and must not l
 
 Sidebar 220-240 px, wordmark `zouin` white + `ify` teal. Items, in this order: **Dashboard, Tickets, Sessions, Live checks,
 Inbox, Desk chat, Settings**. Collapses to icons under 1024 px; a top bar with a menu under 768 px. Routes are hash routes
-(`#/tickets?state=blocked`, `#/tickets/T-0145`, `#/sessions/s1-stage-guard`) so links are shareable without a router.
+(`#/tickets?state=blocked`, `#/tickets/T-0145`, `#/sessions/t0119-worker`) so links are shareable without a router.
 
 Header (every page): project short name and name, trunk sha, FREEZE badge (red, with the allowed ids on hover), credential
 tile ("~1h51 left (estimate)" from the key file's age until SSO lands, then "SSO 9h12"), desk presence ("polling" green,
@@ -142,8 +142,8 @@ Under 1440 px the board scrolls horizontally with `min-width` per lane 180 px; n
 Each item, in the command's own order (never re-sorted client-side; P0 items print first already):
 
 ```
-1  DEPLOY  T-0146  P0  LIVE REGRESSION (T-0143, frontend 7d3a72d): opening a finished job fails …   since 19:50 (10h)
-   cd … && scripts/deploy_frontend.sh                                                      [copy]
+1  DEPLOY  T-0146  P0  live regression after the last deploy: opening a finished job fails …   since 19:50 (10h)
+   cd … && scripts/deploy_site.sh                                                      [copy]
    expect: LIVE CHECK PASSED        if you do nothing: the merged fix stays unreleased         asked by desk
    ─ run it in your terminal, then ─────────────────────────────────────────────────────  [ OK ]  (tier 1, T-0162)
 ```
@@ -187,7 +187,7 @@ State mapping, with text labels (never color alone):
 
 Columns: role (desk/manager/debug/chrome_debug/worker, from the registry or the config's name map), name, tmux window,
 **model** from the status bar (red `Sonnet?` badge when it is not the configured model: a real failure mode), state, ticket,
-last visible line or last `Stop` reply (hook), age. The desk row is pinned first with its poll presence. Session detail
+last visible line or last `Stop` reply (hook), age. The desk row is pinned first with its poll presence. The model is read from the status bar on the visible screen: `?` when the bar is not on screen (a dialog or a prompt covers it); the red badge fires only when a model was read and differs from the configured one. Expect it to fire on day one for sessions started before the launcher existed; that is the point, not a bug. Session detail
 (`#/sessions/<name>`): the redacted screen, last reply, hook event timeline, ticket link, registry entry. Controls: none in
 v1; after T-0162 only **[kill]** on a session whose ticket is `done`/`dropped` (receipt; the desk runs `zouinify down`) and
 **[launch]** for a configured role that is `gone`.
