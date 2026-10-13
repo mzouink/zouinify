@@ -200,9 +200,15 @@ class TestApi(PanelWorld):
         self.assertEqual(items[2]["tier"], 1)
         self.assertEqual(items[2]["options"], ["T-0006 delete", "T-0006 keep"])
         self.assertEqual(items[3]["tier"], 1)            # RUN: ok after the human ran it (after T-0162)
+        from zouinify.panel.sources import classify_item
         for verb in ("APPLY", "DEPLOY", "PUSH"):
-            from zouinify.panel.sources import classify_item
             self.assertEqual(classify_item({"verb": verb, "tickets": "T-0001", "command": "x", "expect": "y"})["tier"], 2, verb)
+        for cmd in ("cd /x && terraform -chdir=terraform apply plan.tfplan", "docker push repo/img:tag", "aws ecr put-image --repository-name x",
+                    "TICKET=T-0001 scripts/deploy_site.sh", "git push origin main", "scripts/ticket.sh apply x.tfplan --tickets T-0001",
+                    "aws lambda update-function-code --function-name f", "scripts/tf.sh prod apply x.tfplan"):
+            self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 2, cmd)
+        for cmd in ("cd /x && ./fix.sh", "aws sso login", "aws lambda get-function --function-name f", "git status", "terraform -chdir=terraform plan -out=x.tfplan"):
+            self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 1, cmd)
         self.assertEqual(s["kpis"]["inbox"], 4)          # the items of human --json
 
     def test_snapshot_board_lanes_and_chips(self):
@@ -453,6 +459,21 @@ class TestRedact(unittest.TestCase):
         sha = "a" * 20 + "0123456789" + "b" * 10
         self.assertEqual(r("commit " + sha), "commit " + sha, "a 40-hex git sha is evidence, not a secret")
         self.assertEqual(r("blob " + ("Q" * 60 + "q" * 25) + "=="), "blob <redacted>")
+        # the desk's third round (T-0160)
+        self.assertEqual(r("Authorization: Basic dXNlcjpwYXNz"), "Authorization: Basic <redacted>")
+        self.assertEqual(r("Authorization: Digest username=x, response=abc"), "Authorization: Digest <redacted>")
+        pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nABCD\n-----END RSA PRIVATE KEY-----"
+        self.assertEqual(r("key:\n" + pem + "\nafter"), "key:\n<redacted private key>\nafter")
+        self.assertEqual(r("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNz\n(cut by the screen)"), "<redacted private key>")
+        self.assertEqual(r("pat " + "github_pat_" + "11ABCDEFG0123456789abcdefghij"), "pat <redacted>")
+        self.assertEqual(r("slack " + "xoxb-" + "1234567890-abcdefghij"), "slack <redacted>")
+        self.assertEqual(r("PGPASSWORD=hunter2 psql"), "PGPASSWORD=<redacted> psql")
+        self.assertEqual(r("MY_API_TOKEN: abc"), "MY_API_TOKEN: <redacted>")
+        self.assertEqual(r("db postgres://user:pw@host/db"), "db postgres://user:<redacted>@host/db")
+        self.assertEqual(r("https://alice:s3cret@example.test/x"), "https://alice:<redacted>@example.test/x")
+        self.assertEqual(r("curl -u alice:s3cret https://h/"), "curl -u alice:<redacted> https://h/")
+        self.assertEqual(r("curl --user=alice:s3cret https://h/"), "curl --user=alice:<redacted> https://h/")
+        self.assertEqual(r("https://example.test/path stays"), "https://example.test/path stays")
 
 
 class TestControl(World):

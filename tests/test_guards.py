@@ -254,7 +254,38 @@ AST_OFFENDING = [
     "import os\nos.path.os.system('x')",
     "with open('x') as fh:\n    fh.write('y')",
     "import time\ntime.os.system('x')",
+    # the desk's third round (T-0160): relative imports and zouinify imports
+    "from ..tickets import ticket_sh as t\nt(cfg, ['move', 'T-0001', 'done', 'x'])",
+    "from ..launch import cmd_launch",
+    "from .. import panelctl",
+    "from ..tmux import _run",
+    "from .. import tickets",
+    "from ...zouinify import launch",
+    "import zouinify.panel.sources",
+    "import zouinify",
+    "from zouinify.launch import cmd_up",
+    "from zouinify.panel import nonexistent_module",
+    "from .nonexistent import x",
 ]
+
+# variants that need the real sibling files next to them (planted into a copy of the real panel dir)
+AST_OFFENDING_WITH_SIBLINGS = [
+    "from .sources import readonly as r\nr.json.dumps({})",
+    "from . import server\nserver.readonly.json.dumps({})",
+    "from . import sources\nsources.os.getpid()",
+    "from . import sources\nsources.readonly.os.system('x')",
+    "from .sources import nonexistent_name",
+    "from .sources import panelstate as p\np.tempfile.mkstemp()",
+    "from . import sources\nx = sources",
+    "import zouinify.panel.sources\nzouinify.panel.sources.readonly.fail('x')",
+]
+AST_ALLOWED_WITH_SIBLINGS = """from . import sources
+from .sources import Snapshot, classify_item, item_id
+from zouinify.panel.redact import redact
+x = sources.item_id({"verb": "RUN"})
+y = sources.readonly.version()
+z = redact(classify_item({"verb": "RUN"})["hint"])
+"""
 
 AST_ALLOWED = """\"\"\"a panel module\"\"\"
 from __future__ import annotations
@@ -312,6 +343,24 @@ class TestPanelAst(unittest.TestCase):
             r = self.run_ast(dst)
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("clicks.py", r.stdout)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_sibling_alias_variants_fail_and_sibling_use_passes(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            dst = os.path.join(tmp, "panel")
+            shutil.copytree(os.path.join(REPO, "lib", "zouinify", "panel"), dst)
+            for bad in AST_OFFENDING_WITH_SIBLINGS:
+                with open(os.path.join(dst, "clicks.py"), "w") as fh:
+                    fh.write(bad + "\n")
+                r = self.run_ast(dst)
+                self.assertNotEqual(r.returncode, 0, f"should fail on: {bad!r}\n{r.stdout}")
+                self.assertIn("clicks.py", r.stdout, bad)
+            with open(os.path.join(dst, "clicks.py"), "w") as fh:
+                fh.write(AST_ALLOWED_WITH_SIBLINGS)
+            r = self.run_ast(dst)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         finally:
             shutil.rmtree(tmp)
 

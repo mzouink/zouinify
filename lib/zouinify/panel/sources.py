@@ -29,6 +29,12 @@ CHIPS = ("backlog", "blocked", "done", "dropped")
 SEV = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 STATE_ORDER = {"waiting": 0, "working": 1, "idle": 2, "shell": 3, "gone": 4}
 TIER2_DECIDE_RE = re.compile(r"CLAUDE\.md|settings", re.I)
+# a command that mutates production however the ask is labelled: the human runs it, never a button (any version)
+TIER2_COMMAND_RE = re.compile(
+    r"terraform\s+(?:-chdir=\S+\s+)?(?:apply|destroy|import|state\s+(?:rm|mv|push))\b|docker\s+push\b|\bpodman\s+push\b|"
+    r"aws\s+ecr\s+(?:put-image|batch-delete-image)\b|\bdeploy_[a-z_]*\.sh\b|\bticket\.sh\s+apply\b|tf\.sh\s+\S+\s+apply\b|"
+    r"git\s+push\b|\baws\s+\S+\s+(?:create|delete|update|put|start|stop|invoke|run|terminate|modify|attach|detach|associate)-[a-z-]+\b",
+    re.I)
 TICKET_IN_NAME_RE = re.compile(r"^t(\d{4})-")
 CARD_KEYS = ("id", "severity", "title", "status", "owner", "claimed", "created", "plan", "deploy", "blocked_on", "closed_by", "repos", "type")
 
@@ -45,7 +51,7 @@ def classify_item(it: dict) -> dict:
     options = re.findall(r'"([^"]+)"', str(it.get("command", ""))) if verb == "DECIDE" else []
     if verb == "APPROVE" or (verb == "DECIDE" and TIER2_DECIDE_RE.search(text)):
         tier, hint = 2, f"type in the desk's tmux window: {it.get('expect') or it.get('command') or ''}".strip()
-    elif verb in ("APPLY", "DEPLOY", "PUSH"):
+    elif verb in ("APPLY", "DEPLOY", "PUSH") or TIER2_COMMAND_RE.search(str(it.get("command", ""))):
         # a production apply, deploy or image push: the human runs the command in their terminal and types the
         # `ok` in the desk's window; never a button, in any version (T-0160 ticket text)
         tier, hint = 2, f"run it in your terminal, then type `{it.get('tickets') or 'T-xxxx'} ok` in the desk's tmux window"

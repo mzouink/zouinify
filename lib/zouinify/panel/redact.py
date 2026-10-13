@@ -1,7 +1,8 @@
 """Redaction of captured screens and log tails before they are stored or served. Label-based (the value
-after `aws_secret_access_key =`, `"SecretAccessKey": "..."`, `passcode:`, `--password x`, `PASSCODE x`) plus
-shape-based (AWS key ids and 40-char secrets, API keys, bearer tokens, JWTs, long base64 blobs). The panel never
-reads credential files; this is for what a pane shows."""
+after `aws_secret_access_key =`, `"SecretAccessKey": "..."`, `passcode:`, `--password x`, `PGPASSWORD=x`),
+shape-based (AWS key ids and 40-char secrets, API keys of several vendors, bearer/basic credentials, JWTs,
+long base64 blobs), credentials in URLs and `curl -u`, and PEM private-key blocks. The panel never reads
+credential files; this is for what a pane shows."""
 from __future__ import annotations
 
 import re
@@ -10,17 +11,28 @@ LABELS = (r"aws_secret_access_key|secret_access_key|aws_session_token|session_to
           r"SecretAccessKey|SessionToken|AccessKeyId|web_token|api[_-]?key|access[_-]?token|refresh[_-]?token|"
           r"client[_-]?secret|secret|passcode|password|passwd|authorization|token")
 VALUE = r"\"[^\"]*\"|'[^']*'|\S+"
-# `label = value`, `label: value`, `"label": "value"`, `label='value'`
-LABEL_RE = re.compile(rf"(?i)(\b(?:{LABELS})\b[\"']?\s*[=:]\s*)(?!bearer\b)({VALUE})")
-# `--password hunter2`, `--token=x`, `-p x` is left alone (too generic)
+SCHEMES = r"bearer|basic|digest|negotiate|ntlm|hoba|mutual|aws4-hmac-sha256"
+# `label = value`, `label: value`, `"label": "value"`, `label='value'` (an auth scheme word is left to SCHEME_RE)
+LABEL_RE = re.compile(rf"(?i)(\b(?:{LABELS})\b[\"']?\s*[=:]\s*)(?!(?:{SCHEMES})\b)({VALUE})")
+# `--password hunter2`, `--token=x`
 FLAG_RE = re.compile(rf"(?i)(--?[a-z_-]*(?:password|passcode|token|secret)[a-z_-]*)(\s+|=)({VALUE})")
-# `PASSCODE abc`, `WEB_TOKEN abc` (an env-style name in capitals followed by its value)
-ENV_RE = re.compile(rf"\b([A-Z0-9_]*(?:PASSCODE|PASSWORD|TOKEN|SECRET)[A-Z0-9_]*)(\s+)({VALUE})")
+# `PGPASSWORD=hunter2`, `PASSCODE abc`, `MY_API_TOKEN: x` (an env-style name in capitals, then its value)
+ENV_RE = re.compile(rf"\b([A-Z0-9_]*(?:PASSCODE|PASSWORD|PASSWD|TOKEN|SECRET|APIKEY|API_KEY)[A-Z0-9_]*)(\s*[=:]\s*|\s+)({VALUE})")
+# https://user:pw@host, postgres://user:pw@host, ...
+URL_CRED_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s]+)@")
+# curl -u user:pw, --user user:pw, --user=user:pw
+CURL_USER_RE = re.compile(r"(?i)(\s(?:-u|--user)(?:\s+|=))([^\s:]+):(\S+)")
+PEM_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S)
+PEM_OPEN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*\Z", re.S)
 SHAPES = [
-    (re.compile(r"(?i)\bBearer\s+\S+"), "Bearer <redacted>"),
+    (re.compile(rf"(?i)\b({SCHEMES})\s+[A-Za-z0-9._~+/=-]{{4,}}(?:,\s*[a-z]+=\S+)*"), lambda m: f"{m.group(1)} <redacted>"),
     (re.compile(r"sk-ant-[A-Za-z0-9_-]+"), "<redacted>"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "<redacted>"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "<redacted>"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "<redacted>"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), "<redacted>"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), "<redacted>"),
+    (re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "<redacted>"),
     # a 40-char AWS-secret shape: mixed case plus a digit or /+ (so a 40-hex git sha is not touched)
     (re.compile(r"(?<![A-Za-z0-9/+=])(?=[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=]))(?=[A-Za-z0-9/+]{0,39}[A-Z])(?=[A-Za-z0-9/+]{0,39}[a-z])"
@@ -33,7 +45,11 @@ SHAPES = [
 def redact(text: str) -> str:
     if not text:
         return text
-    out = LABEL_RE.sub(lambda m: f"{m.group(1)}<redacted>", text)
+    out = PEM_RE.sub("<redacted private key>", text)
+    out = PEM_OPEN_RE.sub("<redacted private key>", out)
+    out = URL_CRED_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>@", out)
+    out = CURL_USER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>", out)
+    out = LABEL_RE.sub(lambda m: f"{m.group(1)}<redacted>", out)
     out = FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     out = ENV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     for rx, rep in SHAPES:
