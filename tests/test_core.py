@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.abspath(os.path.dirname(__file__))
 REPO = os.path.dirname(HERE)
@@ -157,7 +158,8 @@ class World(unittest.TestCase):
             json.dump(DEFAULT_HUMAN, fh)
         env = dict(os.environ)
         env.pop("ZOUINIFY_PROJECT", None)
-        env.update(PATH=FAKES + os.pathsep + env.get("PATH", ""), FAKE_TMUX_STATE=self.state,
+        self.aws_log = os.path.join(self.tmp, "aws-calls.log")
+        env.update(PATH=FAKES + os.pathsep + env.get("PATH", ""), FAKE_TMUX_STATE=self.state, FAKE_AWS_LOG=self.aws_log,
                    FAKE_TICKET_LOG=self.ticket_log, FAKE_HUMAN_COUNT="4", FAKE_HUMAN_JSON=self.human_json, TICKET_AS="tester-session",
                    HOME=self.home, ZOUINIFY_NOW="2026-10-13T07:00:00-04:00")
         self.env = env
@@ -633,7 +635,7 @@ class TestStatus(World):
         self.assertTrue(m, line)
         self.assertEqual(m.group(1), "4")            # the 4 items of human --json
         self.assertEqual(m.group(2), "1")            # one P0 item in the inbox (T-0011, a deployed P0, asks nothing: not counted)
-        self.assertEqual(m.group(3), "none")         # no sso cache, no credentials file
+        self.assertEqual(m.group(3), "ok")           # the fake aws answers sts get-caller-identity (T-0178)
         self.assertEqual(m.group(4), "1")            # T-0002 in-dev
         self.assertEqual(m.group(5), "2")            # T-0008 in-review + T-0009 ready-to-merge (the review lane)
         self.assertEqual(m.group(6), "0")            # rtd = ready-to-deploy, the human's apply queue: none in the fixture (T-0178)
@@ -647,32 +649,62 @@ class TestStatus(World):
         self.assertEqual(m.group(6), "1", "a ready-to-deploy ticket is the apply queue")
         self.assertEqual(m.group(5), "2", "ready-to-merge stays in the review count")
 
-    def test_status_creds_sources(self):
+    def aws_calls(self):
+        if not os.path.exists(self.aws_log):
+            return []
+        with open(self.aws_log) as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    def test_status_creds_is_a_cached_read_only_sts_probe(self):
+        """T-0178 (desk, on real data): the SSO access token is a rolling window the CLI renews silently, so its expiry
+        is no alarm; `aws sts get-caller-identity` is: ok / LOGIN / ERR / ? (timeout), cached 60 s, identity discarded."""
         with open(os.path.join(self.sso, "abc.json"), "w") as fh:
             json.dump({"expiresAt": "2026-10-13T12:30:00Z", "accessToken": "SECRET-must-not-print"}, fh)
         with open(os.path.join(self.sso, "botocore-client-id-sess.json"), "w") as fh:    # the client registration: ~90 days
             json.dump({"clientId": "abc", "clientSecret": "REGSECRET-must-not-print", "expiresAt": "2027-01-10T12:00:00Z"}, fh)
         r = self.ok("status", "--line", "--no-cache")
         m = self.LINE_RE.match(r.stdout.strip().splitlines()[-1])
-        self.assertEqual(m.group(3), "1h30 sso", "the access token's horizon, not the registration's (T-0178)")   # 11:00Z -> 12:30Z
-        self.assertNotIn("SECRET", r.stdout)
+        self.assertEqual(m.group(3), "ok")
+        self.assertEqual(self.aws_calls(), [["sts", "get-caller-identity", "--profile", "default", "--output", "json", "--no-cli-pager"]],
+                         "one read-only call, the configured profile, nothing else")
+        self.assertNotIn("123456789012", r.stdout, "the identity (account, ARN) is never shown")
         r = self.ok("status", "--no-cache")
-        self.assertIn("access token", r.stdout)
+        self.assertIn("get-caller-identity succeeded", r.stdout)
+        self.assertIn("sso access token 1h30 left", r.stdout, "the token's minutes are information in the long form only (11:00Z -> 12:30Z)")
         self.assertNotIn("SECRET", r.stdout)
-        os.remove(os.path.join(self.sso, "botocore-client-id-sess.json"))
-        os.remove(os.path.join(self.sso, "abc.json"))
-        cred = os.path.join(self.home, ".aws", "credentials")
-        with open(cred, "w") as fh:
-            fh.write("[default]\naws_access_key_id = AKIAFAKE\naws_secret_access_key = topsecret\n")
-        t = time.time() - 45 * 60
-        os.utime(cred, (t, t))
-        env = dict(self.env)
-        env.pop("ZOUINIFY_NOW")
-        r = self.ok("status", "--line", "--no-cache", env=env)
-        m = self.LINE_RE.match(r.stdout.strip().splitlines()[-1])
-        self.assertRegex(m.group(3), r"^1h1[45] est$")
-        self.assertNotIn("topsecret", r.stdout)
+        self.assertNotIn("123456789012", r.stdout)
+        r = self.ok("status", "--line", "--no-cache", env=dict(self.env, FAKE_AWS_MODE="expired"))
+        self.assertEqual(self.LINE_RE.match(r.stdout.strip().splitlines()[-1]).group(3), "LOGIN", "an SSO token error: the human must log in")
+        r = self.ok("status", "--no-cache", env=dict(self.env, FAKE_AWS_MODE="expired"))
+        self.assertIn("aws sso login", r.stdout)
+        r = self.ok("status", "--line", "--no-cache", env=dict(self.env, FAKE_AWS_MODE="denied"))
+        self.assertEqual(self.LINE_RE.match(r.stdout.strip().splitlines()[-1]).group(3), "ERR", "a non-token failure is not a login prompt")
+        t0 = time.time()
+        r = self.ok("status", "--line", "--no-cache", env=dict(self.env, FAKE_AWS_MODE="hang"))
+        self.assertEqual(self.LINE_RE.match(r.stdout.strip().splitlines()[-1]).group(3), "?")
+        self.assertLess(time.time() - t0, 8, "the probe gives up after 2 s")
 
+    def test_status_creds_probe_is_cached_sixty_seconds(self):
+        import sys
+        if os.path.join(REPO, "lib") not in sys.path:
+            sys.path.insert(0, os.path.join(REPO, "lib"))
+        from zouinify import config as cfgmod
+        from zouinify import status as st
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            cfg = cfgmod.load(self.root)
+            self.assertEqual(st.creds(cfg)["left"], "ok")
+            self.assertEqual(st.creds(cfg)["left"], "ok")
+            self.assertEqual(len(self.aws_calls()), 1, "the second read within 60 s is served from .ops/state/creds.json")
+            self.assertEqual(st.creds(cfg, use_cache=False)["left"], "ok")
+            self.assertEqual(len(self.aws_calls()), 2)
+            cache = os.path.join(cfg.state_dir, "creds.json")
+            self.assertTrue(os.path.exists(cache), cache)
+            with open(cache) as fh:
+                self.assertNotIn("123456789012", fh.read(), "the cache holds the verdict, never the identity")
+            with mock.patch.object(st.subprocess, "run", side_effect=FileNotFoundError("aws")):
+                c = st.creds(cfg, use_cache=False)
+            self.assertEqual(c["left"], "?", "no aws CLI: unknown, not an alarm")
+            self.assertIn("not found", c["source"])
     def test_status_cache_30s(self):
         self.ok("status", "--line")
         n = len([c for c in self.ticket_calls() if c == "human --json"])

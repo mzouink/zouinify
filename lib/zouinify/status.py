@@ -7,6 +7,8 @@ import datetime as dt
 import glob
 import json
 import os
+import re
+import subprocess
 import tempfile
 import time
 
@@ -46,16 +48,18 @@ def _parse_iso(s: str) -> dt.datetime | None:
     return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
 
 
-def creds(cfg, now: dt.datetime | None = None) -> dict:
-    """Time left on the cloud credentials, without reading any key material: the SSO ACCESS TOKEN's expiresAt
-    (the horizon that forces `aws sso login`; the short role credentials auto-refresh under it) when one exists,
-    else the credentials file's mtime plus aws.assumed_token_hours (an estimate). The SSO cache also holds the
-    client registration (`botocore-client-id-*.json`, clientId/clientSecret, ~90 days): never that one (T-0178)."""
-    aws = cfg.aws
-    if not aws:
-        return {"left": "n/a", "source": "no aws block in .ops/config.yaml"}
-    now = now or now_local(cfg)
-    now_utc = now.astimezone(dt.timezone.utc) if now.tzinfo else dt.datetime.now(dt.timezone.utc)
+CREDS_TTL_S = 60
+STS_TIMEOUT_S = 2.0
+STS_LOGIN_RE = re.compile(r"(?i)token has expired|sso session|sso token|error loading sso|unauthorizedssotoken|refresh failed|"
+                          r"expiredtoken|invalidclienttokenid|the security token included in the request is (?:invalid|expired)|"
+                          r"unable to locate credentials|run: aws sso login|aws sso login")
+
+
+def sso_token_left(aws: dict, now_utc: dt.datetime) -> str:
+    """Minutes left on the SSO ACCESS token (info only): the CLI and the SDK renew it silently with the refresh
+    token, so it says nothing about when `aws sso login` is due. Reads only the cache files that hold an
+    accessToken key (presence, never the value); the client registration (`botocore-client-id-*.json`, about
+    90 days) is not a token."""
     exp = None
     for f in sorted(glob.glob(os.path.join(os.path.expanduser(aws["sso_cache"]), "*.json"))):
         try:
@@ -63,28 +67,72 @@ def creds(cfg, now: dt.datetime | None = None) -> dict:
                 d = json.load(fh)
         except (OSError, ValueError):
             continue
-        if not isinstance(d, dict) or "accessToken" not in d:     # the registration file, or not an SSO token cache
+        if not isinstance(d, dict) or "accessToken" not in d:
             continue
-        e = d.get("expiresAt")
-        t = _parse_iso(e) if isinstance(e, str) else None
+        t = _parse_iso(d["expiresAt"]) if isinstance(d.get("expiresAt"), str) else None
         if t and (exp is None or t > exp):
             exp = t
-    if exp:
-        mins = int((exp - now_utc).total_seconds() // 60)
-        return {"left": ("EXPIRED" if mins <= 0 else fmt_dur(mins)) + " sso",
-                "source": "sso cache: the access token's expiresAt (what forces `aws sso login`; role credentials refresh under it)",
-                "expires_at": exp.isoformat()}
-    credf = os.environ.get("AWS_SHARED_CREDENTIALS_FILE") or os.path.expanduser("~/.aws/credentials")
+    if exp is None:
+        return "none"
+    mins = int((exp - now_utc).total_seconds() // 60)
+    return "expired" if mins <= 0 else fmt_dur(mins)
+
+
+def sts_probe(profile: str) -> dict:
+    """One read-only `aws sts get-caller-identity` with a short timeout: {"state": "ok" | "LOGIN" | "ERR" | "?",
+    "detail": <why, in words>}. The identity it returns (account, ARN) is discarded, never stored or shown. Like
+    any CLI call it refreshes the cached access token as a side effect, which is the point."""
+    cmd = ["aws", "sts", "get-caller-identity", "--profile", profile, "--output", "json", "--no-cli-pager"]
     try:
-        mtime = os.stat(credf).st_mtime
-    except OSError:
-        return {"left": "none", "source": "no sso cache entry and no credentials file"}
-    hours = aws["assumed_token_hours"]
-    if not hours:
-        return {"left": "?", "source": "credentials file present; aws.assumed_token_hours unset"}
-    mins = int((mtime + hours * 3600 - time.time()) // 60)
-    return {"left": ("EXPIRED" if mins <= 0 else fmt_dur(mins)) + " est",
-            "source": f"credentials file mtime + {hours:g} h (estimate)"}
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=STS_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return {"state": "?", "detail": "aws CLI not found on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"state": "?", "detail": f"aws sts get-caller-identity timed out after {STS_TIMEOUT_S:g} s"}
+    except OSError as e:
+        return {"state": "?", "detail": f"aws could not run: {type(e).__name__}"}
+    if r.returncode == 0:
+        return {"state": "ok", "detail": "aws sts get-caller-identity succeeded"}
+    if STS_LOGIN_RE.search(r.stderr or ""):
+        return {"state": "LOGIN", "detail": "aws sts get-caller-identity: the SSO token is expired or missing; run `aws sso login`"}
+    return {"state": "ERR", "detail": f"aws sts get-caller-identity failed (exit {r.returncode}); not an SSO token error"}
+
+
+def creds(cfg, now: dt.datetime | None = None, use_cache: bool = True) -> dict:
+    """Whether the cloud credentials work, from a cached read-only `aws sts get-caller-identity --profile
+    <aws.profile>` (T-0178): `ok`, `LOGIN` (an SSO token error: the human must run `aws sso login`), `ERR` (another
+    failure) or `?` (timeout or no aws CLI). Cached CREDS_TTL_S seconds in <state_dir>/creds.json. The SSO access
+    token's minutes left are information for the long form only: the CLI renews that token silently."""
+    aws = cfg.aws
+    if not aws:
+        return {"left": "n/a", "source": "no aws block in .ops/config.yaml"}
+    now = now or now_local(cfg)
+    now_utc = now.astimezone(dt.timezone.utc) if now.tzinfo else dt.datetime.now(dt.timezone.utc)
+    profile = str(aws.get("profile") or "default")
+    cache = os.path.join(cfg.state_dir, "creds.json")
+    probe = None
+    if use_cache:
+        try:
+            with open(cache, encoding="utf-8") as fh:
+                c = json.load(fh)
+            if time.time() - float(c.get("at", 0)) < CREDS_TTL_S and c.get("profile") == profile and isinstance(c.get("probe"), dict):
+                probe = c["probe"]
+        except (OSError, ValueError):
+            pass
+    if probe is None:
+        probe = sts_probe(profile)
+        try:
+            os.makedirs(cfg.state_dir, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=cfg.state_dir, prefix=".creds.", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"at": time.time(), "profile": profile, "probe": probe}, fh)
+            os.replace(tmp, cache)
+        except OSError:
+            pass
+    token = sso_token_left(aws, now_utc)
+    return {"left": probe["state"], "source": f"{probe['detail']} (profile {profile}, checked at most every {CREDS_TTL_S} s); "
+                                              f"sso access token {token} left (rolling: the CLI renews it, info only)",
+            "token_left": token}
 
 
 def collect(cfg, use_cache: bool = True) -> dict:
@@ -102,7 +150,7 @@ def collect(cfg, use_cache: bool = True) -> dict:
     items = tk.human_items(cfg)
     inbox = len(items) if items is not None else None
     p0 = sum(1 for it in items if str(it.get("priority", "")).upper() == "P0") if items is not None else 0
-    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "creds": creds(cfg, now),
+    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "creds": creds(cfg, now, use_cache=use_cache),
             "counts": by, "generated": now.replace(microsecond=0).isoformat(), "trunk": cfg.trunk, "project": cfg.name}
     try:
         os.makedirs(cfg.state_dir, exist_ok=True)
