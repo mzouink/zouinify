@@ -186,6 +186,31 @@ class TestHookListener(HookWorld):
         self.assertEqual(st, 405, "the main (LAN-facing) server still refuses every POST: hooks come in on the loopback port only")
         self.assertEqual(self.events_file(), [])
 
+    def test_review_lows_relative_cwd_bounds_and_malformed(self):
+        """T-0163 review: a relative cwd is nobody's (it would resolve against the panel's own cwd); the per-session
+        table and the day's file are bounded; deep nesting and a NUL byte are 400s, not crashes."""
+        text = "text that a relative cwd must not keep"
+        for cwd in (".", "tickets", "../proj", ""):
+            st, body = self.post_hook(payload("Stop", cwd, "sid-desk", last_assistant_message=text))
+            self.assertEqual(st, 200, cwd)
+            self.assertFalse(json.loads(body)["kept_text"], repr(cwd))
+        self.assertNotIn(text, json.dumps(self.events_file()) + json.dumps(self.srv.events.recent()))
+        st, _ = self.post_hook(None, raw=("[" * 30000 + "]" * 30000).encode())        # 60 KB: under the size cap, over the recursion limit
+        self.assertEqual(st, 400, "deep nesting is a bad request, not a crash")
+        st, _ = self.post_hook(payload("Stop", self.root + "/x\u0000y", "sid-desk", last_assistant_message="nul"))
+        self.assertEqual(st, 400, "a NUL byte in cwd is a bad request")
+        for i in range(panel_hooks.MAX_SESSIONS + 50):
+            self.srv.events.accept(payload("Stop", self.tmp, f"flood-{i}"))
+        self.assertLessEqual(len(self.srv.events.by_session), panel_hooks.MAX_SESSIONS)
+        self.assertIsNone(self.srv.events.state("flood-0"), "the least recently updated sessions are dropped first")
+        self.assertIsNotNone(self.srv.events.state(f"flood-{panel_hooks.MAX_SESSIONS + 49}"))
+        p = os.path.join(self.root, ".ops", "state", "events.jsonl")
+        before = os.path.getsize(p)
+        with mock.patch.object(panelstate, "EVENTS_MAX_BYTES", before + 10):
+            self.post_hook(payload("Stop", self.root, "sid-desk", last_assistant_message="over the day's cap"))
+        self.assertEqual(os.path.getsize(p), before, "the day's file stops growing at the cap")
+        self.assertIn("over the day's cap", self.srv.events.state("sid-desk")["last_reply"], "the event is still shown live")
+
     def test_events_jsonl_rotates_daily_and_never_follows_a_symlink(self):
         self.post_hook(payload("Stop", self.root, "sid-desk", last_assistant_message="one"))
         p = os.path.join(self.root, ".ops", "state", "events.jsonl")

@@ -395,6 +395,10 @@ def project_roots(cfg) -> set:
 
 
 def under(cwd: str, roots) -> bool:
+    """Whether an ABSOLUTE path lies under one of the roots; a relative path never does (it would resolve against the
+    panel's own cwd, which is the project root: T-0163 review)."""
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        return False
     rc = os.path.realpath(cwd or "")
     return any(rc == r or rc.startswith(r + os.sep) for r in roots)
 

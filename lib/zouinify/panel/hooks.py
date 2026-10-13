@@ -16,6 +16,7 @@ worst case is a misleading line on the page.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -29,6 +30,7 @@ from zouinify.panel.sources import project_roots, under
 MAX_BODY = 64 * 1024                 # a hook payload is small; anything larger is refused unread
 MAX_TEXT = 2000                      # the reply text kept (redacted) for this project's own events
 MAX_EVENTS = 500                     # the in-memory ring
+MAX_SESSIONS = 1000                  # per-session views kept (least recently updated dropped first)
 MAX_STREAM_S = 30 * 60               # an SSE client is sent away after this and reconnects
 HEARTBEAT_S = 15.0
 EVENTS = ("Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit")
@@ -63,8 +65,8 @@ class EventStore:
         name = clip(raw.get("hook_event_name"), SHORT["hook_event_name"])
         if name not in EVENTS:
             return None
-        cwd = str(raw.get("cwd") or "")
-        mine = bool(cwd) and under(cwd, self.roots)
+        cwd = raw.get("cwd")
+        mine = isinstance(cwd, str) and os.path.isabs(cwd) and under(cwd, self.roots)   # a relative cwd is nobody's
         ev = {"at": panelstate.now_iso(), "event": name, "session_id": clip(raw.get("session_id"), SHORT["session_id"]),
               "project": mine, "permission_mode": clip(raw.get("permission_mode"), SHORT["permission_mode"]),
               "notification_type": clip(raw.get("notification_type"), SHORT["notification_type"]) if name == "Notification" else "",
@@ -94,8 +96,11 @@ class EventStore:
         sid = ev["session_id"]
         if not sid:
             return
-        s = self.by_session.setdefault(sid, {"known": True, "last_event": "", "last_at": "", "last_reply": "", "last_reply_at": "",
-                                             "waiting": False, "waiting_for": "", "since": "", "project": ev["project"]})
+        s = self.by_session.pop(sid, None) or {"known": True, "last_event": "", "last_at": "", "last_reply": "", "last_reply_at": "",
+                                                "waiting": False, "waiting_for": "", "since": "", "project": ev["project"]}
+        self.by_session[sid] = s                          # re-inserted last: the dict is ordered by last update
+        while len(self.by_session) > MAX_SESSIONS:
+            del self.by_session[next(iter(self.by_session))]
         s["last_event"] = ev["event"] + (f"({ev['notification_type']})" if ev["notification_type"] else "")
         s["last_at"] = ev["at"]
         if ev["event"] == "Stop":
@@ -181,9 +186,12 @@ class HookHandler(BaseHTTPRequestHandler):
             return self.refuse(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"a hook payload is 1..{MAX_BODY} bytes")
         try:
             raw = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
-        except ValueError:
-            return self.refuse(HTTPStatus.BAD_REQUEST, "not JSON")
-        ev = self.server.store.accept(raw)
+        except (ValueError, RecursionError):
+            return self.refuse(HTTPStatus.BAD_REQUEST, "not JSON (or nested too deep)")
+        try:
+            ev = self.server.store.accept(raw)
+        except (ValueError, TypeError, RecursionError):      # a NUL byte in a path, an absurd shape: a bad request, not a crash
+            return self.refuse(HTTPStatus.BAD_REQUEST, "malformed hook payload")
         if ev is None:
             return self.refuse(HTTPStatus.BAD_REQUEST, "not a hook event the panel keeps (Stop, Notification, SessionStart, SessionEnd, UserPromptSubmit)")
         panelstate.log(self.server.cfg, f"HOOK {ev['event']}{'(' + ev['notification_type'] + ')' if ev['notification_type'] else ''} "

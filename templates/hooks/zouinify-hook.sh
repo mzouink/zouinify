@@ -10,12 +10,14 @@ if [ -z "$root" ]; then
   cwd=$(printf '%s' "$payload" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$cwd" ] || exit 0
   d="$cwd"
-  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ]; do
+  depth=0
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ] && [ "$depth" -lt 64 ]; do
     if [ -f "$d/.ops/config.yaml" ]; then
       root="$d"
       break
     fi
     d=$(dirname "$d")
+    depth=$((depth + 1))
   done
 fi
 [ -n "$root" ] || exit 0

@@ -218,6 +218,7 @@ def hook_snippet() -> str:
 
 
 EVENTS_KEEP_DAYS = 14
+EVENTS_MAX_BYTES = 20 * 1024 * 1024    # per day; beyond it events are still shown live but no longer appended
 
 
 def events_path(cfg) -> str:
@@ -250,8 +251,14 @@ def append_event(cfg, event: dict) -> None:
                         continue
                     if (today - day).days > EVENTS_KEEP_DAYS:
                         os.remove(os.path.join(state_dir(cfg), name))
+            line = json.dumps(event, sort_keys=True) + "\n"
+            try:
+                if os.lstat(path).st_size + len(line) > EVENTS_MAX_BYTES:
+                    return                      # the day's file is full: a flood must not fill the disk
+            except FileNotFoundError:
+                pass
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event, sort_keys=True) + "\n")
+                fh.write(line)
     except (OSError, TypeError, ValueError):
         pass
