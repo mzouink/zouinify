@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Fake `claude` for the zouinify test world: `agents --json` prints $FAKE_CLAUDE_AGENTS (a file) or [].
+The fake tmux never executes the session command, so nothing else is ever called."""
+import os
+import sys
+
+if sys.argv[1:3] == ["agents", "--json"]:
+    f = os.environ.get("FAKE_CLAUDE_AGENTS")
+    if f and os.path.exists(f):
+        with open(f) as fh:
+            sys.stdout.write(fh.read())
+    else:
+        print("[]")
+    sys.exit(0)
+if sys.argv[1:2] == ["--version"]:
+    print("0.0.0 (fake)")
+    sys.exit(0)
+sys.exit(0)

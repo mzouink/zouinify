@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# zouinify -- the CLI the skill (SKILL.md) and the human both run.
+# Resolves symlinks first: the skill is usually symlinked into ~/.claude/skills/zouinify.
+# `up`, `launch` and `down` are run by the human from a shell or by the desk session; the panel
+# process never runs them.
+set -euo pipefail
+src=${BASH_SOURCE[0]}
+while [ -L "$src" ]; do
+  dir=$(cd -P "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  [[ $src == /* ]] || src=$dir/$src
+done
+here=$(cd -P "$(dirname "$src")/.." && pwd)
+exec "${ZOUINIFY_PYTHON:-python3}" -I "$here/lib/zouinify/cli.py" "$@"

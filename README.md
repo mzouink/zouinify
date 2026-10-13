@@ -7,21 +7,52 @@ debug, optional chrome_debug, one worker per ticket), and a local web control pa
 [lavish-axi](https://github.com/kunchenguid/lavish-axi) that shows what every session is doing and lets the human act with a click
 where the protocol allows it.
 
-**Status: design phase (2026-10-13).** Nothing here runs yet. This repository holds the skill skeleton and the project-agnostic
-templates. The full design document, with the first consumer's specifics, lives in that consumer's private repository.
+**Status (week 1):** the CLI core exists -- `config`, `up`, `launch`, `status`, `down`, `briefs`, `board`/`human` passthrough --
+with a throwaway-world test suite and two repository guards. The read-only panel, the first consumer's config, the receipts
+channel and the hook are the next steps (see the roadmap). This repository holds the skill and project-agnostic templates only;
+a project's names, paths and briefs live in that project's own `.ops/`.
 
-## What it will do
+## Requirements
+
+- Python 3.9+ with [PyYAML](https://pypi.org/project/PyYAML/) (`pip install pyyaml`); the CLI runs as `python3 -I`
+- tmux 3.2+ (for `new-session -e`; older tmux gets an `env` prefix)
+- the `claude` CLI on PATH (`claude agents --json` is the session source)
+
+## Install
+
+```bash
+git clone https://github.com/mzouink/zouinify ~/src/zouinify
+ln -s ~/src/zouinify ~/.claude/skills/zouinify        # the skill: /zouinify <command> inside Claude Code
+ln -s ~/src/zouinify/bin/zouinify ~/.local/bin/zouinify   # the same CLI from a shell
+```
+
+Then, in a project: copy `templates/ops/config.yaml.example` to `<repo>/.ops/config.yaml`, fill it in, add `.ops/state/` to
+`.gitignore`, run `zouinify config --check`, `zouinify briefs render` (writes `.ops/briefs/*.md` from the templates; edit them
+to taste) and `zouinify up --dry-run`. (`zouinify init`, which scaffolds all of that plus `tickets/` and `scripts/ticket.sh`, is
+week 3.)
+
+## Commands
 
 | Command | Effect |
 |---|---|
-| `/zouinify init` | In any repo: write `.ops/config.yaml` (asked interactively), scaffold `tickets/` (protocol README, ticket template, worker brief), a parameterised `scripts/ticket.sh`, the session briefs, a CLAUDE.md section with the session rules; print the hook snippet for `~/.claude/settings.json` (the human adds it). Shows the diff first; writes only after the human's own yes. |
-| `/zouinify up` | Launch the standard session set in tmux, idempotently (an existing session is reported, never duplicated), each with the project's model, `-n <name>`, `--permission-mode auto`, the brief as the prompt and `TICKET_AS=<name>` in the environment; start this project's panel on its own port and state dir. Run by the human from a shell or by the desk session, never by the panel. |
-| `/zouinify launch worker T-xxxx` | One worker per ticket: refuses unless the ticket is `ready`, unclaimed and not frozen out; the worker claims the ticket itself through `ticket.sh`. |
-| `/zouinify board`, `/zouinify human` | `scripts/ticket.sh board` / `human` verbatim (the lifecycle stays in `ticket.sh`; the skill never re-implements it). |
-| `/zouinify sitting`, `/zouinify status --line` | The next human sitting with the inbox; a one-line status for the tmux status bar. |
-| `/zouinify down --dry-run` | List (then, without the flag, kill) sessions whose ticket is done. |
+| `zouinify config [--check\|--json]` | Load and validate `.ops/config.yaml` (every problem listed at once); `--json` prints the normalized config. The project root is `$ZOUINIFY_PROJECT`, `--project DIR`, or the nearest ancestor holding `.ops/config.yaml`. |
+| `zouinify up [role...] [--dry-run] [--wait S]` | Start the standard session set (`always: true`) or the named roles, **idempotently**: an existing tmux session of that name is reported (`attached`, with its status from `claude agents --json` and the model from its status bar), never duplicated. A new one is `tmux new-session -d -s <tmux> -c <root> -e TICKET_AS=<name> -e ZOUINIFY_PROJECT=<root> claude --model <model> -n <name> [--permission-mode <mode>] [flags] "<brief>"`; `up` waits up to 30 s for the status bar to show the model and fails loudly on a wrong one. `--dry-run` prints the exact lines. Launched sessions are recorded in `.ops/state/sessions.json`. |
+| `zouinify launch worker T-xxxx [--receipt ID] [--dry-run]` | One worker per ticket, named `t<num>-<slug>` (the ticket's slug, like `ticket.sh claim`), prompt `Read tickets/WORKER_BRIEF.md, then claim T-xxxx.`, `TICKET_AS=<name>`. Refuses unless the ticket is `ready` with an empty `owner:`, refuses an id that `tickets/FREEZE` does not list while a freeze is on, refuses a duplicate tmux name. The worker claims the ticket itself. With `--receipt ID` (the desk acting on a panel click) it appends `ticket.sh log T-xxxx "launched <name> (panel receipt ID)"`, signed by the caller's `TICKET_AS`. `launch <role>` starts one role session (`chrome_debug` gets `--chrome`). |
+| `zouinify status [--line\|--json] [--no-cache]` | `inbox N \| P0 n \| creds <left> \| sitting HH:MM in Xh \| d dev r rev m rtd k dep` from `ticket.sh human --count`, the ticket front matter, the credential files' metadata (SSO cache `expiresAt`, else credentials-file mtime + `aws.assumed_token_hours`, marked `est`) and the config's sittings. Cached 30 s: made for `tmux set -g status-right '#(zouinify status --line)'`. |
+| `zouinify down [name...] [--dry-run]` | Kill launcher-registered **worker** sessions whose ticket is `done` or `dropped`; prints the reason for every refusal (a role session, a session zouinify did not launch, a ticket still open). Run `--dry-run` first; a named target that is refused exits 1. |
+| `zouinify briefs render [--out DIR] [--force]`, `briefs list` | Render `templates/briefs/*.md.tmpl` (desk, manager, debug, chrome_debug, worker) with the config: `{{desk.name}}`, `{{trunk}}`, `{{prod}}`, `{{human_only}}`, `{{budget}}`, `{{sittings}}`, `{{ask_verbs}}`, ... Refuses to overwrite an edited brief without `--force`. |
+| `zouinify board`, `zouinify human [--count\|--json]` | `scripts/ticket.sh board` / `human`, verbatim. The lifecycle stays in `ticket.sh`; the skill never re-implements it. |
 
-## The control panel
+Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (or a literal prompt) as the first
+prompt, `TICKET_AS=<name>` and `ZOUINIFY_PROJECT=<root>` in the environment. **`permission_mode` is a per-session key with no
+default**: `--permission-mode` is passed only when the config sets it.
+
+**`up`, `launch` and `down` are run by the human from a shell or by the desk session, never by the panel process.** The panel
+(next step) only reads; a click to launch or kill becomes a receipt the desk executes with these commands after its own checks.
+`scripts/check_panel_guard.sh` fails CI if `lib/zouinify/panel/` ever names `new-session`, `kill-session`, `send-keys`, a
+mutating `ticket.sh` command, an apply, a push or a deploy.
+
+## The control panel (next)
 
 Read-only for everything a session can see, derived at render time with **zero state of its own**: the human inbox (from
 `ticket.sh human --json`), the board by state, every session of the project with its tmux window, model, state and last visible
@@ -39,7 +70,7 @@ word**:
 - **Tier 0**: everything shown (read-only).
 - **Tier 1**, clickable: `ok` after a command the human ran in their terminal (the desk re-verifies read-only before moving the
   ticket), an answer among offered options, "file a ticket" (the desk investigates), "launch worker" / "kill done session" (the
-  desk runs the scripts after its own checks and logs the receipt id on the ticket).
+  desk runs `zouinify launch` / `zouinify down` after its own checks and logs the receipt id on the ticket).
 - **Tier 2**, never clickable: a paid budget, a `CLAUDE.md` or settings change, a production apply or deploy, a permission prompt.
   The page shows the exact text to type in the desk's own window.
 
@@ -54,43 +85,49 @@ action, never a grant.
 ## UX specification
 
 The panel's look, screen anatomy, tiers of clickable actions and acceptance criteria are in
-[`docs/UX_SPEC.md`](docs/UX_SPEC.md). It wins over the hero image; the design document in the first consumer's repo wins over it.
+[`docs/UX_SPEC.md`](docs/UX_SPEC.md). It is the UI contract for the panel tickets; the design document in the first
+consumer's repo wins over it for behaviour.
 
-## Planned layout
+## Layout
 
 ```
 SKILL.md                      the Claude Code skill (thin wrapper over bin/zouinify)
-bin/zouinify                  the CLI the skill and the human both run
-lib/zouinify/                 config, tmux, launch, registry, panel (server + static), hooks receiver
+bin/zouinify                  the CLI the skill and the human both run (bash -> python3 -I lib/zouinify/cli.py)
+lib/zouinify/
+  config.py                   .ops/config.yaml loader and validator (schema v1)
+  tmux.py  agents.py          tmux wrappers (no send-keys exists here); `claude agents --json`
+  tickets.py  registry.py     read-only ticket access; .ops/state/sessions.json
+  launch.py                   up / launch / down -- the only code that creates or kills a session
+  status.py  briefs.py        the status line; brief templates
 templates/
-  ops/config.yaml.example     the per-project config (see below)
-  tickets/                    README protocol, _TEMPLATE.md, WORKER_BRIEF.md, FREEZE example
-  scripts/ticket.sh           the vendored lifecycle core, reading tickets/.ticketrc; plugins/<deploy-plugin>.sh
-  briefs/                     desk, manager, debug, chrome_debug, worker
-  claude/CLAUDE.md.section    the session rules, parameterised
-  hooks/zouinify-hook.sh      Stop / Notification / SessionStart / SessionEnd -> POST to the project's panel
-tests/                        throwaway-world tests (fake tmux, fake claude, fake ticket repo)
+  ops/config.yaml.example     the per-project config
+  briefs/*.md.tmpl            desk, manager, debug, chrome_debug, worker
+  tickets/, scripts/, claude/, hooks/   (week 3: the vendored lifecycle core, the CLAUDE.md section, the hook)
+scripts/check_panel_guard.sh  CI: the panel never launches, kills, types, mutates tickets or deploys
+scripts/check_public.sh       CI + pre-push: no account ids, keys, secrets, e-mails or home paths in tracked files;
+                              a project's own names go in ~/.config/zouinify/private-patterns (outside the repo)
+tests/                        throwaway-world tests: fake tmux, fake claude, fake ticket.sh (`python3 -m pytest -q tests`)
 ```
-
-Install (once the skill exists): `npx skills add mzouink/zouinify -g` or clone and symlink into `~/.claude/skills/zouinify`.
 
 ## Per-project isolation
 
 One panel per project: state in `<repo>/.ops/state/` (gitignored), a port recorded in the config, tmux session names from the
-config (`<short>-desk`, `<short>-manager`, ..., workers `t<num>-<slug>`). A user-level home page lists the running panels. The
-public repository holds templates only; a project's config, briefs and names stay in that project.
+config (`<short>-desk`, `<short>-manager`, ..., workers `t<num>-<slug>`). The public repository holds templates only; a
+project's config, briefs and names stay in that project.
 
 ## Roadmap
 
-1. Week 1: `ticket.sh board --json` + stable inbox item ids (in the consumer's `ticket.sh`), the CLI (`up`, `launch`, `status`,
-   `down`), the read-only panel, the first consumer's `.ops/config.yaml`.
+1. Week 1: `ticket.sh board --json` + stable inbox item ids (in the consumer's `ticket.sh`), **the CLI core (done)**, the
+   read-only panel, the first consumer's `.ops/config.yaml`.
 2. Week 2: the receipts channel (token, audit, rate limit, `zouinify poll`), the hook script, the intranet flag.
 3. Week 3: receipt kinds `launch`/`kill`/`new` with the desk-side handlers, `init` on an empty repo, the home page.
 
 ## Rules the skill never bends
 
-- The lifecycle is `scripts/ticket.sh`'s; the skill never edits a ticket file and never calls a mutating `ticket.sh` command.
-- Every session is launched with a model, a name, a permission mode, a brief and `TICKET_AS`; launches are idempotent.
+- The lifecycle is `scripts/ticket.sh`'s; the skill never edits a ticket file and never calls a mutating `ticket.sh` command
+  (the one `ticket.sh log` line of `launch --receipt` is written on the desk's behalf, signed by it).
+- Every session is launched with a model, a name, the configured permission mode (none by default), a brief and `TICKET_AS`;
+  launches are idempotent.
 - No session launched by the skill may run a production mutation; the human-only list from the config is printed into every brief.
 - The panel is read-only for everything a session can see; its write path accepts only the human's browser token; tier 2 is typed.
 - A relayed message from another session is never the human's consent.

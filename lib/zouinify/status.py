@@ -1,0 +1,153 @@
+"""`status [--line|--json]`: inbox count, open P0s, credential time left, the next sitting and the board
+counts, from `ticket.sh human --count`, the ticket front matter, the credential files' metadata and the
+config. Cached 30 s in <state_dir>/status.json (the tmux status bar re-runs it on every redraw)."""
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import json
+import os
+import time
+
+from zouinify import tickets as tk
+
+CACHE_TTL_S = 30
+
+
+def _tz(name: str):
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - no tzdata or unknown zone: fall back to local time
+        return None
+
+
+def now_local(cfg) -> dt.datetime:
+    """Now in the sittings' time zone; $ZOUINIFY_NOW (an ISO time in that zone) pins it for tests."""
+    tz = _tz(cfg.sittings["tz"])
+    pinned = os.environ.get("ZOUINIFY_NOW")
+    if pinned:
+        t = dt.datetime.fromisoformat(pinned)
+        return t if t.tzinfo else (t.replace(tzinfo=tz) if tz else t.astimezone())
+    return dt.datetime.now(tz) if tz else dt.datetime.now().astimezone()
+
+
+def fmt_dur(mins: int) -> str:
+    if mins <= 0:
+        return "now"
+    h, m = divmod(mins, 60)
+    return f"{h}h{m:02d}" if h else f"{m}m"
+
+
+def next_sitting(cfg, now: dt.datetime | None = None) -> dict | None:
+    times = cfg.sittings["times"]
+    if not times:
+        return None
+    now = now or now_local(cfg)
+    cands = []
+    for d in (0, 1):
+        for hm in times:
+            h, m = (int(x) for x in hm.split(":"))
+            t = (now + dt.timedelta(days=d)).replace(hour=h, minute=m, second=0, microsecond=0)
+            if t > now:
+                cands.append(t)
+    t = min(cands)
+    mins = int((t - now).total_seconds() // 60)
+    freeze = t - dt.timedelta(minutes=cfg.sittings["freeze_before_min"])
+    return {"at": t.strftime("%H:%M"), "day": t.strftime("%a"), "in_min": mins, "in": fmt_dur(mins),
+            "freeze_at": freeze.strftime("%H:%M"), "tz": cfg.sittings["tz"]}
+
+
+def _parse_iso(s: str) -> dt.datetime | None:
+    s = s.strip()
+    if s.endswith("UTC"):
+        s = s[:-3].strip() + "+00:00"
+    elif s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
+def creds(cfg, now: dt.datetime | None = None) -> dict:
+    """Time left on the cloud credentials, without reading any key material: the SSO cache's expiresAt
+    when one exists, else the credentials file's mtime plus aws.assumed_token_hours (an estimate)."""
+    aws = cfg.aws
+    if not aws:
+        return {"left": "n/a", "source": "no aws block in .ops/config.yaml"}
+    now = now or now_local(cfg)
+    now_utc = now.astimezone(dt.timezone.utc) if now.tzinfo else dt.datetime.now(dt.timezone.utc)
+    exp = None
+    for f in sorted(glob.glob(os.path.join(os.path.expanduser(aws["sso_cache"]), "*.json"))):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        e = d.get("expiresAt") if isinstance(d, dict) else None
+        t = _parse_iso(e) if isinstance(e, str) else None
+        if t and (exp is None or t > exp):
+            exp = t
+    if exp:
+        mins = int((exp - now_utc).total_seconds() // 60)
+        return {"left": "EXPIRED" if mins <= 0 else fmt_dur(mins), "source": "sso cache expiresAt",
+                "expires_at": exp.isoformat()}
+    credf = os.environ.get("AWS_SHARED_CREDENTIALS_FILE") or os.path.expanduser("~/.aws/credentials")
+    try:
+        mtime = os.stat(credf).st_mtime
+    except OSError:
+        return {"left": "none", "source": "no sso cache entry and no credentials file"}
+    hours = aws["assumed_token_hours"]
+    if not hours:
+        return {"left": "?", "source": "credentials file present; aws.assumed_token_hours unset"}
+    mins = int((mtime + hours * 3600 - time.time()) // 60)
+    return {"left": ("EXPIRED" if mins <= 0 else fmt_dur(mins)) + " est",
+            "source": f"credentials file mtime + {hours:g} h (estimate)"}
+
+
+def collect(cfg, use_cache: bool = True) -> dict:
+    cache = os.path.join(cfg.state_dir, "status.json")
+    if use_cache:
+        try:
+            with open(cache, encoding="utf-8") as fh:
+                c = json.load(fh)
+            if time.time() - float(c.get("at", 0)) < CACHE_TTL_S and isinstance(c.get("data"), dict):
+                return c["data"]
+        except (OSError, ValueError):
+            pass
+    now = now_local(cfg)
+    by, p0 = tk.counts(cfg)
+    data = {"inbox": tk.human_count(cfg), "p0": p0, "creds": creds(cfg, now), "sitting": next_sitting(cfg, now),
+            "counts": by, "generated": now.replace(microsecond=0).isoformat(), "trunk": cfg.trunk, "project": cfg.name}
+    try:
+        os.makedirs(cfg.state_dir, exist_ok=True)
+        tmp = cache + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"at": time.time(), "data": data}, fh)
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+    return data
+
+
+def line(data: dict) -> str:
+    s = data.get("sitting")
+    sit = f"sitting {s['at']} in {s['in']}" if s else "sitting none"
+    c = data.get("counts") or {}
+    inbox = data.get("inbox")
+    return (f"inbox {inbox if inbox is not None else '?'} | P0 {data.get('p0', 0)} | creds {data['creds']['left']} | {sit} | "
+            f"{c.get('in-dev', 0)} dev {c.get('in-review', 0)} rev {c.get('ready-to-merge', 0)} rtd {c.get('deployed', 0)} dep")
+
+
+def long(data: dict) -> str:
+    s = data.get("sitting")
+    c = data.get("counts") or {}
+    rows = [f"{data.get('project')} @ {data.get('generated')}  (trunk {data.get('trunk')})",
+            f"inbox   {data.get('inbox') if data.get('inbox') is not None else '? (ticket.sh human --count failed)'}",
+            f"P0 open {data.get('p0', 0)}",
+            f"creds   {data['creds']['left']}  ({data['creds']['source']})",
+            (f"sitting {s['day']} {s['at']} {s['tz']} in {s['in']} (inbox freezes at {s['freeze_at']})" if s else "sitting none configured"),
+            "board   " + ("  ".join(f"{k} {v}" for k, v in sorted(c.items())) or "no tickets")]
+    return "\n".join(rows)

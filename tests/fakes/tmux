@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Fake `tmux` for the zouinify test world.
+
+State lives in $FAKE_TMUX_STATE (a directory): sessions.json holds every "session" created with
+new-session (its command argv, -e environment, -c cwd), calls.log records every invocation (one
+JSON argv per line) so a test can assert what the CLI ran -- and what it never ran (send-keys).
+capture-pane prints a Claude-like screen whose status bar names the model from the recorded
+`--model` argument, or the contents of <state>/screen-<session>.txt when a test plants one.
+"""
+import json
+import os
+import sys
+
+STATE = os.environ["FAKE_TMUX_STATE"]
+SESSIONS = os.path.join(STATE, "sessions.json")
+MODEL_LABEL = {"fable": "Fable 5.1", "opus": "Opus 5.5", "sonnet": "Sonnet 5.5", "haiku": "Haiku 5.5"}
+
+
+def load():
+    try:
+        with open(SESSIONS) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {}
+
+
+def save(d):
+    with open(SESSIONS, "w") as fh:
+        json.dump(d, fh, indent=1)
+
+
+def log(argv):
+    with open(os.path.join(STATE, "calls.log"), "a") as fh:
+        fh.write(json.dumps(argv) + "\n")
+
+
+def target(args):
+    """`=name` (exact session), `=name:` / `=name:.` (exact session's active window/pane) -> name."""
+    t = args[args.index("-t") + 1]
+    if t.startswith("="):
+        t = t[1:]
+    for suffix in (":.", ":"):
+        if t.endswith(suffix):
+            t = t[: -len(suffix)]
+    return t
+
+
+def main(argv):
+    log(argv)
+    if not argv:
+        return 1
+    cmd, args = argv[0], argv[1:]
+    d = load()
+    if cmd == "-V":
+        print("tmux 3.4")
+        return 0
+    if cmd == "has-session":
+        t = target(args)
+        if t in d:
+            return 0
+        print(f"can't find session: {t}", file=sys.stderr)
+        return 1
+    if cmd == "new-session":
+        name = cwd = None
+        env = {}
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-d":
+                i += 1
+            elif a == "-s":
+                name = args[i + 1]
+                i += 2
+            elif a == "-c":
+                cwd = args[i + 1]
+                i += 2
+            elif a == "-e":
+                k, v = args[i + 1].split("=", 1)
+                env[k] = v
+                i += 2
+            else:
+                break
+        command = args[i:]
+        if name is None:
+            print("fake tmux: new-session needs -s", file=sys.stderr)
+            return 1
+        if name in d:
+            print(f"duplicate session: {name}", file=sys.stderr)
+            return 1
+        d[name] = {"argv": command, "env": env, "cwd": cwd, "pid": 1000 + len(d)}
+        save(d)
+        return 0
+    if cmd == "kill-session":
+        t = target(args)
+        if t not in d:
+            print(f"can't find session: {t}", file=sys.stderr)
+            return 1
+        del d[t]
+        save(d)
+        return 0
+    if cmd == "capture-pane":
+        t = target(args)
+        if t not in d:
+            print(f"can't find session: {t}", file=sys.stderr)
+            return 1
+        planted = os.path.join(STATE, f"screen-{t}.txt")
+        if os.path.exists(planted):
+            with open(planted) as fh:
+                sys.stdout.write(fh.read())
+            return 0
+        s = d[t]
+        a = s["argv"]
+        model = a[a.index("--model") + 1] if "--model" in a else None
+        label = MODEL_LABEL.get(model, model or "?")
+        prompt = a[-1] if a else ""
+        first = prompt.splitlines()[0][:120] if prompt else ""
+        print(f"> {first}")
+        print("")
+        print("─" * 80)
+        print(f"   [{label}] \U0001F4C1 {os.path.basename(s['cwd'] or '')} | \U0001F33F dev")
+        print("   \U0001F4B0 $0.10 | ⏱️  1m | 1% ctx")
+        print("  ⏵⏵ auto mode on (shift+tab to cycle)")
+        return 0
+    if cmd == "list-panes":
+        fmt = args[args.index("-F") + 1]
+        for name, s in d.items():
+            print(fmt.replace("#{session_name}", name).replace("#{pane_pid}", str(s["pid"]))
+                  .replace("#{pane_current_command}", "claude"))
+        return 0
+    if cmd == "list-sessions":
+        for name in d:
+            print(name)
+        return 0
+    if cmd == "show-environment":
+        t = target(args)
+        for k, v in d.get(t, {}).get("env", {}).items():
+            print(f"{k}={v}")
+        return 0
+    if cmd == "send-keys":
+        print("FORBIDDEN: send-keys", file=sys.stderr)
+        return 2
+    print(f"fake tmux: unsupported command {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

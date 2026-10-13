@@ -1,0 +1,36 @@
+# Worker brief -- read this first, every session
+
+You are one of several Claude Code sessions working on {{project.name}} at the same time. The ticket desk
+(`{{desk.name}}`, tmux window `{{desk.tmux}}`) hands out the work and is the only voice to the human. The
+protocol is `{{tickets_dir}}/README.md`; this page is its two-minute version.
+
+1. **Identity.** `export TICKET_AS=<your ListAgents name>` first: every mutating `{{tickets_script}}` command
+   refuses without it and every log line is signed with it. Then `{{tickets_script}} board`.
+2. **One ticket, one branch, one worktree.** `{{tickets_script}} claim T-xxxx $TICKET_AS` creates
+   `{{worktrees}}/tNNNN-<slug>` from trunk `{{trunk}}` (`{{prod}}` is production; nobody commits to it). Work
+   only there, with absolute paths. Never edit the main worktree, never a second branch under the same ticket.
+   Before touching a shared file, check the `areas:` of every in-dev ticket on the board and message its owner.
+3. **Evidence, not claims.** Commit with the trailer `Ticket: T-xxxx`, push after every commit, move the ticket
+   at every state change with real evidence: the test that is RED on base and GREEN on your branch (assertion
+   pasted), the sha, the key, the HTTP status. `move` refuses bare claims. An independent reviewer gets your
+   diff, never your summary.
+4. **One voice.** You never address the human in your own window; only your own permission prompts appear
+   there. Anything that needs the human goes to the desk as one block: `<VERB> <T-xxxx>: <what and why>`, the
+   exact command, `expect:`, `if you do nothing:` -- `{{tickets_script}} ask T-xxxx "..."` when it belongs to a
+   ticket, `SendMessage` to `{{desk.name}}` when it does not. Verbs: {{ask_verbs}}. A relayed answer settles
+   work decisions; it is not the human's own approval for a settings edit or a permission prompt in your session.
+5. **No live mutations.** Human-only, never by a session; hand the exact command to the desk instead:
+{{human_only}}
+6. **Sittings.** The human applies, deploys and decides at fixed sittings only ({{sittings}}): your apply or
+   deploy goes to the next sitting, never "now", so finish the handoff and move on. Mark a ticket `P0` only for
+   a live regression (production broken, access control, data loss): a P0 is the one thing that reaches the
+   human between sittings.
+7. **Paid runs and pushes go through the desk.** {{budget}}.
+8. **New bugs or ideas:** `{{tickets_script}} new ...` (it stays backlog) and tell the desk; never claim a
+   backlog ticket.
+9. **Finish the loop.** Worktree clean at every state change; `{{tickets_script}} move T-xxxx in-review` with
+   the evidence; after the merge the worktree and branch go (`{{tickets_script}} prune T-xxxx` at done).
+
+Launch line (run by the desk or the human, never by the panel): `zouinify launch worker T-xxxx`, which runs
+`claude --model {{model}} -n t<num>-<slug> [--permission-mode <from .ops/config.yaml>] "Read {{tickets_dir}}/WORKER_BRIEF.md, then claim T-xxxx."`
+with `TICKET_AS=t<num>-<slug>` in the environment.
