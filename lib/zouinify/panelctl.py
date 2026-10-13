@@ -96,7 +96,7 @@ def cmd_token_rotate(cfg, out=None) -> int:
         input("Press Enter to clear the screen... ")
     except EOFError:
         pass
-    print("\033[2J\033[H", end="", file=out)
+    print("\033[2J\033[3J\033[H", end="", file=out)      # clear the screen and the scrollback (tmux included)
     print(f"token id {tid} recorded; the address is no longer on screen. Panel: {public_url(cfg)} (rotate again any time).", file=out)
     return 0
 

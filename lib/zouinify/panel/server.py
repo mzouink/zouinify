@@ -33,6 +33,7 @@ ALLOW = "GET, HEAD"
 CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'none'"
 REFUSED = {"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW}
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+QUERY_RE = re.compile(r"\?[^ \"]*")     # a mistyped /?t=<token> must never reach the log
 COOKIE = "zouinify_token"
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 RATE_LIMIT = 10          # refusals per window per address ...
@@ -65,12 +66,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- plumbing -------------------------------------------------------------------------------------
     def log_message(self, fmt, *args):  # noqa: D401 - one line per request into the server log, never a token
-        msg = CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), fmt % args)
+        msg = QUERY_RE.sub("?<query-redacted>", CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), fmt % args))
         panelstate.log(self.server.cfg, f"{self.address_string()} {msg}{self.auth_label}")
 
     def audit(self, status: int, reason: str) -> None:
         ua = CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:80]
-        path = CONTROL_RE.sub("", self.path)[:120]
+        path = CONTROL_RE.sub("", self.path.split("?", 1)[0])[:120]
         panelstate.log(self.server.cfg, f"AUDIT {status} {reason} ip={self.client_address[0]} {self.command} {path} ua=\"{ua}\"")
 
     def peer_is_loopback(self) -> bool:
@@ -106,6 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         """(status, reason): 200 when the request may proceed, 401 or 429 otherwise. Loopback peers are never
         asked for the token (same-uid processes can read everything directly); every other peer always is."""
         srv = self.server
+        self.auth_label = ""              # per request: a keep-alive connection reuses this handler
         if not srv.token_required or self.peer_is_loopback():
             return 200, "loopback"
         ip = self.client_address[0]
@@ -237,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(HTTPStatus.NOT_FOUND, {"error": f"no log labelled {label!r}; panel.logs labels: {sorted((logs or {}).keys())}"}, head)
             return self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, head)
         except Exception as e:  # noqa: BLE001 - never take the server down for one request
-            self.log_message("error on %s: %r", self.path, e)
+            self.log_message("error on %s: %r", path, e)
             return self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(e).__name__}: {e}"[:300]}, head)
 
     def serve_static(self, rel: str, head: bool) -> None:
@@ -279,19 +281,26 @@ class PanelServer(ThreadingHTTPServer):
                 self.failures = {k: v for k, v in self.failures.items() if v and time.time() - v[-1] < RATE_WINDOW_S}
 
 
-def make_server(cfg, port: int | None = None, bind: str | None = None, allowed_hosts=None) -> PanelServer:
+def bind_address(bind: str) -> str:
+    """loopback -> 127.0.0.1; intranet -> every interface."""
+    if bind == "intranet":
+        return "0.0.0.0"
+    if bind == "loopback":
+        return "127.0.0.1"
+    readonly.fail(f"panel.bind: {bind!r} is not loopback or intranet")
+    return "127.0.0.1"
+
+
+def make_server(cfg, port: int | None = None, bind: str | None = None, allowed_hosts=None, address: str | None = None) -> PanelServer:
     """loopback -> 127.0.0.1, no token; intranet -> 0.0.0.0, token required on every non-loopback request (the
-    token must already be set: the process side prints it on a real TTY)."""
+    token must already be set: the process side prints it on a real TTY). `address` narrows the bind for tests,
+    which must never expose even a test token on the LAN; production never passes it."""
     bind = bind or cfg.panel.get("bind", "loopback")
     port = cfg.panel["port"] if port is None else port
-    if bind == "intranet":
-        if not panelstate.token_configured(cfg):
-            readonly.fail("panel.bind: intranet needs the browser token first: run `zouinify panel token rotate` in your own "
-                          "terminal (never inside a Claude session), then start the panel")
-        return PanelServer(("0.0.0.0", port), Handler, cfg, bind, allowed_hosts, True)
-    if bind != "loopback":
-        readonly.fail(f"panel.bind: {bind!r} is not loopback or intranet")
-    return PanelServer(("127.0.0.1", port), Handler, cfg, bind, allowed_hosts, False)
+    if bind == "intranet" and not panelstate.token_configured(cfg):
+        readonly.fail("panel.bind: intranet needs the browser token first: run `zouinify panel token rotate` in your own "
+                      "terminal (never inside a Claude session), then start the panel")
+    return PanelServer((address or bind_address(bind), port), Handler, cfg, bind, allowed_hosts, bind == "intranet")
 
 
 def run(srv: PanelServer) -> int:

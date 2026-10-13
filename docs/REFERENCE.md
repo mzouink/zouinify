@@ -99,6 +99,12 @@ browser token**, the page and its static files included:
    configured `link_host`, the machine's names or its IPv4 addresses, or a foreign `Origin`: 403 (DNS rebinding). Rotate any
    time with the same command; running servers pick the new hash up without a restart, old tokens stop at once.
 
+Two facts to know before you rely on it. **Loopback is token-free in both modes**, and that means any other *local user* of
+the workstation (or anyone with an ssh -L to it) reaches the panel without a token: the read-only panel shows what every
+same-user process could read anyway, but on a shared machine other accounts can read it too (true since the first panel). And
+**the cookie is not HttpOnly and cookies ignore ports**: any other web server reachable under the same host name can read it
+from a page it serves; keep the LAN name of the panel for the panel. A loopback token or a peer-uid check is a follow-up ticket.
+
 `zouinify panel start` and `zouinify up` refuse to start an intranet panel without a token and point at the command; neither
 ever prints a token. `zouinify panel url` prints the address without it. Writes stay 405 in both modes; tier-2 items never get
 a button. **HTTP on the LAN is clear text**: use it on the lab network only; from anywhere else, `ssh -L 4790:127.0.0.1:4790

@@ -9,7 +9,9 @@ panel.json also keeps the browser token's sha256 hash and a 4-hex token id (T-01
 ask `token_matches()` / `token_id()`; it never sees the hash, and `set_token()` is the process side's (panelctl)."""
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import hmac
 import json
@@ -85,6 +87,20 @@ def log(cfg, text: str) -> None:
         pass
 
 
+@contextlib.contextmanager
+def _locked(cfg):
+    """One writer of panel.json at a time: a token rotation racing a start or a stop must not lose a field."""
+    d = state_dir(cfg)
+    os.makedirs(d, exist_ok=True)
+    fd = os.open(os.path.join(d, ".panel.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _write_json(path: str, obj) -> None:
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
@@ -100,13 +116,14 @@ def _write_json(path: str, obj) -> None:
 
 def write_panel_json(cfg, port: int, pid_: int, started_at: str) -> None:
     """The runtime fields of a running server; the token fields already there are kept."""
-    cur = read_panel_json(cfg) or {}
-    d = {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": cfg.panel.get("bind", "loopback"),
-         "url": url(cfg, port), "started_at": started_at, "version": __version__}
-    for k in TOKEN_FIELDS:
-        if cur.get(k):
-            d[k] = cur[k]
-    _write_json(panel_json_path(cfg), d)
+    with _locked(cfg):
+        cur = read_panel_json(cfg) or {}
+        d = {"port": port, "pid": pid_, "root": cfg.root, "project": cfg.name, "bind": cfg.panel.get("bind", "loopback"),
+             "url": url(cfg, port), "started_at": started_at, "version": __version__}
+        for k in TOKEN_FIELDS:
+            if cur.get(k):
+                d[k] = cur[k]
+        _write_json(panel_json_path(cfg), d)
 
 
 def read_panel_json(cfg):
@@ -120,18 +137,19 @@ def read_panel_json(cfg):
 def remove_panel_json(cfg, pid_: int | None = None) -> None:
     """Drop the runtime fields (pid, port, started_at) of a stopped server; the token hash survives restarts.
     The file itself goes only when it holds no token."""
-    d = read_panel_json(cfg)
-    if d is None:
-        return
-    if pid_ is not None and d.get("pid") != pid_:
-        return
-    keep = {k: d[k] for k in TOKEN_FIELDS if d.get(k)}
     try:
-        if keep:
-            keep.update({"root": cfg.root, "project": cfg.name})
-            _write_json(panel_json_path(cfg), keep)
-        else:
-            os.remove(panel_json_path(cfg))
+        with _locked(cfg):
+            d = read_panel_json(cfg)
+            if d is None:
+                return
+            if pid_ is not None and d.get("pid") != pid_:
+                return
+            keep = {k: d[k] for k in TOKEN_FIELDS if d.get(k)}
+            if keep:
+                keep.update({"root": cfg.root, "project": cfg.name})
+                _write_json(panel_json_path(cfg), keep)
+            else:
+                os.remove(panel_json_path(cfg))
     except OSError:
         pass
 
@@ -145,9 +163,10 @@ def set_token(cfg, token: str) -> str:
     if not isinstance(token, str) or len(token) < 32:
         raise ValueError("a token is at least 32 characters")
     h = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    cur = read_panel_json(cfg) or {}
-    cur.update({"token_hash": h, "token_id": h[-4:], "token_rotated_at": now_iso(), "root": cfg.root, "project": cfg.name})
-    _write_json(panel_json_path(cfg), cur)
+    with _locked(cfg):
+        cur = read_panel_json(cfg) or {}
+        cur.update({"token_hash": h, "token_id": h[-4:], "token_rotated_at": now_iso(), "root": cfg.root, "project": cfg.name})
+        _write_json(panel_json_path(cfg), cur)
     return h[-4:]
 
 

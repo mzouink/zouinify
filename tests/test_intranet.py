@@ -75,7 +75,14 @@ class IntranetServer(World):
         self.env_patch.start()
         self.cfg = cfgmod.load(self.root)
         panelstate.set_token(self.cfg, GOOD)
-        self.srv = panel_server.make_server(self.cfg, port=0, allowed_hosts={self.ip, "lanhost.test"})
+        # bound to 127.0.0.1 on purpose (a test must never expose even a test token on the lab LAN); the peer check is
+        # faked per request so the server treats us as a LAN client when the test says so
+        self.srv = panel_server.make_server(self.cfg, port=0, allowed_hosts={self.ip, "lanhost.test"}, address="127.0.0.1")
+        self.assertEqual(self.srv.server_address[0], "127.0.0.1")
+        self.fake_remote = True
+        test = self
+        self.peer_patch = mock.patch.object(panel_server.Handler, "peer_is_loopback", lambda handler: not test.fake_remote)
+        self.peer_patch.start()
         self.port = self.srv.server_address[1]
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
@@ -84,14 +91,16 @@ class IntranetServer(World):
             self.srv.shutdown()
             self.srv.server_close()
         finally:
+            self.peer_patch.stop()
             self.env_patch.stop()
             super().tearDown()
 
     def req(self, path, host=None, headers=None, via="lan", method="GET"):
-        addr = self.ip if via == "lan" else "127.0.0.1"
+        self.fake_remote = via == "lan"
+        addr = "127.0.0.1"
         conn = http.client.HTTPConnection(addr, self.port, timeout=60)
         conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
-        conn.putheader("Host", host or f"{addr}:{self.port}")
+        conn.putheader("Host", host or (f"lanhost.test:{self.port}" if via == "lan" else f"127.0.0.1:{self.port}"))
         for k, v in (headers or {}).items():
             conn.putheader(k, v)
         conn.endheaders()
@@ -108,7 +117,8 @@ class IntranetServer(World):
 
 class TestIntranetToken(IntranetServer):
     def test_binding_and_health(self):
-        self.assertEqual(self.srv.server_address[0], "0.0.0.0")
+        self.assertEqual(panel_server.bind_address("intranet"), "0.0.0.0")
+        self.assertEqual(panel_server.bind_address("loopback"), "127.0.0.1")
         st, _, body = self.req("/health", headers={"Authorization": "Bearer " + GOOD})
         self.assertEqual(st, 200)
         d = json.loads(body)
@@ -147,9 +157,26 @@ class TestIntranetToken(IntranetServer):
         self.assertEqual(st, 200)
         st, _, _ = self.req("/api/snapshot?t=" + GOOD)
         self.assertEqual(st, 401, "a token in the query string is never accepted (it would land in logs)")
-        self.assertNotIn(GOOD, self.server_log(), "no token in the server log")
+        st, _, _ = self.req("/?t=" + GOOD, headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200)
+        self.assertNotIn(GOOD, self.server_log(), "no token in the server log, not even a mistyped ?t= on an accepted request")
+        self.assertIn("?<query-redacted>", self.server_log())
         self.assertNotIn(OTHER, self.server_log())
         self.assertIn(" token=" + panelstate.token_id(self.cfg), self.server_log(), "accepted requests carry the token id")
+
+    def test_keep_alive_does_not_carry_the_token_label(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        self.fake_remote = True
+        conn.request("GET", "/health", headers={"Host": f"lanhost.test:{self.port}", "Authorization": "Bearer " + GOOD})
+        r = conn.getresponse(); r.read()
+        self.assertEqual(r.status, 200)
+        conn.request("GET", "/health", headers={"Host": f"lanhost.test:{self.port}"})     # same connection, no token
+        r = conn.getresponse(); r.read()
+        self.assertEqual(r.status, 401)
+        conn.close()
+        lines = [l for l in self.server_log().splitlines() if '"GET /health' in l]
+        self.assertTrue(lines[-1].endswith("401 -"), lines[-1])
+        self.assertNotIn("token=", lines[-1], "the 401 on a reused connection carries no token label")
 
     def test_loopback_stays_token_free(self):
         st, _, body = self.req("/api/snapshot", via="loopback")
@@ -166,8 +193,8 @@ class TestIntranetToken(IntranetServer):
         self.assertEqual(st, 429, "after the limit even the right token waits out the window")
         self.assertIn("Retry-After", hdr)
         log = self.server_log()
-        self.assertGreaterEqual(log.count("AUDIT 401 bad-token ip=" + self.ip), panel_server.RATE_LIMIT)
-        self.assertIn("AUDIT 429 rate-limited ip=" + self.ip, log)
+        self.assertGreaterEqual(log.count("AUDIT 401 bad-token ip=127.0.0.1"), panel_server.RATE_LIMIT)
+        self.assertIn("AUDIT 429 rate-limited ip=127.0.0.1", log)
         self.assertNotIn(OTHER, log)
         st, _, _ = self.req("/api/snapshot", via="loopback")
         self.assertEqual(st, 200, "the limit is per address: loopback is unaffected")
@@ -200,7 +227,7 @@ class TestIntranetToken(IntranetServer):
         from zouinify import ZouinifyError
         os.remove(os.path.join(self.root, ".ops", "state", "panel.json"))
         with self.assertRaises(ZouinifyError):
-            panel_server.make_server(self.cfg, port=0, allowed_hosts=set())
+            panel_server.make_server(self.cfg, port=0, allowed_hosts=set(), address="127.0.0.1")
 
 
 class TestTokenRotateCli(World):
@@ -284,7 +311,7 @@ class TestTokenRotateCli(World):
         self.assertEqual(json.load(open(pj_path))["token_hash"], hashlib.sha256(token2.encode()).hexdigest())
         return token2
 
-    def test_start_needs_the_token_then_serves_the_lan(self):
+    def test_start_needs_the_token_and_nothing_prints_it(self):
         r = self.fail("panel", "start", env=self.plain)
         self.assertIn("panel token rotate", r.stderr)
         r = self.z("up", "desk", env=self.plain)                     # autostart on, no token: sessions start, the panel does not
@@ -294,36 +321,23 @@ class TestTokenRotateCli(World):
         self.assertIn("panel token rotate", r.stdout)
         self.assertNotIn("#t=", r.stdout)
         token = self.rotate_twice()
-        r = self.ok("panel", "start", env=self.plain)
-        self.assertIn(f"http://lanhost.test:{self.port}/", r.stdout)
-        self.assertNotIn("#t=", r.stdout)
         r = self.ok("panel", "url", env=self.plain)
         self.assertIn(f"http://lanhost.test:{self.port}/", r.stdout)
+        self.assertIn("token required from the LAN", r.stdout)
         self.assertNotIn(token, r.stdout)
-        ip = lan_ip()
-        if ip:
-            conn = http.client.HTTPConnection(ip, self.port, timeout=30)
-            conn.request("GET", "/api/snapshot")
-            self.assertEqual(conn.getresponse().status, 401)
-            conn.close()
-            conn = http.client.HTTPConnection(ip, self.port, timeout=60)
-            conn.request("GET", "/api/snapshot", headers={"Authorization": "Bearer " + token})
-            self.assertEqual(conn.getresponse().status, 200)
-            conn.close()
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
-        conn.request("GET", "/health")
-        d = json.loads(conn.getresponse().read())
-        conn.close()
-        self.assertEqual(d["bind"], "intranet")
-        r = self.ok("up", "desk", env=self.plain)
-        self.assertIn("running", r.stdout)
+        r = self.ok("up", "desk", "--dry-run", env=self.plain)
+        self.assertIn(f"would start on http://lanhost.test:{self.port}/ (read-only, intranet)", r.stdout)
         self.assertNotIn("#t=", r.stdout)
-        r = self.ok("panel", "stop", env=self.plain)
-        self.assertIn("stopped", r.stdout)
+        # the LAN names the Host check will accept (computed on the process side): the link host, never loopback
+        from zouinify import panelctl
+        with mock.patch.dict(os.environ, self.plain, clear=True):
+            cfg = cfgmod.load(self.root)
+            hosts = panelctl.lan_hosts(cfg)
+        self.assertIn("lanhost.test", hosts)
+        self.assertFalse([h for h in hosts if h.startswith("127.")])
         pj = json.load(open(os.path.join(self.root, ".ops", "state", "panel.json")))
-        self.assertIn("token_hash", pj, "the token survives a stop")
-        self.assertNotIn("pid", pj)
-
+        self.assertIn("token_hash", pj)
+        self.assertNotIn("pid", pj, "no server ran: the detached intranet start is not exercised by the tests (it would listen on the LAN)")
 
 if __name__ == "__main__":
     unittest.main()
