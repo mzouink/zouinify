@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 STATE = os.environ["FAKE_TMUX_STATE"]
 SESSIONS = os.path.join(STATE, "sessions.json")
@@ -213,6 +214,8 @@ def main(argv):
         # default server) or <state>/clients-<socket name>.json (`-S <dir>/<name>`): [{"pid": 7801, "tty": "/dev/pts/1001",
         # "session": "tp-desk"}]; a named socket without a file answers like tmux does when nothing listens there
         planted = os.path.join(STATE, "clients.json" if sock is None else f"clients-{sock}.json")
+        if sock is not None and os.path.exists(os.path.join(STATE, f"hang-{sock}")):
+            time.sleep(60)                                        # a server that accepts and never answers (T-0183 review)
         if not os.path.exists(planted):
             if sock is not None:
                 print(f"no server running on {sock}", file=sys.stderr)

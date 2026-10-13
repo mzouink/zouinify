@@ -19,7 +19,7 @@ from zouinify.tmux import TMUX
 
 HASH_CHUNK = 1 << 20
 HASH_CACHE_MAX = 64
-_HASHES: dict = {}                                   # (st_dev, st_ino, st_size, st_mtime_ns) -> sha256 hex
+_HASHES: dict = {}                                   # (st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns) -> sha256 hex
 
 HOW_NAMED = "named tmux"
 HOW_LINKED = "the tmux binary under another name"
@@ -111,12 +111,12 @@ def real_tmux() -> dict | None:
 
 
 def sha256_of(path, st=None) -> str | None:
-    """sha256 of a file, cached by (dev, ino, size, mtime) so one binary is read once; None when unreadable."""
+    """sha256 of a file, cached by (dev, ino, size, mtime, ctime) so one binary is read once; None when unreadable."""
     try:
         st = st or os.stat(path)
     except OSError:
         return None
-    key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)   # ctime: `touch -r` cannot reset it
     digest = _HASHES.get(key)
     if digest is None:
         h = hashlib.sha256()

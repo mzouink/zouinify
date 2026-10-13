@@ -30,6 +30,11 @@ from zouinify.registry import Registry
 from zouinify.term import procs
 
 ROLE_REFUSED = "the role sessions (desk, manager, debug, chrome_debug) are never reachable from the browser"
+
+
+class NoAnswer(Exception):
+    """A tmux server did not answer in time, so the inspection could not finish (T-0183 review): not a refusal of the
+    target and not a close -- the server answers 503 with nothing sent, the attachment stays, the page retries."""
 CLAUDE_COMMANDS = frozenset({"claude", "node"})     # tmux names Claude's pane `claude`, sometimes `node`
 AGENTS_TTL_S = 2.0                                   # `claude agents --json` costs a second or two; pids do not move in two
 _AGENTS: dict = {}                                   # project root -> {"at", "rows"}
@@ -189,7 +194,11 @@ def inspect(cfg, target: dict, expect_pane: str | None = None) -> tuple:
         pid_c, how = clients[0]
         return False, f"a tmux client runs inside the pane (pid {pid_c}, {how})", None
     inside = procs.descendants(pane_pid, stats)
-    for c in tmux.attached_clients():                                        # the servers' own view of their clients (T-0183)
+    try:
+        attached = tmux.attached_clients()                                   # the servers' own view of their clients (T-0183)
+    except tmux.TmuxError as e:
+        raise NoAnswer(str(e)) from e
+    for c in attached:
         if c["tty"] == p.get("tty") or c["pid"] in inside:
             return False, (f"a tmux client is attached from inside the pane (pid {c['pid']}, to session {c['session']!r} "
                            f"on the {c['socket']} server)"), None

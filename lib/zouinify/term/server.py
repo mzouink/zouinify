@@ -340,7 +340,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/term/targets":
                     rows = []
                     for t in targetsmod.list_targets(srv.cfg):
-                        ok, why = targetsmod.live(srv.cfg, t)
+                        try:
+                            ok, why = targetsmod.live(srv.cfg, t)
+                        except targetsmod.NoAnswer as e:
+                            ok, why = False, f"not checked: {e}"
                         rows.append({"name": t["name"], "tmux": t["tmux"], "ticket": t.get("ticket", ""), "live": ok, "reason": why})
                     srv.touch(uid)
                     return self.send_json(HTTPStatus.OK, {"targets": rows, "note": targetsmod.ROLE_REFUSED}, head)
@@ -424,7 +427,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(name, str) or not name:
             self.audit("refused", reason="open-bad-request", unlock8=uid[:8])
             return self.send_json(HTTPStatus.BAD_REQUEST, {"error": "a JSON body {\"target\": \"<worker session>\"} is required"})
-        target, why = targetsmod.resolve(srv.cfg, name)
+        try:
+            target, why = targetsmod.resolve(srv.cfg, name)
+        except targetsmod.NoAnswer as e:
+            return self.unavailable(e, uid, target=name[:120])
         if target is None:
             self.audit("refused", reason=f"target: {why}", target=name[:120], unlock8=uid[:8])
             return self.send_json(HTTPStatus.NOT_FOUND, {"error": "target not offered", "reason": why})
@@ -435,8 +441,22 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(HTTPStatus.OK, {"tid": tid, "tid8": tid[:8], "target": target["name"], "tmux": target["tmux"], "pane": target["pane_id"],
                                               "ticket": target.get("ticket", ""), "closes_in_s": srv.closes_in(tid)})
 
+    def unavailable(self, e, uid: str, tid: str | None = None, head: bool = False, drain: bool = False, **fields):
+        """503 + Retry-After: a tmux server did not answer in time (T-0183 review). Not a refusal of the target and not a
+        close: nothing was sent, the attachment stays, the page retries."""
+        srv: TermServer = self.server
+        if drain:
+            self.drain()
+        if tid:
+            fields["tid8"] = tid[:8]
+        srv.touch(uid)                          # like a screen poll: the unlock stays alive, the attachment's idle clock does not move
+        self.audit("refused", reason=f"no answer: {e}"[:200], unlock8=uid[:8], **fields)
+        return self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": f"tmux did not answer in time; nothing was sent, try again: {e}"[:300]},
+                              head, extra={"Retry-After": "2"})
+
     def attached(self, uid: str, tid: str):
-        """(attachment, None) or (None, reason) -- the target is re-inspected every time, against the %pane_id seen at open."""
+        """(attachment, None) or (None, reason) -- the target is re-inspected every time, against the %pane_id seen at open;
+        raises targets.NoAnswer when a tmux server did not answer in time."""
         srv: TermServer = self.server
         a = srv.attachment(tid, uid)
         if not a:
@@ -450,7 +470,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def screen(self, uid: str, tid: str, head: bool) -> None:
         srv: TermServer = self.server
-        a, err = self.attached(uid, tid)
+        try:
+            a, err = self.attached(uid, tid)
+        except targetsmod.NoAnswer as e:
+            return self.unavailable(e, uid, tid, head=head)
         if err:
             return self.send_json(HTTPStatus.GONE, {"error": err}, head)
         text = redact(tmux.capture_pane_id(a["target"]["pane_id"]))
@@ -460,7 +483,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def keys(self, uid: str, tid: str) -> None:
         srv: TermServer = self.server
-        a, err = self.attached(uid, tid)
+        try:
+            a, err = self.attached(uid, tid)
+        except targetsmod.NoAnswer as e:
+            return self.unavailable(e, uid, tid, drain=True)
         if err:
             self.drain()
             self.audit("refused", reason=err, tid8=tid[:8], unlock8=uid[:8])
@@ -477,7 +503,15 @@ class Handler(BaseHTTPRequestHandler):
         n = 0
         for i, op in enumerate(ops):
             if i:                                              # the first op was inspected by attached() a moment ago (M4)
-                a, err = self.attached(uid, tid)
+                try:
+                    a, err = self.attached(uid, tid)
+                except targetsmod.NoAnswer as e:
+                    self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
+                               text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops), partial=True,
+                               reason=f"no answer: {e}"[:200])
+                    return self.send_json(HTTPStatus.SERVICE_UNAVAILABLE,
+                                          {"error": f"tmux did not answer in time after {n} of {len(ops)} ops; the rest was not sent, try again: {e}"[:300],
+                                           "sent": n}, extra={"Retry-After": "2"})
                 if err:
                     self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
                                text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops), partial=True, reason=err[:200])

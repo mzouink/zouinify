@@ -136,16 +136,25 @@ def send_keys(pane_id: str, ops: list) -> int:
 
 
 CLIENT_FIELDS = ("client_pid", "client_tty", "session_name")
-SOCKETS_MAX = 16
+SOCKETS_MAX = 8
+LIST_CLIENTS_TIMEOUT_S = 2.0        # per server; a socket that accepts and never answers must not stall the page (T-0183 review)
+CLIENTS_BUDGET_S = 3.0              # for the whole walk over the servers
 
 
-def list_clients(socket_path: str | None = None) -> list:
+def list_clients(socket_path: str | None = None, timeout: float | None = None) -> list:
     """Every client attached to a tmux server, as that server itself sees them (`list-clients`): [{pid, tty, session}];
-    [] when no server answers. Without socket_path: the server zouinify addresses everywhere else; with it: the server
-    on that unix socket (`-S`). The terminal page (T-0183) refuses a pane from inside which a client is attached,
-    whatever that client's binary is called: the server's view depends neither on argv[0] nor on an executable's name."""
+    [] when no server listens there. Without socket_path: the server zouinify addresses everywhere else; with it: the
+    server on that unix socket (`-S`). A server that does not answer within `timeout` (LIST_CLIENTS_TIMEOUT_S) raises
+    TmuxError: the caller fails the request closed instead of waiting. The terminal page (T-0183) refuses a pane from
+    inside which a client is attached, whatever that client's binary is called: the server's view depends neither on
+    argv[0] nor on an executable's name."""
+    t = LIST_CLIENTS_TIMEOUT_S if timeout is None else timeout
     pre = ["-S", socket_path] if socket_path else []
-    r = _run([*pre, "list-clients", "-F", "\t".join("#{%s}" % f for f in CLIENT_FIELDS)])
+    try:
+        r = _run([*pre, "list-clients", "-F", "\t".join("#{%s}" % f for f in CLIENT_FIELDS)], timeout=t)
+    except TmuxError as e:
+        where = os.path.basename(socket_path) if socket_path else "the default socket"
+        raise TmuxError(f"the tmux server on {where} did not answer within {t:g} s ({e})") from e
     if r.returncode != 0:
         return []
     rows = []
@@ -181,13 +190,20 @@ def server_sockets() -> list:
     return out[:SOCKETS_MAX]
 
 
-def attached_clients() -> list:
+def attached_clients(budget_s: float | None = None) -> list:
     """`list_clients` of the default server and of every server in `server_sockets()`, one row per client (deduplicated
-    by pid and tty), each with the name of the socket it is attached through."""
+    by pid and tty), each with the name of the socket it is attached through. Bounded: each server gets at most
+    LIST_CLIENTS_TIMEOUT_S and the whole walk at most CLIENTS_BUDGET_S (`budget_s`); past either, TmuxError -- the
+    terminal page then answers 503 with nothing sent rather than wait on a hung or planted socket."""
+    budget = CLIENTS_BUDGET_S if budget_s is None else budget_s
+    deadline = time.monotonic() + budget
     seen: set = set()
     rows = []
     for sock in [None, *server_sockets()]:
-        for c in list_clients(sock):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TmuxError(f"the tmux servers did not all answer within {budget:g} s")
+        for c in list_clients(sock, timeout=min(LIST_CLIENTS_TIMEOUT_S, remaining)):
             key = (c["pid"], c["tty"])
             if key in seen:
                 continue

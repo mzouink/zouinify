@@ -483,6 +483,11 @@ class TestTermApi(TermWorld):
                 self.assertEqual(procs.exe_is_tmux(7794), procs.HOW_NAMED)
             found = procs.real_tmux()
             self.assertEqual(found["path"], os.path.realpath(shutil.which("tmux")), "the identity is the tmux zouinify runs")
+            h1, st0 = procs.sha256_of(real), os.stat(real)
+            with open(real, "wb") as fh:
+                fh.write(os.urandom(4096))                        # same size; mtime put back: only ctime moves
+            os.utime(real, ns=(st0.st_atime_ns, st0.st_mtime_ns))
+            self.assertNotEqual(procs.sha256_of(real), h1, "the hash cache must miss on a rewritten file with its mtime restored")
         finally:
             for pid in (7791, 7792, 7793, 7794, 7795):
                 self.proc_remove(pid)
@@ -540,6 +545,49 @@ class TestTermApi(TermWorld):
         self.plant_clients(None, sock="other")
         st, _, r = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
         self.assertEqual(st, 200, r)
+
+    def test_a_hung_tmux_server_does_not_stall_the_page(self):
+        """T-0183 review: a planted socket in tmux-<uid>/ that accepts and never answers must not hold every inspection
+        for the 20 s tmux default (times 16 sockets): the request fails closed within the short list-clients timeout with
+        503 + Retry-After and nothing sent, the attachment stays, and the listing still answers."""
+        import socket as socketmod
+        from zouinify import tmux as tmuxmod
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        tid = d["tid"]
+        dd = os.path.join(self.tmuxdir, f"tmux-{os.getuid()}")
+        os.makedirs(dd)
+        s = socketmod.socket(socketmod.AF_UNIX)
+        s.bind(os.path.join(dd, "hung"))
+        self.addCleanup(s.close)
+        marker = os.path.join(self.state, "hang-hung")
+        open(marker, "w").close()
+        # the world's 2 s attachment idle would expire during the checks below; a 503 is not a keystroke, so widen it here
+        with mock.patch.object(tmuxmod, "LIST_CLIENTS_TIMEOUT_S", 0.5), mock.patch.object(tmuxmod, "CLIENTS_BUDGET_S", 1.0), \
+                mock.patch.dict(self.srv.times, {"idle_close_s": 30, "unlock_idle_s": 30}):
+            t0 = time.monotonic()
+            st, hdr, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+            self.assertEqual(st, 503, k)
+            self.assertLess(time.monotonic() - t0, 5.0, "the hung server bounded by the short timeout")
+            self.assertIn("did not answer", k["error"])
+            self.assertEqual(hdr.get("Retry-After"), "2")
+            self.assertEqual(self.sent(), [], "nothing typed while a server does not answer")
+            st, _, sc = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+            self.assertEqual(st, 503, sc)
+            st, _, o = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+            self.assertEqual(st, 503, o)
+            st, _, l = self.req("GET", "/term/targets", cookie=cookie)
+            self.assertEqual(st, 200, l)
+            row = next(r for r in l["targets"] if r["name"] == "t0001-first-ready-ticket")
+            self.assertFalse(row["live"])
+            self.assertIn("did not answer", row["reason"])
+            os.remove(marker)
+            st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+            self.assertEqual(st, 200, k)
+            self.assertEqual(len(self.sent()), 2, "the attachment survived the unanswered inspection")
+        self.assertTrue(any(a["event"] == "refused" and "no answer" in a.get("reason", "") for a in self.audit()))
+        self.assertFalse(any(a["event"] == "close" for a in self.audit()), "a server that does not answer closes nothing")
 
     def test_a_respawned_pane_keeps_its_id_but_is_refused(self):
         """Review L5: respawn-pane keeps the %id and changes the pane pid; the agent no longer descends from it."""

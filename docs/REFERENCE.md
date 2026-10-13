@@ -223,7 +223,9 @@ desk's tmux window.
   themselves list (`list-clients` on the default server and on every server in tmux's socket directory,
   `$TMUX_TMPDIR`/`/tmp` + `tmux-<uid>/`) attached from the pane's tty or from under its shell, whatever that client's
   binary is called, and the tty's foreground process group the worker agent's own; a split, a respawned or swapped pane
-  and a nested client all close the attachment with nothing sent.
+  and a nested client all close the attachment with nothing sent. A tmux server that does not answer within 2 s (3 s for
+  all of them: a hung or a planted socket) fails the request closed with 503 and nothing sent; the attachment stays and
+  the page retries.
   Keys are an allowlist: printable text and Enter, Esc, arrows, Tab, Backspace, Home, End, PageUp, PageDown, Space, Ctrl-C,
   Ctrl-U; never Ctrl-D; at most 8 ops per batch.
 - **The residual, stated plainly.** Every Claude session on the workstation runs as your user. A worker can already run

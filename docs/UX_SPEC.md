@@ -228,6 +228,8 @@ human's user and can reach loopback ports; a `--chrome` session can drive the hu
   attached from the pane's tty or from under its shell, the tty's foreground process group is the agent's own, and the
   agent's pid descends from the pane's. Same-uid residual accepted for v1 (a worker can already `send-keys` or read
   /dev/pts on its own; a client of a `-S /elsewhere` server running a modified binary is not seen): stated in REFERENCE.md.
+  A tmux server that does not answer within 2 s (3 s for the walk over all sockets) fails the request closed: 503 +
+  `Retry-After`, nothing sent, the attachment kept, the listing row marked "not checked".
   The configured role sessions (desk, manager, debug, chrome_debug) are refused by name AND by tmux window whatever the
   registry says, enforced in code (`zouinify.term.targets`) and pinned by a test; so is a shell pane (no human-only command
   can be typed through it), a session of another project, an arbitrary tmux target, a name in `terminal.exclude`, and
