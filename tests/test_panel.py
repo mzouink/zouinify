@@ -622,6 +622,7 @@ class TestRedact(unittest.TestCase):
                          "a space-separated -p is a password for tools whose -p means one, a directory for mkdir")
         self.assertEqual(r("psql -p 5432 -h db"), "psql -p 5432 -h db", "an all-digit -p value is a port, not a password")
         self.assertEqual(r("mysql -P3306 -p5432 -pS3cret"), "mysql -P3306 -p5432 -p<redacted>", "a glued all-digit value is a port too")
+        self.assertEqual(r("docker run -e PW=hunter2 -e PIN=1234 img"), "docker run -e PW=<redacted> -e PIN=<redacted> img", "T-0179: PW and PIN env values")
         self.assertEqual(r("pass=x pwd=y PASS=z tests pass: 3 credentials: abc"), "pass=<redacted> pwd=<redacted> PASS=<redacted> tests pass: 3 credentials: <redacted>")
 
 
@@ -642,7 +643,8 @@ class TestForeignDialog(unittest.TestCase):
         self.assertTrue(text.startswith("T-0140 is live. Want me to fix deploy.sh and push the file now?\n❯ 1. Yes, fix and push now\n"), text)
         self.assertNotIn("Chat about this", text, "lines after a separator are not part of the option block")
         for ok in ("edit deploy.sh and config.py?", "on 2026-10-13 at 09:30:15?", "close T-0140 and t0119?", "a misconfiguration internationalization?",
-                   "serve on port -p5432?", "Bash(git push origin dev)"):
+                   "serve on port -p5432?", "Bash(git push origin dev)", "Bash(git commit -a -m fix)", "Bash(sort -u names)",
+                   "pin the version and send a pw later?"):
             self.assertEqual(panel_sources.foreign_dialog(ok + "\n > 1. Yes\n")[1], "", ok)
 
     def test_every_probe_is_withheld(self):
@@ -694,6 +696,15 @@ class TestForeignDialog(unittest.TestCase):
             ("ping 10.1.2.3?\n > 1. Yes\n", "network address", "an IPv4 address"),
             ("ping fe80::1?\n > 1. Yes\n", "network address", "an IPv6 address"),
             ("ping ::1?\n > 1. Yes\n", "network address", "the IPv6 loopback"),
+            # T-0179: the remaining short-password forms
+            ("Bash(ssh-keygen -N hunter2 -f k)\n > 1. Yes\n", "credential, login or flag word", "ssh-keygen -N"),
+            ("Bash(redis-cli -a hunter2 ping)\n > 1. Yes\n", "credential, login or flag word", "redis-cli -a"),
+            ("Bash(lftp -u bob,hunter2 host)\n > 1. Yes\n", "credential, login or flag word", "lftp -u user,pass"),
+            ("Bash(smbclient -U bob%hunter2 share)\n > 1. Yes\n", "credential, login or flag word", "smbclient -U user%pass"),
+            ("Bash(curl -u bob:hunter2 h)\n > 1. Yes\n", "credential, login or flag word", "curl -u user:pass"),
+            ("PIN 1234\n > 1. Yes\n", "credential, login or flag word", "PIN"),
+            ("Bash(docker run -e PW=hunter2 img)\n > 1. Yes\n", "credential, login or flag word", "-e PW="),
+            ("Bash(sudo --stdin apt update)\n > 1. Yes\n", "credential, login or flag word", "sudo --stdin"),
         ]
         for screen, reason, label in probes:
             text, why = fd(screen)

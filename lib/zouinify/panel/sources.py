@@ -291,8 +291,13 @@ HOSTY_RE = re.compile(rf"(?i)(?<![\w.-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?!{FILE_EX
 COOKIE_WORD_RE = re.compile(r"(?i)\bcookies?\b|\bset-cookie\b")
 # the keyword DENYLIST of the final review: any credential word, login/auth word, `sudo -S`, or a -p/-P/-k/-W/-b flag not
 # followed by a digit withholds the line (`docker login -u bob -p hunter2`, `gpg --passphrase x`, `password is hunter2`,
-# `token swordfish`, `zip -P`, `openssl enc -k`, `htpasswd -b`); unbounded on purpose ("passed" too: withholding costs little)
-DENY_WORD_RE = re.compile(r"(?i)pass|pwd|secret|token|credential|auth|login|\bkey\b|sudo\s+-S\b|(?<!\S)-[pPkWb](?![0-9])")
+# `token swordfish`, `zip -P`, `openssl enc -k`, `htpasswd -b`); unbounded on purpose ("passed" too: withholding costs little).
+# T-0179 adds `--stdin` (sudo), `-N` (ssh-keygen), a -u/-U value holding `,` `%` or `:` (lftp -u a,b, smbclient -U a%b,
+# curl -u a:b), and redis-cli's -a; `sort -u`, a VCS commit's `-a`, `ls -a` stay clean (the panel guard forbids naming that VCS verb here)
+DENY_WORD_RE = re.compile(r"(?i)pass|pwd|secret|token|credential|auth|login|\bkey\b|sudo\s+-S\b|(?<!\S)-[pPkWb](?![0-9])"
+                          r"|--stdin\b|(?<!\S)-N\b|(?<!\S)-[uU]\s*\S*[,%:]|redis-cli\b[^\n]*\s-a\s")
+# case-sensitive: `PIN 1234`, `-e PW=x` (the words "pin" and "pw" in prose stay); T-0179
+DENY_UPPER_RE = re.compile(r"\bPIN\b|\bPW\b")
 IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 IPV6_RE = re.compile(r"(?i)(?<![0-9a-f:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f])::[0-9a-f]{1,4}\b")
 FOREIGN_LINE_MAX = 400            # a line longer than this is withheld; a clean line is shown to FOREIGN_LINE_SHOWN
@@ -332,7 +337,7 @@ def line_ok(t: str) -> str:
         return "a host name"
     if COOKIE_WORD_RE.search(t):
         return "cookie text"
-    if DENY_WORD_RE.search(t):
+    if DENY_WORD_RE.search(t) or DENY_UPPER_RE.search(t):
         return "a credential, login or flag word"
     if IPV4_RE.search(t) or any(re.search(r"(?i)[a-f]|::", m.group(0)) for m in IPV6_RE.finditer(t)):
         return "a network address"

@@ -32,7 +32,7 @@ COOKIE_ATTRS = {"path", "domain", "expires", "max-age", "samesite", "priority"}
 # file extensions a dotted name may end in without being a host name (the foreign-dialog allowlist in sources uses it)
 FILE_EXT = r"(?:js|mjs|cjs|py|md|txt|json|ya?ml|html?|css|sh|log|csv|pem|tf|tfvars|tsx?|jsx|lock|toml|ini|cfg|conf|xml|svg|png|jpe?g|gif|pdf|zip|tar|gz|whl|egg|so|example|tmpl|bak|orig)"
 # `PGPASSWORD=hunter2`, `PASSCODE abc`, `MY_API_TOKEN: x` (an env-style name in capitals, then its value)
-ENV_RE = re.compile(rf"\b([A-Z0-9_]*(?:PASSCODE|PASSWORD|PASSWD|TOKEN|SECRET|APIKEY|API_KEY)[A-Z0-9_]*)(\s*[=:]\s*|\s+)({VALUE})")
+ENV_RE = re.compile(rf"\b([A-Z0-9_]*(?:PASSCODE|PASSWORD|PASSWD|TOKEN|SECRET|APIKEY|API_KEY|PIN|PW)[A-Z0-9_]*)(\s*[=:]\s*|\s+)({VALUE})")
 # https://user:pw@host, postgres://user:pw@host, ...
 URL_CRED_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s]+)@")
 # curl -u user:pw, --user user:pw, --user=user:pw
