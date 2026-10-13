@@ -293,6 +293,32 @@ class TestApi(PanelWorld):
         self.assertEqual(s["header"]["desk"]["name"], "tp-desk")
 
 
+class TestLoading(PanelWorld):
+    def test_requests_never_block_while_the_refresher_warms_up(self):
+        snap = self.srv.snap
+        self.assertEqual(snap.loading(), sorted(snap.src.keys(), key=list(snap.src.keys()).index), "nothing loaded yet")
+        slow = threading.Thread(target=time.sleep, args=(3,), daemon=True)
+        slow.start()
+        snap.thread = slow                                  # a refresher is "running": a cold source must not block
+        t0 = time.time()
+        self.assertEqual(snap.get("inbox"), (None, None, None))
+        self.assertLess(time.time() - t0, 0.5)
+        s = self.get_json("/api/snapshot")
+        self.assertIn("inbox", s["loading"])
+        self.assertEqual(s["inbox"]["items"], [])
+        self.assertTrue(s["sources"]["inbox"]["loading"])
+        snap.thread = None                                  # no refresher: the request loads it synchronously
+        data, age, err = snap.get("inbox")
+        self.assertEqual(len(data["items"]), 3)
+        self.assertIsNone(err)
+        snap.start_refresher()                              # the real refresher warms every source
+        deadline = time.time() + 30
+        while time.time() < deadline and snap.loading():
+            time.sleep(0.2)
+        self.assertEqual(snap.loading(), [])
+        snap.stop()
+
+
 class TestRedact(unittest.TestCase):
     def setUp(self):
         if PANEL_IMPORT_ERROR:

@@ -368,14 +368,27 @@ class Snapshot:
         finally:
             s["lock"].release()
 
+    def refresher_alive(self) -> bool:
+        return bool(self.thread is not None and self.thread.is_alive())
+
     def get(self, name: str, fresh: bool = False):
+        """(data, age_s, error). With the refresher running, a request never blocks: a source that is not
+        loaded yet comes back as (None, None, None) and `build()` lists it under `loading`; without a
+        refresher (tests, one-shot use) the source is loaded synchronously."""
         s = self.src[name]
-        if fresh or not s["loaded"] or time.time() - s["at"] > 3 * s["ttl"]:
+        if fresh:
             self.refresh(name)
-            if not s["loaded"]:
-                with s["lock"]:
-                    pass
+        elif not s["loaded"] or time.time() - s["at"] > 3 * s["ttl"]:
+            if self.refresher_alive() and not s["loaded"]:
+                return None, None, None
+            self.refresh(name)
+        if not s["loaded"]:
+            with s["lock"]:  # another thread is loading it right now: wait for it
+                pass
         return s["data"], (round(time.time() - s["at"], 1) if s["loaded"] else None), s["error"]
+
+    def loading(self) -> list:
+        return [n for n, s in self.src.items() if not s["loaded"]]
 
     def tick(self) -> None:
         for name, s in self.src.items():
@@ -383,7 +396,17 @@ class Snapshot:
                 self.refresh(name)
 
     def start_refresher(self) -> None:
+        """Warm every source once in the background (the cheap ones first), then keep them fresh."""
+        order = ["freeze", "trunk", "creds", "releases", "logs", "sessions", "board", "inbox"]
+
         def loop():
+            for name in order + [n for n in self.src if n not in order]:
+                if self.stop_event.is_set():
+                    return
+                try:
+                    self.refresh(name)
+                except Exception:  # noqa: BLE001
+                    pass
             while not self.stop_event.wait(2.0):
                 try:
                     self.tick()
@@ -398,7 +421,8 @@ class Snapshot:
     # -- views ----------------------------------------------------------------------------------------
     def sources_meta(self) -> dict:
         return {n: {"age_s": (round(time.time() - s["at"], 1) if s["loaded"] else None), "ttl_s": s["ttl"], "error": s["error"],
-                    "stale": bool(s["loaded"] and time.time() - s["at"] > 3 * s["ttl"])} for n, s in self.src.items()}
+                    "loading": not s["loaded"], "stale": bool(s["loaded"] and time.time() - s["at"] > 3 * s["ttl"])}
+                for n, s in self.src.items()}
 
     def build(self, fresh: bool = False) -> dict:
         cfg = self.cfg
@@ -430,7 +454,7 @@ class Snapshot:
         desk_row = next((r for r in rows if r["role"] == "desk"), None)
         counts = board["counts"]
         return {
-            "generated": panelstate.now_iso(), "version": panelstate.version(),
+            "generated": panelstate.now_iso(), "version": panelstate.version(), "loading": self.loading(),
             "project": {"name": cfg.name, "short": cfg.short, "root": cfg.root, "trunk": cfg.trunk, "prod": cfg.prod, "trunk_sha": trunk or ""},
             "panel": {"port": self.port, "bind": self.bind, "refresh_s": cfg.panel.get("refresh_s", 30), "started_at": self.started_at,
                       "version": panelstate.version(), "write_path": False,
