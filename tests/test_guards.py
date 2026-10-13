@@ -5,6 +5,7 @@ Hermetic: the public-guard tests never read ~/.config; they pass an explicit pat
 The repo under test is $ZOUINIFY_REPO_UNDER_TEST (default: this checkout), so a base checkout without
 the scripts gives the RED evidence."""
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -78,19 +79,20 @@ class TestPanelGuard(unittest.TestCase):
         r = subprocess.run([PANEL_GUARD], cwd=REPO, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_every_offending_variant_fails(self):
+    def check_offending(self, fname, bad):
         tmp = tempfile.mkdtemp()
         try:
-            for fname, bad in OFFENDING:
-                for f in os.listdir(tmp):
-                    os.remove(os.path.join(tmp, f))
-                with open(os.path.join(tmp, fname), "w") as fh:
-                    fh.write(f"# panel\n{bad}\n")
-                r = self.run_guard(tmp)
-                self.assertNotEqual(r.returncode, 0, f"should fail on: {bad}")
-                self.assertIn("FAIL", r.stdout, bad)
+            with open(os.path.join(tmp, fname), "w") as fh:
+                fh.write(f"# panel\n{bad}\n")
+            r = self.run_guard(tmp)
+            self.assertNotEqual(r.returncode, 0, f"should fail on: {bad}")
+            self.assertIn("FAIL", r.stdout, bad)
         finally:
             shutil.rmtree(tmp)
+
+    def test_one_visible_case_per_offending_variant(self):
+        """T-0164: every planted variant is its own test method, so a dropped variant shows in the pytest count."""
+        self.assertEqual(len([m for m in dir(type(self)) if m.startswith("test_offending_")]), len(OFFENDING))
 
     def test_allowed_read_only_code_passes(self):
         tmp = tempfile.mkdtemp()
@@ -175,8 +177,7 @@ class TestPublicGuard(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
-if __name__ == "__main__":
-    unittest.main()
+
 
 
 # every string trick the desk planted against the regex guard; each one must fail the AST allowlist
@@ -187,6 +188,14 @@ AST_OFFENDING = [
     "from zouinify import webauth\nx = webauth.not_in_the_api(1)",                 # T-0174: exactly __all__
     "from zouinify import webauth\nt = webauth.threading.Thread",
     "from zouinify import webauth\nw = webauth._hosts(80, [])",
+    "from zouinify import webauth\nwebauth.host_allowed = len",                    # T-0164: modules are read-only
+    "from zouinify import panelstate\npanelstate.token_matches = lambda c, t: True",
+    "from zouinify import readonly\ndel readonly.capture_pane",
+    "from zouinify import webauth\nwebauth.RATE_LIMIT += 1",
+    "from zouinify import webauth\nwebauth.RateLimiter.weight = len",
+    "import os\nos.path.isfile = lambda p: True",
+    "import re\nre.compile = None",
+    "from http.server import BaseHTTPRequestHandler\nimport json\njson.dumps = str",
     "import os\nos.system('tmux kill-server')",
     "import sys\nsys.modules['o' + 's'].system('x')",
     "import os\nf = getattr(os, 'sys' + 'tem')",
@@ -296,6 +305,8 @@ AST_OFFENDING_WITH_SIBLINGS = [
     "from .sources import panelstate as p\np.tempfile.mkstemp()",
     "from . import sources\nx = sources",
     "import zouinify.panel.sources\nzouinify.panel.sources.readonly.fail('x')",
+    "from . import redact\nredact.redact = str",                                      # T-0164: a sibling is read-only too
+    "from .sources import readonly as r\nr.capture_pane = lambda n: ''",
 ]
 AST_ALLOWED_WITH_SIBLINGS = """from . import sources
 from .sources import Snapshot, classify_item, item_id
@@ -339,6 +350,24 @@ def rows(cfg):
 """
 
 
+def _slug(text: str, n: int = 48) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:n]
+
+
+def _variant_tests(cls, prefix: str, variants, check: str) -> None:
+    """One test method per planted variant (T-0164): `pytest -q` counts them, a dropped variant changes the number."""
+    for i, v in enumerate(variants):
+        label = v[1] if isinstance(v, tuple) else v
+        args = v if isinstance(v, tuple) else (v,)
+
+        def test(self, _args=args):
+            getattr(self, check)(*_args)
+        test.__doc__ = f"planted: {label!r}"
+        name = f"test_{prefix}_{i:02d}_{_slug(label)}"
+        assert not hasattr(cls, name), name
+        setattr(cls, name, test)
+
+
 class TestPanelAst(unittest.TestCase):
     def setUp(self):
         self.assertTrue(os.access(PANEL_AST, os.X_OK), f"no executable AST gate at {PANEL_AST}")
@@ -367,17 +396,24 @@ class TestPanelAst(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
-    def test_sibling_alias_variants_fail_and_sibling_use_passes(self):
+    def check_sibling_variant(self, bad):
         tmp = tempfile.mkdtemp()
         try:
             dst = os.path.join(tmp, "panel")
             shutil.copytree(os.path.join(REPO, "lib", "zouinify", "panel"), dst)
-            for bad in AST_OFFENDING_WITH_SIBLINGS:
-                with open(os.path.join(dst, "clicks.py"), "w") as fh:
-                    fh.write(bad + "\n")
-                r = self.run_ast(dst)
-                self.assertNotEqual(r.returncode, 0, f"should fail on: {bad!r}\n{r.stdout}")
-                self.assertIn("clicks.py", r.stdout, bad)
+            with open(os.path.join(dst, "clicks.py"), "w") as fh:
+                fh.write(bad + "\n")
+            r = self.run_ast(dst)
+            self.assertNotEqual(r.returncode, 0, f"should fail on: {bad!r}\n{r.stdout}")
+            self.assertIn("clicks.py", r.stdout, bad)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_sibling_use_passes(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            dst = os.path.join(tmp, "panel")
+            shutil.copytree(os.path.join(REPO, "lib", "zouinify", "panel"), dst)
             with open(os.path.join(dst, "clicks.py"), "w") as fh:
                 fh.write(AST_ALLOWED_WITH_SIBLINGS)
             r = self.run_ast(dst)
@@ -385,15 +421,36 @@ class TestPanelAst(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
-    def test_every_variant_fails(self):
+    def check_variant(self, bad):
         tmp = tempfile.mkdtemp()
         try:
-            for bad in AST_OFFENDING:
-                with open(os.path.join(tmp, "server.py"), "w") as fh:
-                    fh.write(bad + "\n")
-                r = self.run_ast(tmp)
-                self.assertNotEqual(r.returncode, 0, f"should fail on: {bad!r}\n{r.stdout}")
-                self.assertIn("FAIL", r.stdout, bad)
+            with open(os.path.join(tmp, "server.py"), "w") as fh:
+                fh.write(bad + "\n")
+            r = self.run_ast(tmp)
+            self.assertNotEqual(r.returncode, 0, f"should fail on: {bad!r}\n{r.stdout}")
+            self.assertIn("FAIL", r.stdout, bad)
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_one_visible_case_per_variant(self):
+        """T-0164: every planted variant is its own test method, so a dropped variant shows in the pytest count."""
+        names = dir(type(self))
+        self.assertEqual(len([m for m in names if m.startswith("test_ast_offending_")]), len(AST_OFFENDING))
+        self.assertEqual(len([m for m in names if m.startswith("test_ast_sibling_")]), len(AST_OFFENDING_WITH_SIBLINGS))
+
+    def test_module_attributes_are_read_only(self):
+        """The T-0174 review's gap: rebinding a checked function through its module passed the gate."""
+        tmp = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmp, "server.py"), "w") as fh:
+                fh.write("from zouinify import webauth\nwebauth.host_allowed = len\n")
+            r = self.run_ast(tmp)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("assignment to zouinify.webauth.host_allowed", r.stdout)
+            with open(os.path.join(tmp, "server.py"), "w") as fh:
+                fh.write("from zouinify import readonly\ndel readonly.capture_pane\n")
+            r = self.run_ast(tmp)
+            self.assertIn("deletion of zouinify.readonly.capture_pane", r.stdout)
         finally:
             shutil.rmtree(tmp)
 
@@ -416,3 +473,12 @@ class TestPanelAst(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)
         finally:
             shutil.rmtree(tmp)
+
+
+_variant_tests(TestPanelGuard, "offending", OFFENDING, "check_offending")
+_variant_tests(TestPanelAst, "ast_offending", AST_OFFENDING, "check_variant")
+_variant_tests(TestPanelAst, "ast_sibling", AST_OFFENDING_WITH_SIBLINGS, "check_sibling_variant")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -11,7 +11,9 @@ package is checked structurally. Every Python file under it may only:
   - use, on an allowlisted module, only the attributes on that module's list (so `http.client`, `http.server.shutil`,
     `re.functools`, `panelstate.tempfile`, `os.getpid` are out; `os.path.*` is in); on a sibling module only the
     names it defines, and a module it imported continues the walk under that module's rules;
-  - never use a module as a value (no aliasing, no passing modules around);
+  - never use a module as a value (no aliasing, no passing modules around), and never assign to, delete or
+    augment an attribute reached from a module (`webauth.host_allowed = len`, `del readonly.capture_pane`,
+    `webauth.RATE_LIMIT += 1`): the allowlisted modules are read-only for the panel;
   - never reference getattr/setattr/delattr/__import__/exec/eval/compile/globals/locals/vars/...,
     nor `open` / `print` except as the function of a direct call; never `*args` / `**kwargs` in a call;
   - never open a file for writing (the builtin open() with a non-read or non-literal mode); `.open` on anything is banned;
@@ -190,7 +192,7 @@ class Checker(ast.NodeVisitor):
             return
         for a in node.names:
             if a.name == "zouinify" or a.name.startswith("zouinify."):
-                self.flag(node, f"`import {a.name}`: the panel imports zouinify only as `from zouinify import readonly|panelstate` "
+                self.flag(node, f"`import {a.name}`: the panel imports zouinify only as `from zouinify import readonly|panelstate|webauth` "
                                 "or `from zouinify.panel.<mod> import <name>`")
                 continue
             if not module_allowed(a.name):
@@ -300,6 +302,10 @@ class Checker(ast.NodeVisitor):
             chain.append(root.attr)
             root = root.value
         if isinstance(root, ast.Name) and root.id in self.modules:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                verb = "deletion of" if isinstance(node.ctx, ast.Del) else "assignment to"
+                self.flag(node, f"{verb} {self.modules[root.id]}.{'.'.join(reversed(chain))}: modules are read-only for the panel "
+                                "(no rebinding of a checked function, constant or class)")
             self.walk_chain(node, root.id, chain)
         self.generic_visit(node)
 

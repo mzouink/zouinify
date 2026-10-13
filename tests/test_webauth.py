@@ -95,13 +95,19 @@ class TestRateLimiter(unittest.TestCase):
     def test_custom_weights_and_bounded_memory(self):
         lim = webauth.RateLimiter(budget=10, window_s=60, weights={"cookie": 1.0})
         self.assertEqual(lim.weight("cookie"), 1.0)
-        for i in range(1200):
-            lim.note_failure(f"10.1.{i // 250}.{i % 250}", 1.0)
-        self.assertLessEqual(len(lim._failures), 1200)
-        for _ in range(500):
-            lim.note_failure("10.9.9.9", 1.0)
-        self.assertLessEqual(len(lim._failures["10.9.9.9"]), 100, "per address the list is capped")
-        self.assertTrue(lim.rate_limited("10.9.9.9"))
+        from unittest import mock
+        clock = [1000.0]
+        with mock.patch.object(webauth.time, "time", lambda: clock[0]):
+            for i in range(1200):
+                lim.note_failure(f"10.1.{i // 250}.{i % 250}", 1.0)
+            self.assertEqual(len(lim._failures), 1200, "all fresh: nothing to prune yet")
+            clock[0] += 61                                     # the whole window has passed
+            lim.note_failure("10.9.9.9", 1.0)                  # the 1001st+ address triggers the prune
+            self.assertEqual(set(lim._failures), {"10.9.9.9"}, "stale addresses are dropped once the table is large")
+            for _ in range(500):
+                lim.note_failure("10.9.9.9", 1.0)
+            self.assertLessEqual(len(lim._failures["10.9.9.9"]), 100, "per address the list is capped")
+            self.assertTrue(lim.rate_limited("10.9.9.9"))
 
 
 class TestAuthorize(unittest.TestCase):

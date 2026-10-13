@@ -401,6 +401,13 @@ class TestApi(PanelWorld):
         st, _, _ = self.req("GET", "/api/logs?label=nope")
         self.assertEqual(st, 404)
 
+    def test_head_returns_headers_only(self):
+        st, hdr, body = self.req("HEAD", "/api/snapshot")
+        self.assertEqual((st, body), (200, b""))
+        self.assertGreater(int(hdr["Content-Length"]), 2, "the length of the JSON a GET would send")
+        st, _, body = self.req("HEAD", "/api/tickets/T-9999")
+        self.assertEqual((st, body), (404, b""))
+
     def test_non_utf8_capture_does_not_hide_the_sessions(self):
         with open(os.path.join(self.state, "screen-tp-desk.txt"), "wb") as fh:
             fh.write(b"> caf\xe9 \xff\xfe broken bytes\n   [Fable 5.1] x | dev\n")

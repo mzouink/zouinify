@@ -321,6 +321,24 @@ class TestIntranetToken(IntranetServer):
         self.assertIn(" token=" + tid, self.server_log())
         self.assertEqual(len(rows), 32)
 
+    def test_head_follows_the_same_rules_without_a_body(self):
+        """T-0164: HEAD goes through handle_get(head=True): same Host/token decisions, headers only."""
+        st, hdr, body = self.req("/health", method="HEAD", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual((st, body), (200, b""))
+        _, ghdr, gbody = self.req("/health", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(hdr.get("Content-Length"), str(len(gbody)), "HEAD announces the GET's length")
+        self.assertEqual(hdr.get("Content-Type"), ghdr.get("Content-Type"))
+        st, hdr, body = self.req("/api/snapshot", method="HEAD")
+        self.assertEqual((st, body), (401, b""))
+        self.assertIn("Bearer", hdr.get("WWW-Authenticate", ""))
+        st, hdr, body = self.req("/", method="HEAD")
+        self.assertEqual((st, body), (401, b""))
+        self.assertIn("sha256-", hdr.get("Content-Security-Policy", ""), "the unlock page's headers, no body")
+        st, _, body = self.req("/health", method="HEAD", host="evil.example", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual((st, body), (403, b""))
+        self.assertIn("AUDIT 401 no-token ip=127.0.0.1 HEAD /api/snapshot", self.server_log())
+        self.assertNotIn(GOOD, self.server_log())
+
     def test_keep_alive_does_not_carry_the_token_label(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
         self.fake_remote = True
