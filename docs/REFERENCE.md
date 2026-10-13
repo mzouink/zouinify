@@ -164,14 +164,20 @@ captures; never a launch, a kill, a keystroke, a ticket move or a deploy, becaus
 The panel itself never produces a keystroke: that gate (`check_panel_guard.sh`, `check_panel_ast.py`) stays. The user asked on
 2026-10-13 to answer waiting sessions from the website directly, so a second, separate process, `zouinify term`, will serve a
 **terminal page**: one Claude pane of this project, its screen refreshed every 300 ms (redacted), a text field and a key bar;
-what you type goes to the pane with `tmux send-keys`, like typing after `tmux attach`, without attaching a client. Opening it
-needs a password you set once in your own terminal (`zouinify term set-password`; a PBKDF2 hash in `.ops/state/term.json`,
-never kept by the browser), plus the browser token on `intranet`; it closes after 5 idle minutes and after 30 minutes
-regardless; only panes whose process is `claude` and whose session belongs to this project are offered; keys are an
-allowlist (no `Ctrl-D`); every open and every batch of keys is audited in `.ops/state/term_audit.jsonl`. What it cannot
-prevent: a Claude session that drives your Chrome can type into a terminal tab that you left open and unlocked in that same
-browser profile (use the phone or a profile without the extension for anything sensitive), and on `intranet` the password
-crosses the LAN in clear like the token. Specification: `docs/UX_SPEC.md` 2.5a.
+what you type goes to the pane with `tmux send-keys`, like typing after `tmux attach`, without attaching a client. It has its
+own secret, never the panel's token: `zouinify term secret rotate` in your own terminal shows a six-word passphrase once and
+keeps a PBKDF2 hash in `.ops/state/term.json`; you type it once per browser session and get an `HttpOnly` cookie (10 idle
+minutes, 8 h at most). `terminal.bind` is loopback by default; `intranet` is an explicit flag and serves HTTPS with a
+self-signed certificate (`terminal.tls: auto`; the browser warns once per device) so the passphrase never crosses the LAN in
+clear; with `tls: off` it crosses once per browser session and the cookie on every request. Only sessions named in
+`.ops/config.yaml` (roles) or registered by the launcher (workers) are offered, each checked live to be a `claude` pane of this
+project; keys are an allowlist (no `Ctrl-D`); an open pane closes after 5 idle minutes; every unlock, open and batch of keys
+is audited in `.ops/state/term_audit.jsonl` with an id the page shows (`zouinify term audit` prints the recent lines so the
+desk can cite it); `zouinify term stop` ends the process and every unlock at once. What it cannot prevent: any Claude session
+on this host could already run `tmux send-keys` itself, so this adds LAN and browser exposure, not a new capability for
+sessions; and a Claude session that drives your Chrome can type into a terminal tab you left open and unlocked in that same
+browser profile (use the phone or a profile without the extension for anything sensitive). Specification: `docs/UX_SPEC.md`
+2.5a.
 
 ## Layout
 

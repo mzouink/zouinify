@@ -190,47 +190,65 @@ What the human types goes to that pane with `tmux send-keys`; the screen is `tmu
 the human's own attached terminal is never resized or disturbed. It is the browser equivalent of `ssh` + `tmux attach`: the
 keystrokes are the human's, and every session treats them as such, the desk included.
 
-**Where it lives.** A separate process and package, `lib/zouinify/term/`, started with `zouinify term start|stop|status`, on
+**Where it lives.** A separate process and package, `lib/zouinify/term/`, started with `zouinify term start|stop|status` (plus `secret rotate` and `audit`), on
 `terminal.port` (default `panel.port + 1`) with the panel's bind mode. The guarded panel package (`lib/zouinify/panel/`) keeps
 its gates exactly as merged (no spawn, no tmux, no write); its only change is the `[type]` link, a plain `<a href>` to the
-terminal page. The terminal package gets its own CI allowlist (`scripts/check_term_guard.sh`): it may run `tmux send-keys`,
+terminal page. The request-side checks the two share (Host/Origin, bearer and cookie parsing, the per-address rate limiter) are lifted
+into `lib/zouinify/webauth.py` (Z-12, zouinify-dev) and imported by both; the panel's AST gate allowlists that module and the
+panel's behaviour stays byte-identical. The terminal package gets its own CI allowlist (`scripts/check_term_guard.sh`): it may run `tmux send-keys`,
 `capture-pane`, `list-panes`, `has-session` and nothing else (no `new-session`/`kill-session`, no `ticket.sh`, no
 `aws`/`terraform`/`git`/deploy verbs). No xterm.js, no websocket, no CDN: plain polling of the screen endpoint.
 
-**Who may type (the same-user problem).** Every Claude session on the workstation runs as the human's user and can reach
-loopback ports; a `--chrome` session can drive the human's own browser. Hence:
+**Who may type (the same-user problem; manager conditions 2026-10-13).** Every Claude session on the workstation runs as the
+human's user and can reach loopback ports; a `--chrome` session can drive the human's own browser. Hence:
 
-- **a password at every open**, set once in the human's own terminal with `zouinify term set-password` (refused with
-  `CLAUDECODE` set or without a TTY, like the token), kept as a PBKDF2-HMAC-SHA256 hash (600k rounds, 16-byte salt) in
-  `.ops/state/term.json` (0600); the browser never stores it; wrong passwords are budgeted per address (5 per minute, then 429)
-  and audited;
-- the browser token too when the bind is `intranet` (the panel's `HttpOnly` cookie reaches the terminal port under the same
-  host name); the Host/Origin check of the panel applies;
-- an opened terminal is a server-side session id (32 random bytes) kept in page memory only, bound to one target, closed after
-  `terminal.idle_close_s` (300) without a keystroke and after `terminal.max_open_s` (1800) regardless; the close is a toast and
-  the field goes disabled;
-- targets are only Claude panes of this project: the pane's process must be `claude` (the launcher registry or `claude agents
-  --json`, mapped to panes through `/proc`); a human shell pane, a session of another project or an arbitrary tmux target is
-  refused. `terminal.targets: all | workers` (default `all`: the desk and the role sessions too, the user's decision) and
+- **its own secret, never the panel's token.** `zouinify term secret rotate`, in the human's own terminal (refused with
+  `CLAUDECODE` set or without a TTY, like the token), generates a six-word passphrase (about 77 bits), shows it once, clears the
+  screen after Enter and keeps only a PBKDF2-HMAC-SHA256 hash (600k rounds, 16-byte salt) in `.ops/state/term.json` (0600,
+  under flock, next to the token code in `panelstate.py`). The browser never stores the passphrase: the unlock screen sends it
+  once per browser session to `POST /term/unlock`; the server answers with an `HttpOnly`, `SameSite=Strict` cookie bound to a
+  server-side unlock record (`terminal.unlock_idle_s`, 600, without a keystroke; `terminal.unlock_max_s`, 28800, at most; gone
+  when the process stops). Wrong passphrases are budgeted per address (5 per minute, then 429 and a 15-minute lockout of that
+  address) and audited. The unlock is required from every address, loopback included (other local users exist);
+- **loopback by default; the LAN is an explicit flag.** `terminal.bind: loopback | intranet`, its own key (default `loopback`,
+  independent of `panel.bind`). On `intranet` the passphrase travels once per browser session and the cookie afterwards; with
+  `terminal.tls: auto` (the default) the process serves HTTPS on `intranet` with a self-signed certificate it generates once with
+  `openssl` into `.ops/state/term-cert.pem` + `term-key.pem` (0600), so nothing travels in clear (the browser warns once per
+  device). Without `openssl` the process refuses to bind `intranet` unless `terminal.tls: off`, and REFERENCE.md says plainly
+  what then travels in clear. The panel's Host/Origin check applies through the shared helpers (`lib/zouinify/webauth.py`, Z-12);
+- an open pane is a server-side attachment id (`tid`, 32 random bytes) under the unlock, bound to one target, closed after
+  `terminal.idle_close_s` (300) without a keystroke and after `terminal.max_open_s` (1800) regardless; **`zouinify term stop` is
+  the kill switch**: it ends the process, every unlock and every attachment at once, and the cookie is then worthless;
+- **targets are only this project's sessions as named in `.ops/config.yaml`**: the role sessions' configured names and the
+  workers the launcher registered under the worker pattern; each is checked live before every batch: a tmux session of that
+  name whose pane runs `claude` with its cwd under the project root. Never an arbitrary tmux target, never a shell pane (so no
+  human-only command can be typed through it), never another user's session (tmux servers are per Unix user; none is
+  reachable). `terminal.targets: all | workers` (default `all`: the desk and the role sessions too, the user's decision) and
   `terminal.exclude: [names]`;
 - keys are an allowlist: printable text (at most 2000 characters per batch, no control characters) and the named keys
   `Enter Escape Up Down Left Right Tab BSpace Home End PageUp PageDown Space C-c C-u`; never `C-d`, `C-z`, `C-\`, never a tmux
   prefix, never a raw escape sequence; a batch is an ordered list of `{t: "text"}` and `{k: "Name"}` items;
-- every open, batch of keys and close is one line in `.ops/state/term_audit.jsonl`
-  (`at, event, tid8, target, token_id, ip, user_agent, text, keys`); the page shows "typing goes straight into `<name>`" in red
-  above the field.
+- **every unlock, open, batch of keys, close and refusal is one line** in `.ops/state/term_audit.jsonl`
+  (`at, event, unlock8, tid8, target, ip, user_agent, text, keys, reason`), 0600, never the passphrase. The page shows the
+  attachment id next to the target's name, and `zouinify term audit [--since 10m] [--target <name>]` prints the recent lines
+  (read-only), so the desk's log line for an answer the human typed this way can cite `term <tid8>`. The page shows "typing
+  goes straight into `<name>`" in red above the field.
 
-**Residual risks the human accepts** (stated in REFERENCE.md): a Claude session that drives the human's Chrome can type into a
-terminal tab that is open and unlocked in that same browser profile (open the terminal page from the phone or from a browser
-profile without the Claude extension for anything sensitive; the idle close bounds the window); on `intranet` the password
-crosses the LAN in clear like the token (`ssh -L` from off-LAN); and keystrokes typed here are indistinguishable from the
-human's at the keyboard, which is the point.
+**Residual risks the human accepts** (stated in REFERENCE.md). Any Claude session on this host could already run `tmux
+send-keys` itself (the classifier may or may not stop it), so the terminal page adds LAN and browser exposure, not a new
+capability for sessions. The exposures: a Claude session that drives the human's Chrome can type into a terminal tab that is
+open and unlocked in that same browser profile (open the terminal page from the phone or from a browser profile without the
+Claude extension for anything sensitive; the unlock and attachment idle times bound the window); with `terminal.tls: off` on
+`intranet` the passphrase crosses the LAN in clear once per browser session and the cookie on every request (`ssh -L` from
+off-LAN, or keep `tls: auto`); and keystrokes typed here are indistinguishable from the human's at the keyboard, which is the
+point.
 
 **UI.** A full page on its own origin, opened in a new tab from `[type]` (on the phone it is the whole screen): a header with
 the target's name, role, ticket and state; the screen in mono (`pre`, redacted; the pane has no scrollback, so none is shown);
 the key bar with 44 px targets; the text field (Enter sends the text and Enter, Shift+Enter sends the text only, empty field
 and Enter sends Enter alone); a close button; the red banner. `?text=` pre-fills the field from a tier-2 inbox item
-(**[type it]**); nothing is sent until the human presses Enter. The password prompt is the first screen of every open.
+(**[type it]**); nothing is sent until the human presses Enter. The unlock screen (the passphrase) is the first screen of a browser session, not of every open; it names the project and the
+bind mode.
 
 A later refinement, not in the first version: a `PermissionRequest` hook that lets the human allow or deny a worker's tool call
 from the panel without any keystroke (documented Claude Code hook; it would wait only while a dashboard tab is connected and
@@ -334,11 +352,12 @@ sessions, waiting, creds, logs, releases; each with `age_s`), `GET /api/tickets/
 (detail with the redacted screen), `GET /api/logs?label=<a panel.logs label>` (404 for an unknown label; the dashboard shows one tail per configured entry, none when the list is empty). Any `POST` -> 405.
 v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/poll` (desk only), `GET /api/events` (SSE),
 `POST /api/hook` (loopback listener only).
-Terminal page (separate service, `zouinify term`, Z-11): `GET /term/?target=<name>[&text=...]` (the page), `GET /term/targets`,
-`POST /term/open {target, password}` -> `{tid}` (401 wrong password, 429 over budget, 404 target not offered),
-`GET /term/<tid>/screen` -> `{text, at, closes_in_s}`, `POST /term/<tid>/keys {ops: [{t: "text"} | {k: "Enter"}]}` (400 for a
-key outside the allowlist), `POST /term/<tid>/close`. The password is required on every open; the token too on `intranet`;
-Host/Origin as the panel; a `tid` is unknown after the idle or maximum time (410).
+Terminal page (separate service, `zouinify term`, Z-11): `GET /term/health`, `GET /term/?target=<name>[&text=...]` (the page;
+the unlock screen when no valid cookie), `POST /term/unlock {passphrase}` -> `Set-Cookie zouinify_term` (401 wrong, 429 over
+budget or locked out), `GET /term/targets` (cookie required), `POST /term/open {target}` -> `{tid}` (404 target not offered),
+`GET /term/<tid>/screen` -> `{text, at, closes_in_s}`, `POST /term/<tid>/keys {ops: [{t: "text"} | {k: "Enter"}]}` (400 for a key
+outside the allowlist or control characters), `POST /term/<tid>/close`, `POST /term/lock` (ends the unlock). The unlock is
+required from every address, loopback included. Host/Origin as the panel; an unknown or expired `tid` is 410; no CORS.
 
 ## 6. Acceptance (UI part; the ticket's functional acceptance applies too)
 
