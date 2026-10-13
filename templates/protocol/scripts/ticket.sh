@@ -16,7 +16,7 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.0.0"   # T-0186: the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.1.1"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
@@ -28,7 +28,7 @@ STATES="backlog ready in-dev in-review ready-to-merge merged ready-to-deploy dep
 PROJECT=""; TRUNK=""; TICKETS_DIR="tickets"; WORKTREES=".claude/worktrees"; REPOS=""; PROTECTED_BRANCHES_EXTRA=""
 ASK_VERBS="APPLY DEPLOY PUSH RUN DECIDE CHECK APPROVE SSO"; TICKET_TYPES="bug feature process chore"; DEPLOY_PLUGIN="none"; DEPLOY_KINDS=""
 declare -A REPO_PATH=() REPO_TRUNK=() REPO_PROD=()   # by repo name (REPOS); paths absolute after load_config
-TD=""; REPO0=""; REPO1=""; FE_REPO=""; FE_TRUNK=""; KNOWN_REPOS=""   # REPO0 = the default repo (this one); REPO1 = the second, when REPOS names one (N repos: T-0187)
+TD=""; REPO0=""; KNOWN_REPOS=""   # REPO0 = the default repo (this checkout), the first name in REPOS; every other repo is REPO_PATH/TRUNK by name (T-0187)
 
 die() { echo "ticket.sh: $*" >&2; exit 1; }
 usage() { # the commands, on stdout: an unknown or missing subcommand prints them and exits 1
@@ -283,15 +283,16 @@ cmd_claim() {
   fi
   slug=$(basename "$f" .md | sed 's/^T-\([0-9]*\)-/t\1-/' | cut -c1-40 | sed 's/-$//')
   br=${3:-}; wt=${4:-}
-  # Which repo: the default repo ($REPO0, this checkout) here; a ticket naming only the second repo ($REPO1) lives there,
-  # cut from ITS trunk (board resolves a relative worktree against that repo). Any other repo (zouinify, auth, ...) is
-  # not in ticket.env's REPOS: ticket.sh creates nothing for it, the caller names an EXISTING worktree there (T-0176: an
-  # absolute path was joined onto $MAIN and a worktree appeared INSIDE main, which dirtied it and blocked every session).
-  # Two-repo tickets: the default repo here, the other by hand, both recorded as {$REPO0: ..., $REPO1: ...} maps.
-  local repo=$MAIN tr=$TRUNK repos other="" wtp cur ohead orepo wre
-  repos=$(field "$f" repos)
-  if [ -n "$REPO1" ] && [[ $repos == *"$REPO1"* && $repos != *"$REPO0"* ]]; then repo=$FE_REPO; tr=$FE_TRUNK
-  elif [[ $repos != *"$REPO0"* ]] && { [ -z "$REPO1" ] || [[ $repos != *"$REPO1"* ]]; }; then other=${repos//[][ ]/}; other=${other:-unknown}; fi
+  # Which repo: the default repo ($REPO0, this checkout) when repos: names it; else the first OTHER configured repo
+  # (ticket.env's REPOS, in its order) that repos: names, cut from ITS trunk (board resolves a relative worktree against
+  # that repo). A repo not in REPOS (zouinify, auth, ... until the project lists them): ticket.sh creates nothing for it,
+  # the caller names an EXISTING worktree there (T-0176: an absolute path was joined onto $MAIN and a worktree appeared
+  # INSIDE main, which dirtied it and blocked every session). Multi-repo tickets: the first repo here, the others by
+  # hand, all recorded as {<repo>: ..., <repo>: ...} maps (ticket_branches).
+  local repo=$MAIN tr=$TRUNK repos other="" wtp cur ohead orepo wre pick
+  repos=$(field "$f" repos); pick=$(ticket_repo "$repos")
+  if [ -z "$pick" ]; then other=${repos//[][ ]/}; other=${other:-unknown}
+  elif [ "$pick" != "$REPO0" ]; then repo=${REPO_PATH[$pick]}; tr=${REPO_TRUNK[$pick]}; fi
   if [ -n "$other" ]; then
     [ -n "$wt" ] || die "$id is a $other ticket: ticket.sh creates nothing in that repo. Claim it with the absolute path of an EXISTING worktree there: claim $id $owner [branch] /path/to/that/worktree"
     case $wt in /*) ;; *) die "$id is a $other ticket: the worktree is the absolute path of an existing worktree of that repo (got '$wt')";; esac
@@ -451,29 +452,41 @@ branch_problem() { # name trunk -> why this branch is off-limits, or nothing
   elif ! g check-ref-format --branch "$br" >/dev/null 2>&1; then echo "not a valid branch name"
   else case $br in -*|*' '*|*..*|*/|refs/*|*@\{*) echo "odd name";; esac; fi
 }
-repo_label() { [ "$1" = "$MAIN" ] && echo "$REPO0" || echo "$REPO1"; }
-ticket_branches() { # ticket-file -> BE_BR FE_BR BE_WT FE_WT; BRANCH_PROBLEMS = why the fields do not cover repos:
-  local f=$1 repos br wt k r keys
+repo_label() { local r; for r in $REPOS; do [ "${REPO_PATH[$r]}" = "$1" ] && { echo "$r"; return 0; }; done; echo "?"; }   # repo path -> its name in REPOS
+repo_trunk() { [ "$1" = "$REPO0" ] && echo "$TRUNK" || echo "${REPO_TRUNK[$1]}"; }   # repo name -> its trunk (the default repo's is TRUNK, which TICKET_TRUNK may override)
+map_wt() { # worktree-map repo -> that repo's worktree as branch_stats/prune want it: the other repos' map paths are written relative to their parent dir
+  local v; v=$(mapget "$1" "$2"); if [ "$2" = "$REPO0" ]; then echo "$v"; else sed "s|^$(basename "${REPO_PATH[$2]}")/||" <<<"$v"; fi
+}
+ticket_repo() { # repos-field -> the configured repo a plain branch:/worktree: belongs to: the default repo when named, else the first other configured name repos: lists (REPOS order), else nothing
+  local toks r t; toks=$(tr -d '[]' <<<"$1" | tr ',' ' ')
+  for t in $toks; do [ "$t" != "$REPO0" ] || { echo "$REPO0"; return 0; }; done
+  for r in $REPOS; do for t in $toks; do [ "$t" != "$r" ] || { echo "$r"; return 0; }; done; done
+  return 0
+}
+declare -A T_BR=() T_WT=()   # set by ticket_branches: the ticket's branch and worktree per repo name
+ticket_branches() { # ticket-file -> T_BR[repo] / T_WT[repo] for every repo the fields cover; BRANCH_PROBLEMS = why they do not cover repos:
+  local f=$1 repos br wt k r keys pick letters=(x y z w v u t s) i=0 maps=""
   repos=$(field "$f" repos | tr -d '[]' | tr ',' ' '); br=$(field "$f" branch); wt=$(field "$f" worktree)
-  BE_BR=""; FE_BR=""; BE_WT=""; FE_WT=""; BRANCH_PROBLEMS=""
+  T_BR=(); T_WT=(); BRANCH_PROBLEMS=""
   # shellcheck disable=SC2086
   set -- $repos
   if [[ $br == "{"* ]]; then
-    BE_BR=$(mapget "$br" "$REPO0"); BE_WT=$(mapget "$wt" "$REPO0")
-    [ -z "$REPO1" ] || { FE_BR=$(mapget "$br" "$REPO1"); FE_WT=$(mapget "$wt" "$REPO1" | sed "s|^$(basename "$FE_REPO")/||"); }
+    for r in $REPOS; do T_BR[$r]=$(mapget "$br" "$r"); T_WT[$r]=$(map_wt "$wt" "$r"); done
     keys=$(tr -d '{}' <<<"$br" | tr ',' '\n' | sed -n 's/^[ ]*\([^: ]*\):.*/\1/p')
     for k in $keys; do case " $KNOWN_REPOS " in *" $k "*) ;; *) BRANCH_PROBLEMS="$BRANCH_PROBLEMS the branch map names repo '$k', which ticket.sh cannot merge or prune (only: $KNOWN_REPOS);";; esac; done
-  elif [ $# -le 1 ] && [ -n "$REPO1" ] && [ "${1:-$REPO0}" = "$REPO1" ]; then FE_BR=$br; FE_WT=$wt
-  elif [ $# -le 1 ]; then BE_BR=$br; BE_WT=$wt
-  elif [ -n "$br" ]; then  # merge refuses this (which repo?); prune looks for the name in both repos, each checked on its own
-    BE_BR=$br; FE_BR=$br; BE_WT=$wt; FE_WT=$wt
-    BRANCH_PROBLEMS=" repos: [$*] but branch: is one plain name -- a multi-repo ticket needs maps {$REPO0: x, ${REPO1:-other}: y} for branch: and worktree:;"
+  elif [ $# -le 1 ]; then   # one repo (or none named): the plain values are its; an unknown name takes the default repo's slot and is flagged below
+    pick=$(ticket_repo "$repos"); pick=${pick:-$REPO0}
+    T_BR[$pick]=$br; T_WT[$pick]=$wt
+  elif [ -n "$br" ]; then  # merge refuses this (which repo?); prune looks for the name in every repo named, each checked on its own
+    for r in "$@"; do T_BR[$r]=$br; T_WT[$r]=$wt; maps="$maps$r: ${letters[i]:-?}, "; i=$((i + 1)); done
+    BRANCH_PROBLEMS=" repos: [$*] but branch: is one plain name -- a multi-repo ticket needs maps {${maps%, }} for branch: and worktree:;"
   fi
   [ -n "$br" ] || return 0  # never claimed: nothing to merge or prune, nothing to complain about
   for r in "$@"; do
-    if [ "$r" = "$REPO0" ]; then [ -n "$BE_BR" ] || BRANCH_PROBLEMS="$BRANCH_PROBLEMS no $REPO0 branch although repos: names it;"
-    elif [ -n "$REPO1" ] && [ "$r" = "$REPO1" ]; then [ -n "$FE_BR" ] || BRANCH_PROBLEMS="$BRANCH_PROBLEMS no $REPO1 branch although repos: names it;"
-    else BRANCH_PROBLEMS="$BRANCH_PROBLEMS repos: names '$r', which ticket.sh cannot merge or prune (only: $KNOWN_REPOS);"; fi
+    case " $KNOWN_REPOS " in
+      *" $r "*) [ -n "${T_BR[$r]-}" ] || BRANCH_PROBLEMS="$BRANCH_PROBLEMS no $r branch although repos: names it;" ;;
+      *) BRANCH_PROBLEMS="$BRANCH_PROBLEMS repos: names '$r', which ticket.sh cannot merge or prune (only: $KNOWN_REPOS);" ;;
+    esac
   done
 }
 fetch_ref() { git -C "$1" fetch -q --no-write-fetch-head origin "+refs/heads/$2:refs/remotes/origin/$2" 2>/dev/null; }
@@ -579,7 +592,7 @@ ticket.sh: if origin/$tr moved, rebase $br onto it, push, and run merge again"; 
   echo "merged ($lbl): $br -> $tr $MERGED_RANGE, pushed"
 }
 cmd_merge() {
-  local id="" allow="" a f st deploy closed="" summary="" next of be_moved=""
+  local id="" allow="" a f st deploy closed="" summary="" next of landed="" moved_any="" r any=""
   while [ $# -gt 0 ]; do
     case $1 in
       --allow-trailers) [ -n "${2:-}" ] || die 'usage: merge T-xxxx --allow-trailers T-yyyy[,T-zzzz]   (the option needs the ids)'; allow=$(tr ',' ' ' <<<"$2"); shift 2 ;;
@@ -599,25 +612,25 @@ cmd_merge() {
   [ "$st" = ready-to-merge ] || die "$id is '$st', not 'ready-to-merge' (a reviewer who did not write it and saw the diff moves it there)"
   ticket_branches "$f"
   [ -z "$BRANCH_PROBLEMS" ] || die "$id: cannot merge:$BRANCH_PROBLEMS fix the ticket's repos:/branch:/worktree: fields (scripts/ticket.sh set) and retry"
-  [ -n "$BE_BR$FE_BR" ] || die "$id has no branch: field"
-  # check everything before merging anything: a two-repo ticket is refused whole when either half is not ready
-  [ -z "$BE_BR" ] || merge_check "$MAIN" "$TRUNK" "$BE_BR" "$id" "$allow"
-  [ -z "$FE_BR" ] || merge_check "$FE_REPO" "$FE_TRUNK" "$FE_BR" "$id" "$allow"
-  if [ -n "$BE_BR" ]; then
-    merge_one "$MAIN" "$TRUNK" "$BE_BR" "$id" || die "$MERGE_ERR"
-    closed=$MERGED_SHAS; summary=$MERGED_RANGE; be_moved=$MOVED
-  fi
-  if [ -n "$FE_BR" ]; then
-    if ! merge_one "$FE_REPO" "$FE_TRUNK" "$FE_BR" "$id"; then
-      if [ -n "$be_moved" ]; then  # the backend half landed in this run: on record before dying; the next run records it as already merged
+  for r in $REPOS; do [ -z "${T_BR[$r]-}" ] || any=1; done
+  [ -n "$any" ] || die "$id has no branch: field"
+  # check everything before merging anything: a multi-repo ticket is refused whole when any part is not ready
+  for r in $REPOS; do [ -z "${T_BR[$r]-}" ] || merge_check "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "${T_BR[$r]}" "$id" "$allow"; done
+  for r in $REPOS; do   # REPOS order: the default repo first
+    [ -n "${T_BR[$r]-}" ] || continue
+    if ! merge_one "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "${T_BR[$r]}" "$id"; then
+      if [ -n "$moved_any" ]; then  # an earlier repo landed in this run: on record before dying; the next run records it as already merged
         EDITED=$f
-        append_log "$f" "- $(now) $WHO: PARTIAL merge (ticket.sh merge): $REPO0 ff-merged $summary and pushed (shas $closed); $REPO1 NOT merged: $(head -n 1 <<<"$MERGE_ERR"). Status unchanged -- fix the $REPO1 side and run merge again."
-        commit_push "tickets: $id partial merge ($REPO0 landed, $REPO1 failed)" "$f"
+        append_log "$f" "- $(now) $WHO: PARTIAL merge (ticket.sh merge): $landed ff-merged $summary and pushed (shas $closed); $r NOT merged: $(head -n 1 <<<"$MERGE_ERR"). Status unchanged -- fix the $r side and run merge again."
+        commit_push "tickets: $id partial merge ($landed landed, $r failed)" "$f"
       fi
       die "$MERGE_ERR"
     fi
-    closed="${closed:+$closed, }$REPO1 $MERGED_SHAS"; summary="${summary:+$summary; }$REPO1 $MERGED_RANGE"
-  fi
+    [ -z "$MOVED" ] || moved_any=1
+    if [ "$r" = "$REPO0" ]; then closed=$MERGED_SHAS; summary=$MERGED_RANGE
+    else closed="${closed:+$closed, }$r $MERGED_SHAS"; summary="${summary:+$summary; }$r $MERGED_RANGE"; fi
+    landed="${landed:+$landed+}$r"
+  done
   EDITED=$f
   set_field "$f" closed_by "[$closed]"
   set_field "$f" status merged
@@ -776,7 +789,7 @@ prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): remove
   done <<<"$PRUNE_PLAN"
 }
 cmd_prune() {
-  local dry="" all="" ids="" a id f st seen="" entries
+  local dry="" all="" ids="" a id f st seen="" entries r any
   for a in "$@"; do
     case $a in --dry-run) dry=1;; --done) all=1;; T-[0-9][0-9][0-9][0-9]) ids="$ids $a";; *) die 'usage: prune [T-xxxx ...|--done] [--dry-run]';; esac
   done
@@ -790,9 +803,9 @@ cmd_prune() {
     case $st in done|dropped) ;; *) echo "prune: $id is '$st' -- only done/dropped tickets are pruned (at done the worktree goes, not before)"; continue;; esac
     ticket_branches "$f"
     case $BRANCH_PROBLEMS in *"cannot merge or prune"*) echo "prune: $id:$BRANCH_PROBLEMS left alone -- fix the ticket's fields first"; continue;; esac
-    [ -n "$BE_BR$FE_BR" ] || continue  # never had a branch
-    [ -z "$BE_BR" ] || prune_check "$MAIN" "$TRUNK" "$BE_BR" "$BE_WT" "$id"
-    [ -z "$FE_BR" ] || prune_check "$FE_REPO" "$FE_TRUNK" "$FE_BR" "$FE_WT" "$id"
+    any=""; for r in $REPOS; do [ -z "${T_BR[$r]-}" ] || any=1; done
+    [ -n "$any" ] || continue  # never had a branch
+    for r in $REPOS; do [ -z "${T_BR[$r]-}" ] || prune_check "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "${T_BR[$r]}" "${T_WT[$r]-}" "$id"; done
   done
   [ -n "$PRUNE_PLAN" ] || { echo "prune: nothing to remove"; return 0; }
   [ -z "$dry" ] || return 0
@@ -1210,7 +1223,7 @@ branch_stats_json() { # repo trunk branch worktree -> {"behind":N|null,"ahead":N
   printf '{"behind":%s,"ahead":%s,"dirty":%s,"branch_missing":%s,"worktree_missing":%s}' "$behind" "$ahead" "$dirty" "$bm" "$wm"
 }
 cmd_board_json() { # [--slow] -> one JSON object (see the usage line); the text board is untouched
-  local slow=${1:-} lines n id st repos br wt ask obj stats first=1 warn="" freeze behind
+  local slow=${1:-} lines n id st repos br wt ask obj stats first=1 warn="" freeze behind r rb sep pick
   lines=$(board_json_tickets "$TD"/T-*.md 2>/dev/null || true)
   printf '{"version":"%s","generated":"%s","trunk":"%s","trunk_sha":"%s","slow":%s,' "$TICKET_SH_VERSION" "$(now)" "$TRUNK" "$(g rev-parse --short HEAD 2>/dev/null)" "$( [ -n "$slow" ] && echo true || echo false )"
   if freeze_on; then freeze=$(freeze_ids | tr ' ' '\n' | grep . | sed 's/.*/"&"/' | paste -sd, || true); printf '"freeze":[%s],' "$freeze"
@@ -1232,11 +1245,12 @@ cmd_board_json() { # [--slow] -> one JSON object (see the usage line); the text 
       case $st in
         in-dev|in-review|ready-to-merge|skipped)   # the same branch choice as the text board
           if [[ $br == "{"* ]]; then
-            stats="{\"$REPO0\":$(branch_stats_json "$MAIN" "$TRUNK" "$(mapget "$br" "$REPO0")" "$(mapget "$wt" "$REPO0")")"
-            [ -z "$REPO1" ] || stats="$stats,\"$REPO1\":$(branch_stats_json "$FE_REPO" "$FE_TRUNK" "$(mapget "$br" "$REPO1")" "$(mapget "$wt" "$REPO1" | sed "s|^$(basename "$FE_REPO")/||")")"
-            stats="$stats}"
-          elif [ -n "$REPO1" ] && [[ $repos == *"$REPO1"* && $repos != *"$REPO0"* ]]; then stats=$(branch_stats_json "$FE_REPO" "$FE_TRUNK" "$br" "$wt")
-          else stats=$(branch_stats_json "$MAIN" "$TRUNK" "$br" "$wt"); fi ;;
+            stats="{"; sep=""
+            for r in $REPOS; do   # every repo the map names, in REPOS order
+              rb=$(mapget "$br" "$r"); [ -n "$rb" ] || continue
+              stats="$stats$sep\"$r\":$(branch_stats_json "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "$rb" "$(map_wt "$wt" "$r")")"; sep=","
+            done; stats="$stats}"
+          else pick=$(ticket_repo "$repos"); pick=${pick:-$REPO0}; stats=$(branch_stats_json "${REPO_PATH[$pick]}" "$(repo_trunk "$pick")" "$br" "$wt"); fi ;;
       esac
     fi
     printf '%s,"stats":%s}' "${obj%\}}" "$stats"
@@ -1253,7 +1267,7 @@ cmd_board_json() { # [--slow] -> one JSON object (see the usage line); the text 
   else printf '"orphans":null}\n'; fi
 }
 cmd_board() {
-  local st f id sev title owner br wt repos hdr line ref named n bo dep
+  local st f id sev title owner br wt repos hdr line ref named n bo dep r rb sep pick
   if [ "${1:-}" = --json ]; then
     case "$#:${2:-}" in 1:) cmd_board_json; return 0;; 2:--slow) cmd_board_json --slow; return 0;; esac
   fi
@@ -1279,10 +1293,12 @@ cmd_board() {
           line="$line  $owner"
           if [ -z "$br" ]; then line="$line  (no branch)"
           elif [[ $br == "{"* ]]; then  # {<repo>: x, <repo>: y}; worktree map paths are relative to each repo's parent dir
-            line="$line  $REPO0: $(branch_stats "$MAIN" "$TRUNK" "$(mapget "$br" "$REPO0")" "$(mapget "$wt" "$REPO0")")"
-            [ -z "$REPO1" ] || line="$line  | $REPO1: $(branch_stats "$FE_REPO" "$FE_TRUNK" "$(mapget "$br" "$REPO1")" "$(mapget "$wt" "$REPO1" | sed "s|^$(basename "$FE_REPO")/||")")"
-          elif [ -n "$REPO1" ] && [[ $repos == *"$REPO1"* && $repos != *"$REPO0"* ]]; then line="$line  $(branch_stats "$FE_REPO" "$FE_TRUNK" "$br" "$wt")"
-          else line="$line  $(branch_stats "$MAIN" "$TRUNK" "$br" "$wt")"; fi
+            sep=""
+            for r in $REPOS; do   # every repo the map names, in REPOS order
+              rb=$(mapget "$br" "$r"); [ -n "$rb" ] || continue
+              line="$line  $sep$r: $(branch_stats "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "$rb" "$(map_wt "$wt" "$r")")"; sep="| "
+            done
+          else pick=$(ticket_repo "$repos"); pick=${pick:-$REPO0}; line="$line  $(branch_stats "${REPO_PATH[$pick]}" "$(repo_trunk "$pick")" "$br" "$wt")"; fi
           [ -z "$(field "$f" claimed)" ] || line="$line  claimed $(age "$(field "$f" claimed)") ago"
           [ "$st" != skipped ] || [ -z "$(field "$f" blocked_on)" ] || line="$line  blocked_on: $(field "$f" blocked_on)" ;;
         blocked|backlog)
@@ -1318,7 +1334,7 @@ cmd_board() {
 # value with another character is reported on stderr and ignored (a required key then dies as missing). Keys: ENV_KEYS below plus
 # REPO_<NAME>_PATH|TRUNK|PROD for every name in REPOS (<NAME> = the name upper-cased, '-' -> '_'). Exported
 # TICKET_<KEY> values override the file after the parse (TICKET_TRUNK, TICKET_REPOS, TICKET_REPO_FRONTEND_PATH, ...;
-# TICKET_FE_REPO and TICKET_FE_TRUNK name the second repo until T-0187) and meet the same rules, or the run dies: an
+# TICKET_FE_REPO and TICKET_FE_TRUNK are legacy names for the SECOND repo in REPOS) and meet the same rules, or the run dies: an
 # override is deliberate, so a slip is loud. A repo path is relative to this repo's root, joined by text (../x -> the
 # parent's x), never resolved through symlinks. A branch name (TRUNK, a repo's trunk/prod, a protected name) never
 # starts with '-'. The header `# generated-from: .ops/config.yaml sha256 <hex>` is compared with the file it names: a
@@ -1374,12 +1390,13 @@ apply_env_overrides() { # exported TICKET_<KEY> wins over the file, validated BE
   local key v
   for key in $ENV_KEYS; do v="TICKET_$key"; override_ok "$v"; [ -z "${!v-}" ] || printf -v "$key" '%s' "${!v}"; done
 }
-resolve_repos() { # REPOS (file or override) -> REPO0/REPO1 and REPO_PATH/TRUNK/PROD per name from ENV_RAW, then the exported per-repo overrides
-  local n r u key v
+resolve_repos() { # REPOS (file or override) -> REPO0 and REPO_PATH/TRUNK/PROD per name from ENV_RAW, then the exported per-repo overrides
+  local r u key v second=""
   [ -n "$REPOS" ] || die "ticket.env: REPOS is empty -- its first name is this repo (REPO_<NAME>_PATH=.)"
   for r in $REPOS; do [[ $r =~ $REPO_NAME_RE ]] || die "ticket.env: the repo name '$r' in REPOS is not [a-z][a-z0-9_-]*"; done
-  n=$(wc -w <<<"$REPOS"); REPO0=${REPOS%% *}; REPO1=""; [ "$n" -lt 2 ] || REPO1=${REPOS#* }
-  [ "$n" -le 2 ] || die "ticket.env: REPOS lists $n repos ($REPOS); until T-0187 this core takes the default repo and at most one more"
+  # shellcheck disable=SC2086
+  set -- $REPOS; REPO0=$1; second=${2:-}
+  for r in $REPOS; do [ "$(tr ' ' '\n' <<<"$REPOS" | grep -cx -- "$r")" = 1 ] || die "ticket.env: REPOS names '$r' twice"; done
   declare -A used=()
   for r in $REPOS; do
     u=$(repo_key "$r")
@@ -1387,9 +1404,9 @@ resolve_repos() { # REPOS (file or override) -> REPO0/REPO1 and REPO_PATH/TRUNK/
     used[REPO_${u}_PATH]=1; used[REPO_${u}_TRUNK]=1; used[REPO_${u}_PROD]=1
   done
   for key in "${!ENV_RAW[@]}"; do [ -n "${used[$key]-}" ] || env_note "${ENV_SEEN[$key]}" "$key names a repo that REPOS does not list ($REPOS)"; done
-  # the old aliases first, a specific TICKET_REPO_<NAME>_* over them; each meets the file's rule or the run dies
+  # the old aliases (the second repo in REPOS) first, a specific TICKET_REPO_<NAME>_* over them; each meets the file's rule or the run dies
   override_ok TICKET_FE_REPO; override_ok TICKET_FE_TRUNK
-  [ -z "$REPO1" ] || { [ -z "${TICKET_FE_REPO-}" ] || REPO_PATH[$REPO1]=$TICKET_FE_REPO; [ -z "${TICKET_FE_TRUNK-}" ] || REPO_TRUNK[$REPO1]=$TICKET_FE_TRUNK; }
+  [ -z "$second" ] || { [ -z "${TICKET_FE_REPO-}" ] || REPO_PATH[$second]=$TICKET_FE_REPO; [ -z "${TICKET_FE_TRUNK-}" ] || REPO_TRUNK[$second]=$TICKET_FE_TRUNK; }
   for r in $REPOS; do
     u=$(repo_key "$r")
     v="TICKET_REPO_${u}_PATH"; override_ok "$v"; [ -z "${!v-}" ] || REPO_PATH[$r]=${!v}
@@ -1410,12 +1427,13 @@ load_config() { # everything derived from ticket.env, or a clear death
     REPO_PATH[$r]=$(join_path "$MAIN" "$p")
   done
   [ "${REPO_PATH[$REPO0]}" = "$MAIN" ] || die "ticket.env: the default repo $REPO0 resolves to ${REPO_PATH[$REPO0]}, but this script's main checkout is $MAIN (REPO_$(repo_key "$REPO0")_PATH is '.')"
-  if [ -n "$REPO1" ]; then
-    FE_REPO=${REPO_PATH[$REPO1]}; FE_TRUNK=${REPO_TRUNK[$REPO1]-}
-    [ -n "$FE_TRUNK" ] || die "ticket.env: REPO_$(repo_key "$REPO1")_TRUNK is missing"
-  fi
+  for r in $REPOS; do for nm in $REPOS; do   # two names, one directory: merge would land a ticket twice and prune would look in the wrong repo
+    [ "$r" = "$nm" ] && break
+    [ "${REPO_PATH[$r]}" != "${REPO_PATH[$nm]}" ] || die "ticket.env: REPO_$(repo_key "$nm")_PATH and REPO_$(repo_key "$r")_PATH resolve to the same directory (${REPO_PATH[$r]})"
+  done; done
+  for r in $REPOS; do [ "$r" = "$REPO0" ] || [ -n "${REPO_TRUNK[$r]-}" ] || die "ticket.env: REPO_$(repo_key "$r")_TRUNK is missing (REPOS names $r)"; done
   # every branch name the core protects: TRUNK, each repo's trunk and prod, the project's extra names -- none starts with '-'
-  for nm in $TRUNK ${REPO_TRUNK[$REPO0]-} ${REPO_PROD[$REPO0]-} ${FE_TRUNK:-} ${REPO1:+${REPO_PROD[$REPO1]-}} $PROTECTED_BRANCHES_EXTRA; do
+  for nm in $TRUNK $(for r in $REPOS; do echo "${REPO_TRUNK[$r]-} ${REPO_PROD[$r]-}"; done) $PROTECTED_BRANCHES_EXTRA; do
     ref_ok "$nm" || die "ticket.env: '$nm' is not a branch name (a leading '-' would read as an option to git)"
     extra="$extra|$(re_escape "$nm")"
   done

@@ -27,7 +27,6 @@ MARK_START = "<!-- zouinify:protocol start -->"
 MARK_END = "<!-- zouinify:protocol end -->"
 CLAUDE_TMPL = os.path.join(protocol.PROTOCOL, "CLAUDE.section.md.tmpl")
 CORE_REL = os.path.join("scripts", "ticket.sh")
-MAX_REPOS = 2          # the vendored core 1.0.0 handles the default repo plus one (T-0187 lifts it)
 
 
 def claude_block(cfg, fragments, sections) -> str:
@@ -79,9 +78,12 @@ def check_supported(cfg) -> None:
                             f"{cfg.tickets_dir!r} -- set it to tickets")
     if cfg.tickets_script != CORE_REL:
         raise ZouinifyError(f"tickets.script is {cfg.tickets_script!r}; init --protocol installs {CORE_REL}")
-    if len(cfg.repos) > MAX_REPOS:
-        raise ZouinifyError(f"the vendored core handles at most {MAX_REPOS} repos (the default one plus one) until its N-repo release; "
-                            f"the config lists {len(cfg.repos)}")
+    seen = {}
+    for r in cfg.repos:                                       # the core refuses two repos that resolve to one directory; say it first
+        real = os.path.realpath(cfg.path(r["path"]))
+        if real in seen:
+            raise ZouinifyError(f"repos {seen[real]} and {r['name']} resolve to the same directory ({real}); the core refuses that")
+        seen[real] = r["name"]
     default = next((r for r in cfg.repos if r.get("default")), cfg.repos[0])
     if os.path.realpath(cfg.path(default["path"])) != cfg.root:
         raise ZouinifyError(f"the default repo's path ({default['path']}) must be the repository root itself: the core reads the "
@@ -173,8 +175,8 @@ def _cmd_protocol(target, dry_run, out) -> int:
     cfg = cfgmod.load(root)
     check_supported(cfg)
     if not dry_run and in_claude_session():
-        raise ZouinifyError("init --protocol writes tracked files and a CLAUDE.md block: the human runs it in their own terminal and types "
-                            "yes there; a session may only show the plan with --dry-run")
+        raise ZouinifyError("init --protocol writes tracked files: the human runs it in their own terminal and types yes there "
+                            "(and pastes the printed CLAUDE.md block); a session may only show the plan with --dry-run")
     plan = build_plan(cfg, out)
     fragments = protocol.load_fragments(protocol.plugin_docs_dir(cfg, None))
     sections = protocol.read_project_readme(cfg, None)

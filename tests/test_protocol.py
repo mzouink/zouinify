@@ -91,7 +91,8 @@ class TestProtocol(World):
         self.assertIn("8. **Verify a deploy where its users see it**", section(readme, 4))
         self.assertIn("\n| `deployed` | after the human deploys | names the real output of the deploy", section(readme, 5), "the whole row")
         self.assertIn("\n| `done` | owner or the human | checked live by a non-author", section(readme, 5))
-        self.assertIn("The verbs are `APPLY`, `DEPLOY`", s1, "none ships verbs.md, which replaces the generated sentence")
+        self.assertIn("Verbs: `RUN` (any other command), `DECIDE`, `CHECK` (browser or email).", s1,
+                      "none ships no verbs.md: the sentence is generated from the project's ask_verbs")
         self.assertIn("**`main`'s HEAD is always a release**", readme)
         self.assertIn("- `releases/R-YYYY-MM-DD-N.md`", section(readme, 8))
         self.assertTrue(readme.endswith("and why.\n"), repr(readme[-60:]))

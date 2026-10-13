@@ -47,8 +47,12 @@ def _value(key: str, v) -> str:
 
 
 def render(cfg) -> str:
-    """The file text. Every list is space-separated; every value is written bare, KEY=value, from the allowlisted alphabet."""
-    names = [str(r["name"]) for r in cfg.repos]
+    """The file text. Every list is space-separated; every value is written bare, KEY=value, from the allowlisted alphabet.
+    REPOS names the default repo FIRST (the core takes the first name as the repo the tickets live in), then the others in
+    config order."""
+    default = next((r for r in cfg.repos if r.get("default")), cfg.repos[0])
+    repos = [default] + [r for r in cfg.repos if r is not default]
+    names = [str(r["name"]) for r in repos]
     bad = [n for n in names if not REPO_NAME_RE.match(n)]
     if bad:
         raise ZouinifyError("repos: a name for ticket.env is lowercase letters, digits, _ and - starting with a letter: " + ", ".join(bad))
@@ -62,12 +66,11 @@ def render(cfg) -> str:
                        (cfg.protected_branches_extra, "tickets.protected_branches_extra")):
         if any(" " in x or not x for x in lst):
             raise ZouinifyError(f"{where}: ticket.env lists are space-separated, so an item may not contain a space or be empty")
-    default = next((r for r in cfg.repos if r.get("default")), cfg.repos[0])
     pairs = [("PROJECT", cfg.name), ("TRUNK", default["trunk"]), ("TICKETS_DIR", cfg.tickets_dir), ("WORKTREES", cfg.worktrees),
              ("REPOS", " ".join(names)), ("PROTECTED_BRANCHES_EXTRA", " ".join(cfg.protected_branches_extra)),
              ("ASK_VERBS", " ".join(cfg.ask_verbs)), ("TICKET_TYPES", " ".join(cfg.ticket_types)),
              ("DEPLOY_PLUGIN", cfg.deploy_plugin), ("DEPLOY_KINDS", " ".join(cfg.deploy_kinds))]
-    for r in cfg.repos:
+    for r in repos:
         k = repo_key(str(r["name"]))
         pairs += [(f"REPO_{k}_PATH", r["path"]), (f"REPO_{k}_TRUNK", r["trunk"]), (f"REPO_{k}_PROD", r.get("prod") or "")]
     lines = [f"# generated-from: .ops/config.yaml sha256 {config_sha256(cfg)}",

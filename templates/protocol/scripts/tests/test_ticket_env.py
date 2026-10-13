@@ -149,7 +149,7 @@ class TestTicketEnv(EnvWorld):
         self.assertIn("T-0009 (my-fe): repo %s not found -- left alone" % os.path.join(self.tmp, "no-frontend"), p.out, "REPO_MY_FE_* is the key of repo my-fe")
         self.set_env(self.env_lines(drop=("REPOS",), extra='REPOS=backend frontend third\n'))
         p = self.ts("board", env=self.env_without_who())
-        self.assertEqual(p.returncode, 1, p.out); self.assertIn("REPOS lists 3 repos (backend frontend third); until T-0187", p.out)
+        self.assertEqual(p.returncode, 1, p.out); self.assertIn("REPO_THIRD_PATH is missing (REPOS names third)", p.out)   # any number of repos since T-0187, each with its keys
         self.set_env(self.env_lines(drop=("REPO_BACKEND_PATH",), extra='REPO_BACKEND_PATH=../other\n'))
         p = self.ts("board", env=self.env_without_who())
         self.assertEqual(p.returncode, 1, p.out); self.assertIn("the default repo backend resolves to %s/other, but this script's main checkout is %s" % (self.tmp, self.main), p.out)
@@ -179,11 +179,11 @@ class TestTicketEnv(EnvWorld):
         p = self.ts("new", "chore", "P3", "x")
         self.assertEqual(p.returncode, 1, p.out); self.assertIn("type must be bug|idea", p.out)
         self.write_ticket("T-0009", "kept", "done", "kept", fields={"branch": "keep/me"})
-        self.write_ticket("T-0010", "old", "done", "old", fields={"branch": "feat/specialist-bridge-wiring"})
+        self.write_ticket("T-0010", "old", "done", "old", fields={"branch": "feat/legacy-trunk-a"})
         self.commit_main("tickets: protected")
         p = self.ts("prune", "T-0009", "T-0010", "--dry-run", env=self.env_without_who())
         self.assertIn("branch 'keep/me' -- refused: protected name", p.out)
-        self.assertNotIn("feat/specialist-bridge-wiring' -- refused: protected name", p.out, "no longer listed: an ordinary (missing) branch")
+        self.assertNotIn("feat/legacy-trunk-a' -- refused: protected name", p.out, "no longer listed: an ordinary (missing) branch")
 
 
 class TestEnvHardening(EnvWorld):
@@ -223,12 +223,12 @@ class TestEnvHardening(EnvWorld):
         self.assertEqual(p.returncode, 1, p.out); self.assertIn("TRUNK has an unusable value", p.out)
 
     def test_overrides_are_validated_before_anything_is_derived(self):
-        """finding 3: TICKET_TRUNK='dev$(...)' was accepted; TICKET_REPOS skipped the name check and landed after REPO0/REPO1"""
+        """finding 3: TICKET_TRUNK='dev$(...)' was accepted; TICKET_REPOS skipped the name check and landed after the repo lookups"""
         marker = os.path.join(self.tmp, "ran")
         p = self.ts("board", env=self.env_without_who(TICKET_TRUNK="dev$(touch %s)" % marker))
         self.assertEqual(p.returncode, 1, p.out)
         self.assertIn("TICKET_TRUNK (an exported override) has a character outside", p.out); self.assertFalse(os.path.exists(marker))
-        for var, val, why in (("TICKET_REPOS", "backend frontend third", "REPOS lists 3 repos (backend frontend third); until T-0187"),
+        for var, val, why in (("TICKET_REPOS", "backend frontend third", "REPO_THIRD_PATH is missing (REPOS names third)"),   # N repos since T-0187: the override must name repos the file (or an override) describes
                               ("TICKET_REPOS", "Backend", "repo name 'Backend' in REPOS is not"),
                               ("TICKET_REPOS", "", "REPOS=backend frontend"),   # an empty override is no override: the file's value stands
                               ("TICKET_FE_REPO", "/x;rm -rf /", "TICKET_FE_REPO (an exported override) has a character outside"),
@@ -374,7 +374,15 @@ class TestDocsFragments(unittest.TestCase):
                 self.assertTrue(frag.strip(), "empty fragment")
                 self.assertIn(frag.rstrip("\n"), text, "%s is not verbatim in %s" % (f, doc))
         none = os.path.join(DOCS_REPO, "tickets", "plugins", "none", "docs")
-        self.assertEqual(sorted(os.listdir(none)), names, "the none plugin ships the same fragment names")
+        self.assertEqual(sorted(os.listdir(none)), [n for n in names if n != "verbs.md"],
+                         "the none plugin ships the same fragment names; verbs.md is optional and none has none (zouinify renders the sentence from the project's ASK_VERBS)")
+        for f in ("evidence-deployed.md", "evidence-done.md"):   # a §5 row has three columns: State | Who moves it in | Evidence in Log
+            for d in (os.path.join(DOCS_REPO, "tickets", "plugins", "aws-terraform", "docs"), none):
+                with open(os.path.join(d, f), encoding="utf-8") as fh:
+                    row = fh.read().strip()
+                with self.subTest(row=os.path.join(os.path.basename(os.path.dirname(d)), f)):
+                    self.assertEqual(row.count(" | "), 2, row)
+                    self.assertTrue(row.startswith("| `") and row.endswith(" |"), row)
 
 
 if __name__ == "__main__":

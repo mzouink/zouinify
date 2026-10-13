@@ -76,6 +76,15 @@ class TestTicketEnv(World):
         r = self.nz("config", "--env")
         self.assertIn("lowercase", r.stderr)
 
+    def test_the_default_repo_comes_first_in_repos_whatever_the_config_order(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("repos:\n", "repos:\n  - {name: lib, path: ../lib, trunk: main}\n"))
+        text = self.ok("config", "--env").stdout
+        env = parse(text)
+        self.assertEqual(env["REPOS"], "backend lib", "the core takes the first name as the repo the tickets live in")
+        self.assertEqual(env["TRUNK"], "dev")
+        self.assertLess(text.index("REPO_BACKEND_PATH="), text.index("REPO_LIB_PATH="))
+
     def test_optional_tickets_keys_render_and_are_validated(self):
         cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
         self.write(".ops/config.yaml", cfg.replace("  deploy_plugin: none\n",

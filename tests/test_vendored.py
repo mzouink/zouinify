@@ -73,8 +73,11 @@ class TestManifest(unittest.TestCase):
         self.assertEqual(sorted(defined), sorted(hooks))
         docs = sorted(os.listdir(os.path.join(PROTOCOL, "tickets", "plugins", "none", "docs")))
         self.assertEqual(docs, ["brief-live-mutations.md", "brief-paid-runs.md", "evidence-deployed.md", "evidence-done.md", "handoff.md",
-                                "rule-after-deploy.md", "rule-deploy-evidence.md", "rule-no-live-mutations.md", "rule-protect-artifacts.md",
-                                "verbs.md"])
+                                "rule-after-deploy.md", "rule-deploy-evidence.md", "rule-no-live-mutations.md", "rule-protect-artifacts.md"],
+                         "no verbs.md: the generated sentence from the project's ask_verbs applies")
+        for name in ("evidence-deployed", "evidence-done"):
+            row = open(os.path.join(PROTOCOL, "tickets", "plugins", "none", "docs", name + ".md"), encoding="utf-8").read().strip()
+            self.assertEqual(row.count("|"), 4, f"{name}: a three-cell table row")
         self.assertTrue(os.access(os.path.join(PROTOCOL, "scripts", "ticket.sh"), os.X_OK), "the core is executable in the template")
 
     def test_upstream_diff_when_a_checkout_is_named(self):
@@ -90,9 +93,11 @@ class TestManifest(unittest.TestCase):
 
 
 class TestVendoredSuite(World):
-    """The vendored harness drives the vendored core with the none plugin: what a fresh project gets from `init --protocol`."""
+    """The vendored harness drives the vendored core with the none plugin: what a fresh project gets from `init --protocol`.
+    test_ticket_core.py (the neutral generic tests) and test_ticket_repos.py (a three-repo world) run whole; in test_ticket_env.py
+    the two tests that need the upstream's own deploy plugin are deselected."""
 
-    def test_vendored_test_ticket_env_passes_against_the_none_plugin(self):
+    def test_vendored_suites_pass_against_the_none_plugin(self):
         out = os.path.join(self.tmp, "rendered")
         self.ok("protocol", "render", "--out", out)
         env = dict(self.env, TICKET_WORLD_PLUGIN="none", TICKET_SH_UNDER_TEST=os.path.join(PROTOCOL, "scripts", "ticket.sh"),
@@ -100,12 +105,16 @@ class TestVendoredSuite(World):
                    TICKET_TEMPLATE_UNDER_TEST=os.path.join(out, "_TEMPLATE.md"), PYTHONDONTWRITEBYTECODE="1")
         for k in ("TICKET_AS", "TICKET_FORCE", "TICKET_TRUNK"):
             env.pop(k, None)
+        tests_dir = os.path.join(PROTOCOL, "scripts", "tests")
         r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                            os.path.join(PROTOCOL, "scripts", "tests", "test_ticket_env.py"),
+                            os.path.join(tests_dir, "test_ticket_core.py"), os.path.join(tests_dir, "test_ticket_repos.py"),
+                            os.path.join(tests_dir, "test_ticket_env.py"),
                             "-k", "not TestDocsFragments and not matches_both_shipped_plugins"],
-                           cwd=self.tmp, env=env, capture_output=True, text=True, timeout=900)
+                           cwd=self.tmp, env=env, capture_output=True, text=True, timeout=1500)
         self.assertEqual(r.returncode, 0, r.stdout[-6000:] + r.stderr[-2000:])
-        self.assertRegex(r.stdout, r"\b\d+ passed\b")
+        m = re.search(r"\b(\d+) passed\b", r.stdout)
+        self.assertTrue(m, r.stdout[-500:])
+        self.assertGreaterEqual(int(m.group(1)), 100, "the 88 core tests, the 9 repo tests and the env tests all ran")
         self.assertNotIn(" failed", r.stdout)
 
 
