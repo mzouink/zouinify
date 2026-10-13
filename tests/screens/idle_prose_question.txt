@@ -1,0 +1,15 @@
+  I'll put export TICKET_AS=toolx-route in every ticket.sh call. I haven't run any ticket.sh commands since then.
+
+  Nothing has changed for T-0055: it's still deployed, and the only thing left is the browser check that a run shows
+  "Rank 1 of 3", which belongs to the human.
+
+  Still waiting on you: should I file a ticket for the relax failure (No template found for residue 71)?
+
+✻ Brewed for 11s · done 5:28 PM
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   [Opus 5.5] 📁 t0055-some-branch | 🌿 t0055-some-branch
+   💰 $23.58 | ⏱️   6d 34m | 5% ctx
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent

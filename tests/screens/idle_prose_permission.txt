@@ -1,0 +1,14 @@
+  Caveat reported to the desk: trunk's infra directory moved after the plan's base through the stage guard and comment
+  changes. A saved plan creates nothing, so the first plan after the apply is the one that must read "No changes".
+  Where things stand
+  - T-0125 waits on the human's apply, then the permission set in the management account.
+  - T-0119 is merged. Its live acceptance follows T-0125's apply.
+  - Main and the worktree are clean. Nothing is pending in this session.
+✻ Churned for 54s · done 11:52 AM
+※ recap: Goal: land T-0119 (stage guard plus wrapper) and T-0125 (staging deployer role); T-0119 is merged.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   [Fable 5.1] 📁 someproj | 🌿 dev
+   💰 $67.56 | ⏱️  20h 40m | 13% ctx
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent

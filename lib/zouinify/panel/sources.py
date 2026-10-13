@@ -19,7 +19,6 @@ from pathlib import Path
 from zouinify import panelstate, readonly
 from zouinify.panel.redact import FILE_EXT, redact
 
-PROMPT_RE = re.compile(r"Do you want|Allow |permission|\(y/n\)|Yes, and|Esc to|Enter to confirm|\[Y/n\]|\(esc\)", re.I)
 CHROME_RE = re.compile(r"^\s*(\[[A-Z][a-z]+ [0-9.]+\]|\U0001F4B0|⏵|─|╭|╰|│\s*$|❯\s*$|>\s*$)")
 EVIDENCE_RE = re.compile(
     r"LIVE CHECK PASSED|\breload|\bserial\b|sha256|CodeSha256|arn:aws|s3://|invalidation|No changes\.|paid (run|job)|"
@@ -203,31 +202,189 @@ def last_body_line(screen: str) -> str:
     return body[-1].strip()[:160] if body else ""
 
 
-OPTION_RE = re.compile(r"^\s*(?:[❯>]\s*)?[1-9]\.\s+\S")
+# A session "waits for you" only on a REAL prompt (T-0177): an option dialog (the permission box, an AskUserQuestion)
+# with its selection marker, a dialog footer, a y/n question or a bare "Do you want to proceed?" line. Prose that
+# mentions permission, allow or Esc, a numbered list in an answer, a "› Message from" line and the human's own draft
+# in the input box ("❯ some text" between the two rules) never count.
+OPTION_RE = re.compile(r"^\s*│?\s*(?:[❯>]\s*)?[1-9]\.\s+\S")
+# the selected option: `❯ 1.` at the margin (Claude Code indents a dialog by at most two columns; a quoted dialog in an
+# answer is indented deeper) or `❯ 1.` / `> 1.` inside a box (`> 1.` at the margin is a quote or a prompt echo)
+SELECTED_OPTION_RE = re.compile(r"^(?: {0,2}❯|\s*│\s*[❯>])\s*[1-9]\.\s+\S")
+FOOTER_WORD = (r"(?:Enter to (?:select|confirm|submit|continue|send)|Esc to (?:cancel|exit|close|dismiss)|"
+               r"↑/↓ to (?:navigate|select|choose|move)|Tab to (?:toggle|cycle|switch)|Space to (?:select|toggle))")
+# the whole line is the footer: phrases joined by " · ", nothing else (prose quoting a footer has other words around)
+FOOTER_RE = re.compile(rf"^\s*│?\s*{FOOTER_WORD}(?:\s·\s{FOOTER_WORD})+\s*│?\s*$", re.I)
+YN_RE = re.compile(r"^(?: {0,2}\S|\s*│).*[(\[](?:y/n|Y/n|y/N)[)\]]\s*│?\s*$")   # at the margin or in a box: an indented one is quoted
+BOX_BOTTOM_RE = re.compile(r"^\s*╰")
+PROCEED_RE = re.compile(r"^\s*│\s*(?:Do you want to (?:proceed|allow|continue|make this edit|run)[^?]*\?|Allow (?:this|the|once|always)[^?]*\?)\s*│?\s*$", re.I)
 BOX_RE = re.compile(r"^\s*│\s?|\s*│\s*$")
+BOX_TOP_RE = re.compile(r"^\s*╭")
+FENCE_RE = re.compile(r"^\s*(?:│\s*)?```")
+DRAFT_RE = re.compile(r"^\s*[❯>›]\s")      # the input box, a previous prompt's echo, a cross-session message: never a prompt
+MAX_DIALOG_LINES = 30                        # a live dialog sits in the last 30 lines of the screen, never higher; a box top ╭
+                                             # inside that tail narrows the region further (nothing above the box is the dialog)
+
+
+BOX_LEFT_RE = re.compile(r"^\s*│\s?")
+NUMBER_RE = re.compile(r"[1-9]\.\s")
+
+
+def indent_of(line: str) -> int:
+    """Columns of indentation inside the box border, if any."""
+    t = BOX_LEFT_RE.sub("", line, count=1)
+    return len(t) - len(t.lstrip(" "))
+
+
+def option_column(line: str) -> int:
+    """The column of an option's number inside the box border (`❯ 1.` and `  2.` share it)."""
+    t = BOX_LEFT_RE.sub("", line, count=1)
+    m = NUMBER_RE.search(t)
+    return m.start() if m else indent_of(line)
+
+
+def first_option(lines: list, idx: int, floor: int = 0) -> int:
+    """From the selected option at idx, the index of the dialog's first option: walks up over the other option lines
+    and their descriptions, which are indented deeper than the options' number column (the cursor may sit on
+    option 2; the question stands above option 1)."""
+    col = option_column(lines[idx])
+    j = idx
+    while j - 1 >= floor:
+        prev = lines[j - 1]
+        if OPTION_RE.match(prev) or (prev.strip() and not CHROME_RE.match(prev) and indent_of(prev) > col):
+            j -= 1
+            continue
+        break
+    return j
+
+
+def block_above(lines: list, idx: int) -> tuple:
+    """The block of text right above line idx (box borders stripped; chrome, checkbox and option lines skipped), as
+    (texts top-down, index of its first line); ([], idx) when nothing stands above."""
+    above, top = [], idx
+    for i in range(idx - 1, max(-1, idx - 9), -1):
+        l = lines[i]
+        if BOX_TOP_RE.match(l):
+            break                                   # never reach past the dialog's own box top
+        t = BOX_RE.sub("", l).strip()
+        if not t or CHROME_RE.match(l) or t.startswith("☐") or t.startswith("☑") or OPTION_RE.match(l):
+            if above:
+                break
+            continue
+        above.append(t)
+        top = i
+    above.reverse()
+    return above, top
+
+
+def box_top_of(lines: list, idx: int, floor: int):
+    """The index of the ╭ line of the box that contains line idx (no ╰ between), or None."""
+    for i in range(idx - 1, floor - 1, -1):
+        if BOX_BOTTOM_RE.match(lines[i]):
+            return None
+        if BOX_TOP_RE.match(lines[i]):
+            return i
+    return None
+
+
+def question_above(lines: list, idx: int) -> str:
+    """The question a dialog asks: from the block above line idx, the line that ends with "?" if any, else its first."""
+    above, _ = block_above(lines, idx)
+    q = next((t for t in reversed(above) if t.endswith("?")), None) or (above[0] if above else "")
+    return q[:160]
+
+
+def fenced_lines(lines: list, start: int = 0) -> set:
+    """Indices (from `start` on) inside ``` code fences: quoted text, never a prompt. Fences pair up within the window
+    only, so an unclosed fence high on the screen cannot hide a real dialog at the bottom."""
+    out, inside = set(), False
+    for i in range(start, len(lines)):
+        if FENCE_RE.match(lines[i]):
+            inside = not inside
+            out.add(i)
+        elif inside:
+            out.add(i)
+    return out
+
+
+def prompt_anchor(lines: list):
+    """(kind, index of the anchor line) of a real prompt, or ("", None). The BOTTOM-most anchor of any kind wins and
+    it must sit within the last MAX_DIALOG_LINES lines: a live dialog is drawn at the bottom of the screen, anything
+    higher is history or quoted text, whatever it looks like (a planted `❯ 1. Fake` or a `╭` near the top cannot make
+    the screen "the dialog"). A box top ╭ inside that tail narrows the region to the box. Kinds: a selected option
+    (❯ 1., or > 1. inside a box), a dialog footer (two of Enter/Esc/arrows/Tab joined by " · " or in a box), a line
+    ending in (y/n), a boxed "Do you want to proceed?"."""
+    n = len(lines)
+    floor = max(0, n - MAX_DIALOG_LINES)
+    last_top = max((i for i in range(floor, n) if BOX_TOP_RE.match(lines[i])), default=None)
+    if last_top is not None:
+        floor = last_top
+    fenced = fenced_lines(lines, floor)
+    def is_dialog_option(i: int) -> bool:
+        # a real dialog has at least two options: another numbered line within four lines (descriptions between)
+        return any(OPTION_RE.match(lines[k]) for k in range(max(floor, i - 4), min(n, i + 5)) if k != i)
+
+    for i in range(n - 1, floor - 1, -1):
+        if i in fenced:
+            continue
+        l = lines[i]
+        if SELECTED_OPTION_RE.match(l) and is_dialog_option(i):
+            return "options", i
+        if FOOTER_RE.match(l):
+            # the footer closes an option dialog: its selected option, when still on screen, is the better anchor
+            # (the question stands above the options, not above the footer)
+            for j in range(i - 1, floor - 1, -1):
+                if j not in fenced and SELECTED_OPTION_RE.match(lines[j]) and is_dialog_option(j):
+                    return "options", j
+            return "footer", i
+        if DRAFT_RE.match(l):
+            continue
+        if YN_RE.match(l):
+            return "yn", i
+        if PROCEED_RE.match(l):
+            return "proceed", i
+    return "", None
+
+
+def prompt_shape(screen: str) -> tuple:
+    """(kind, question) of a real prompt on the screen, or ("", ""): "options" (a numbered option list with the ❯ or >
+    marker on the selected one), "footer" (two of Enter/Esc/arrows/Tab on one line), "yn" (a line ending in (y/n)) or
+    "proceed" (a bare "Do you want to proceed?" line). Bare words in prose and the human's own draft never count."""
+    lines = screen.splitlines()
+    kind, i = prompt_anchor(lines)
+    if not kind:
+        return "", ""
+    if kind == "options":
+        return kind, question_above(lines, first_option(lines, i, max(0, len(lines) - MAX_DIALOG_LINES)))
+    if kind == "footer":
+        return kind, question_above(lines, i)
+    return kind, BOX_RE.sub("", lines[i]).strip()[:160]
+
+
+def dialog_start(screen: str):
+    """The index of the first screen line of the dialog a real prompt belongs to (the question block above the options
+    or the footer, capped at 8 lines, else the prompt line itself), or None when the screen shows no prompt. For
+    cutting another project's screen down to its dialog: everything above it is that project's business, so the
+    anchor is the bottom-most one and the block never reaches past a box top."""
+    lines = screen.splitlines()
+    kind, i = prompt_anchor(lines)
+    if not kind:
+        return None
+    floor = max(0, len(lines) - MAX_DIALOG_LINES)
+    top = box_top_of(lines, i, floor)
+    if top is not None:
+        return top + 1                                    # a boxed dialog starts under its own ╭, blank box lines included
+    if kind == "options":
+        start = block_above(lines, first_option(lines, i, floor))[1]
+    elif kind == "footer":
+        start = block_above(lines, i)[1]
+    else:
+        start = i
+    return max(start, floor)                              # the region start..bottom never exceeds MAX_DIALOG_LINES
 
 
 def waiting_line(screen: str) -> str:
-    """What the pane waits for, in one line: for an option dialog (a permission prompt, an AskUserQuestion), the question
-    right above the first option, preferring a line that ends with "?"; otherwise the first prompt-like line."""
-    lines = screen.splitlines()
-    first_opt = next((i for i, l in enumerate(lines) if OPTION_RE.match(l)), None)
-    if first_opt is not None:
-        above = []
-        for l in reversed(lines[max(0, first_opt - 8):first_opt]):
-            t = BOX_RE.sub("", l).strip()
-            if not t or CHROME_RE.match(l) or t.startswith("☐") or t.startswith("☑"):
-                if above:
-                    break
-                continue
-            above.append(t)
-        q = next((t for t in above if t.endswith("?")), None) or (above[0] if above else "")
-        if q:
-            return q[:160]
-    for l in lines:
-        if PROMPT_RE.search(l):
-            return l.strip()[:160]
-    return ""
+    """What a real prompt on the screen asks, in one line; "" when the screen shows no prompt."""
+    return prompt_shape(screen)[1]
 
 
 def project_roots(cfg) -> set:
@@ -353,11 +510,17 @@ def foreign_dialog(screen: str) -> tuple:
     with no option list, the first prompt line alone. One failing line withholds the whole dialog; no prompt or dialog
     withholds it too. The capture is the last visible screen only, never scrollback."""
     lines = screen.splitlines()
-    first_opt = next((i for i, l in enumerate(lines) if OPTION_RE.match(l)), None)
+    kind, anchor = prompt_anchor(lines)            # T-0177: the real prompt at the bottom of the screen, or none
+    if not kind:
+        return "", "no prompt or dialog on the visible screen"
+    floor = max(0, len(lines) - MAX_DIALOG_LINES)
     picked: list = []
-    if first_opt is not None:
+    if kind in ("options", "footer"):
+        head = first_option(lines, anchor, floor) if kind == "options" else anchor
         above: list = []
-        for i in range(first_opt - 1, max(-1, first_opt - FOREIGN_LOOKBACK - 1), -1):
+        for i in range(head - 1, max(floor - 1, head - FOREIGN_LOOKBACK - 1), -1):
+            if BOX_TOP_RE.match(lines[i]):
+                break
             t = clean_line(lines[i])
             if not t or CHROME_RE.match(lines[i]) or t.startswith("☐") or t.startswith("☑"):
                 if above:
@@ -365,16 +528,16 @@ def foreign_dialog(screen: str) -> tuple:
                 continue
             above.append(t)
         picked = list(reversed(above))
-        for l in lines[first_opt:first_opt + FOREIGN_OPTION_LINES]:
-            t = clean_line(l)
-            if not t or CHROME_RE.match(l):
-                break
-            picked.append(t)
+        if kind == "options":
+            for l in lines[head:head + FOREIGN_OPTION_LINES]:
+                t = clean_line(l)
+                if not t or CHROME_RE.match(l):
+                    break
+                picked.append(t)
+        if not picked:
+            return "", "no question above the dialog footer"
     else:
-        first_prompt = next((i for i, l in enumerate(lines) if PROMPT_RE.search(l)), None)
-        if first_prompt is None:
-            return "", "no prompt or dialog on the visible screen"
-        picked = [clean_line(lines[first_prompt])]
+        picked = [clean_line(lines[anchor])]
     for t in picked:
         why = line_ok(t)
         if why:
@@ -463,9 +626,10 @@ def sessions_source(cfg) -> dict:
         ticket = e.get("ticket") or owners.get(name) or (f"T-{m.group(1)}" if m else "")
         screen = redact(readonly.capture_pane(tmux_name)) if tmux_name else ""
         status = str(a.get("status") or "unknown")
-        waiting_for = waiting_line(screen)
-        if status == "waiting" or (waiting_for and status != "busy"):
+        kind, waiting_for = prompt_shape(screen)
+        if status == "waiting" or (kind and status != "busy"):      # `claude agents` says so, or a real prompt is on screen
             state = "waiting"
+            waiting_for = waiting_for or last_body_line(screen)
         elif status == "busy":
             state = "working"
         elif status == "shell" or (tmux_name and pane_cmd.get(tmux_name, "claude") not in ("claude", "node", "")):

@@ -1,0 +1,15 @@
+● Good news to relay, plus a quick root-cause check on that nit before deciding what to do with it.
+  Ran 1 shell command
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Fix tertiary_spans gap
+│ T-0140 is fully live and confirmed working (edge check off, the function deleted, promote done). Separately, the peer
+│ found a pre-existing nit: the file is missing from push_data()'s list, so the viewer falls back client-side (try/catch)
+│ and nothing user-visible breaks. Want me to fix deploy.sh and push the file now?
+❯ 1. Yes, fix and push now
+     Add tertiary_spans to push_data()'s list, upload the file, invalidate the path.
+  2. Just log it, not now
+     Leave it as a backlog item; don't touch deploy.sh right now.
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel

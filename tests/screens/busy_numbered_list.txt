@@ -1,0 +1,10 @@
+● Plan for the migration:
+  1. Freeze writes to the old table.
+  2. Copy the rows in batches of 10k.
+  3. Flip the reader, then unfreeze.
+  Starting with step 1 now.
+✶ Migrating… (12s · ↑ 1.2k tokens · esc to interrupt)
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   [Fable 5.1] 📁 someproj | 🌿 dev

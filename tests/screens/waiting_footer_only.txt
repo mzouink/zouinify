@@ -1,0 +1,7 @@
+● Two ways to do this; pick one.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+│ Which base should the release branch use?
+│ The options scrolled above this line on a short terminal.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Enter to confirm · Esc to cancel
+   [Fable 5.1] 📁 someproj | 🌿 dev

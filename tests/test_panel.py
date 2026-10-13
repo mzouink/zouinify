@@ -57,7 +57,7 @@ HUMAN_JSON = [
 PROMPT_SCREEN = """\
  Bash(git push origin dev)
  Do you want to proceed?
- > 1. Yes
+ ❯ 1. Yes
    2. Yes, and don't ask again
    3. No, and tell Claude what to do differently (esc)
 
@@ -120,7 +120,7 @@ class PanelWorld(World):
             fh.write(PROMPT_SCREEN + SECRET_SCREEN + "mysql -pS3cret db\nCookie: sid=abc; zouinify_token=x\n"
                      "mail alice@example.org and keeper@example.org\nsee /groups/lab/user/proj/file.txt on node7.lab.example.org 10.1.2.3\n")
         # a dialog plus a token-shaped string the redactor cannot place -> withheld; a screen with no dialog -> withheld
-        for name, text in (("withheld-zz", "Do you want to proceed?\n > 1. Yes\n   2. No\nkey " + "Ab1" * 12 + "\n"),
+        for name, text in (("withheld-zz", "Do you want to proceed?\n ❯ 1. Yes\n   2. No\n   2. No\nkey " + "Ab1" * 12 + "\n"),
                            ("nodialog-qq", "just some text\n> \n   [Fable 5.1] x | dev\n")):
             subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", self.foreign_cwd, "claude", "--model", "fable", "--", name],
                            env=self.env, check=True, capture_output=True)
@@ -352,7 +352,7 @@ class TestApi(PanelWorld):
         d = self.get_json("/api/waiting/elsewhere-bf")
         scr = d["screen"]
         self.assertEqual(d["withheld"], "")
-        self.assertEqual(scr, "Bash(git push origin dev)\nDo you want to proceed?\n> 1. Yes\n2. Yes, and don't ask again\n"
+        self.assertEqual(scr, "Bash(git push origin dev)\nDo you want to proceed?\n❯ 1. Yes\n2. Yes, and don't ask again\n"
                               "3. No, and tell Claude what to do differently (esc)",
                          "another project's drawer is an allowlist: the question block and the option lines, nothing else")
         for leak in ("[Fable 5.1]", "x | dev", "aws_", FAKE_SESSION_TOKEN, "Bearer", "<redacted", "mysql", "Cookie", "sid=abc",
@@ -636,7 +636,7 @@ class TestForeignDialog(unittest.TestCase):
     def test_clean_dialog_shows_question_and_options_only(self):
         text, why = panel_sources.foreign_dialog(PROMPT_SCREEN + SECRET_SCREEN)
         self.assertEqual(why, "")
-        self.assertEqual(text, "Bash(git push origin dev)\nDo you want to proceed?\n> 1. Yes\n2. Yes, and don't ask again\n3. No, and tell Claude what to do differently (esc)")
+        self.assertEqual(text, "Bash(git push origin dev)\nDo you want to proceed?\n❯ 1. Yes\n2. Yes, and don't ask again\n3. No, and tell Claude what to do differently (esc)")
         ask = "│ T-0140 is live. Want me to fix deploy.sh and push the file now?\n❯ 1. Yes, fix and push now\n     Add tertiary_spans to push_data()'s list, upload the file, invalidate the path.\n  2. Just log it, not now\n  3. Type something.\n──────────\n  4. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel\n"
         text, why = panel_sources.foreign_dialog(ask)
         self.assertEqual(why, "")
@@ -645,66 +645,66 @@ class TestForeignDialog(unittest.TestCase):
         for ok in ("edit deploy.sh and config.py?", "on 2026-10-13 at 09:30:15?", "close T-0140 and t0119?", "a misconfiguration internationalization?",
                    "serve on port -p5432?", "Bash(git push origin dev)", "Bash(git commit -a -m fix)", "Bash(sort -u names)",
                    "pin the version and send a pw later?"):
-            self.assertEqual(panel_sources.foreign_dialog(ok + "\n > 1. Yes\n")[1], "", ok)
+            self.assertEqual(panel_sources.foreign_dialog(ok + "\n ❯ 1. Yes\n   2. No\n")[1], "", ok)
 
     def test_every_probe_is_withheld(self):
         fd = panel_sources.foreign_dialog
         probes = [
-            ("Do you want to proceed?\n > 1. AKIAIOSF\nODNN7EXAMPLE\n", "identifier-shaped", "a secret split across lines"),
-            ("key " + "0123456789abcdef" * 4 + "?\n > 1. Yes\n", "identifier-shaped", "a bare 64-hex key"),
-            ("copy host:/home/a/b now?\n > 1. Yes\n", "path", "a path after a colon"),
-            ("open file:/etc/shadow?\n > 1. Yes\n", "path", "a file: path"),
-            ("read home/alice/.aws/credentials?\n > 1. Yes\n", "path", "a relative path"),
-            ("read ./alice/.ssh/id_rsa?\n > 1. Yes\n", "path", "a ./ path"),
-            ("read /tmp/my file/x?\n > 1. Yes\n", "path", "a path with a space"),
-            ("read /donn\u00e9es/\u00e9t\u00e9?\n > 1. Yes\n", "path", "a non-ASCII path"),
-            ("read C:\\Users\\a?\n > 1. Yes\n", "path", "a backslash path"),
-            ("read ~ now?\n > 1. Yes\n", "path", "the home marker"),
-            ("run sshpass -p S3cret ssh h?\n > 1. Yes\n", "credential", "a space-separated password"),
-            ("run mysql -p hunter2?\n > 1. Yes\n", "credential", "mysql -p value"),
-            ("set pass=x?\n > 1. Yes\n", "credential", "pass="),
-            ("set pwd=x?\n > 1. Yes\n", "credential", "pwd="),
-            ("set PASS=x?\n > 1. Yes\n", "credential", "PASS="),
-            ("credentials: abc\n > 1. Yes\n", "credential", "credentials:"),
-            ("permission denied: /etc/shadow\n", "path", "a prompt-like output line with a path"),
-            ("mail alice\uff20example.org?\n > 1. Yes\n", "path, address", "a fullwidth @"),
-            ("pass\u200bword=x?\n > 1. Yes\n", "credential", "a zero-width character inside a label"),
-            ("Cookie: abc123\n > 1. Yes\n", "cookie", "a cookie value without ="),
-            ("Set-Cookie: Path=x\n > 1. Yes\n", "cookie", "a cookie under an attribute name"),
-            ("send the cookie?\n > 1. Yes\n", "cookie", "the word cookie"),
-            ("deploy to lab.example.org?\n > 1. Yes\n", "host", "a two-label host"),
-            ("account 123456789012?\n > 1. Yes\n", "long number", "a 12-digit account id"),
-            ("ask t0070-extract-shared-cognito-auth-edge-g-c8?\n > 1. Yes\n", "token-shaped", "a long dashed name"),
-            ("x" * 401 + "\n > 1. Yes\n", "longer than 400", "an over-long line"),
+            ("Do you want to proceed?\n ❯ 1. AKIAIOSF\n   2. No\nODNN7EXAMPLE\n", "identifier-shaped", "a secret split across lines"),
+            ("key " + "0123456789abcdef" * 4 + "?\n ❯ 1. Yes\n   2. No\n", "identifier-shaped", "a bare 64-hex key"),
+            ("copy host:/home/a/b now?\n ❯ 1. Yes\n   2. No\n", "path", "a path after a colon"),
+            ("open file:/etc/shadow?\n ❯ 1. Yes\n   2. No\n", "path", "a file: path"),
+            ("read home/alice/.aws/credentials?\n ❯ 1. Yes\n   2. No\n", "path", "a relative path"),
+            ("read ./alice/.ssh/id_rsa?\n ❯ 1. Yes\n   2. No\n", "path", "a ./ path"),
+            ("read /tmp/my file/x?\n ❯ 1. Yes\n   2. No\n", "path", "a path with a space"),
+            ("read /donn\u00e9es/\u00e9t\u00e9?\n ❯ 1. Yes\n   2. No\n", "path", "a non-ASCII path"),
+            ("read C:\\Users\\a?\n ❯ 1. Yes\n   2. No\n", "path", "a backslash path"),
+            ("read ~ now?\n ❯ 1. Yes\n   2. No\n", "path", "the home marker"),
+            ("run sshpass -p S3cret ssh h?\n ❯ 1. Yes\n   2. No\n", "credential", "a space-separated password"),
+            ("run mysql -p hunter2?\n ❯ 1. Yes\n   2. No\n", "credential", "mysql -p value"),
+            ("set pass=x?\n ❯ 1. Yes\n   2. No\n", "credential", "pass="),
+            ("set pwd=x?\n ❯ 1. Yes\n   2. No\n", "credential", "pwd="),
+            ("set PASS=x?\n ❯ 1. Yes\n   2. No\n", "credential", "PASS="),
+            ("credentials: abc\n ❯ 1. Yes\n   2. No\n", "credential", "credentials:"),
+            ("permission denied: /etc/shadow?\n ❯ 1. Yes\n   2. No\n", "path", "a question with a path above real options"),
+            ("mail alice\uff20example.org?\n ❯ 1. Yes\n   2. No\n", "path, address", "a fullwidth @"),
+            ("pass\u200bword=x?\n ❯ 1. Yes\n   2. No\n", "credential", "a zero-width character inside a label"),
+            ("Cookie: abc123\n ❯ 1. Yes\n   2. No\n", "cookie", "a cookie value without ="),
+            ("Set-Cookie: Path=x\n ❯ 1. Yes\n   2. No\n", "cookie", "a cookie under an attribute name"),
+            ("send the cookie?\n ❯ 1. Yes\n   2. No\n", "cookie", "the word cookie"),
+            ("deploy to lab.example.org?\n ❯ 1. Yes\n   2. No\n", "host", "a two-label host"),
+            ("account 123456789012?\n ❯ 1. Yes\n   2. No\n", "long number", "a 12-digit account id"),
+            ("ask t0070-extract-shared-cognito-auth-edge-g-c8?\n ❯ 1. Yes\n   2. No\n", "token-shaped", "a long dashed name"),
+            ("x" * 401 + "\n ❯ 1. Yes\n   2. No\n", "longer than 400", "an over-long line"),
             ("just text\n> \n   [Fable 5.1] x | dev\n", "no prompt or dialog", "no dialog at all"),
             # the final review's denylist: short passwords next to flags or words the redactor does not know
-            ("Bash(docker login -u bob -p hunter2)\n > 1. Yes\n", "credential, login or flag word", "docker login -p"),
-            ("Bash(echo 'S3cr3t!' | sudo -S apt update)\n > 1. Yes\n", "credential, login or flag word", "sudo -S"),
-            ("Bash(gpg --passphrase hunter2 f)\n > 1. Yes\n", "credential, login or flag word", "gpg --passphrase"),
-            ("passphrase: hunter2\n > 1. Yes\n", "credential, login or flag word", "passphrase:"),
-            ("Bash(export DB_PASS=hunter2)\n > 1. Yes\n", "credential, login or flag word", "DB_PASS="),
-            ("Bash(zip -P hunter2 a.zip f)\n > 1. Yes\n", "credential, login or flag word", "zip -P"),
-            ("Bash(unzip -P hunter2 a.zip)\n > 1. Yes\n", "credential, login or flag word", "unzip -P"),
-            ("Bash(openssl enc -k hunter2 -in f)\n > 1. Yes\n", "credential, login or flag word", "openssl -k"),
-            ("Bash(htpasswd -b f bob hunter2)\n > 1. Yes\n", "credential, login or flag word", "htpasswd -b"),
-            ("the password is hunter2\n > 1. Yes\n", "credential, login or flag word", "password is"),
-            ("token swordfish\n > 1. Yes\n", "credential, login or flag word", "token word"),
-            ("secret swordfish\n > 1. Yes\n", "credential, login or flag word", "secret word"),
-            ("rotate the api key?\n > 1. Yes\n", "credential, login or flag word", "the word key"),
-            ("auth header?\n > 1. Yes\n", "credential, login or flag word", "auth"),
-            ("use mysql -W now?\n > 1. Yes\n", "credential, login or flag word", "-W flag"),
-            ("ping 10.1.2.3?\n > 1. Yes\n", "network address", "an IPv4 address"),
-            ("ping fe80::1?\n > 1. Yes\n", "network address", "an IPv6 address"),
-            ("ping ::1?\n > 1. Yes\n", "network address", "the IPv6 loopback"),
+            ("Bash(docker login -u bob -p hunter2)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "docker login -p"),
+            ("Bash(echo 'S3cr3t!' | sudo -S apt update)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "sudo -S"),
+            ("Bash(gpg --passphrase hunter2 f)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "gpg --passphrase"),
+            ("passphrase: hunter2\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "passphrase:"),
+            ("Bash(export DB_PASS=hunter2)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "DB_PASS="),
+            ("Bash(zip -P hunter2 a.zip f)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "zip -P"),
+            ("Bash(unzip -P hunter2 a.zip)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "unzip -P"),
+            ("Bash(openssl enc -k hunter2 -in f)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "openssl -k"),
+            ("Bash(htpasswd -b f bob hunter2)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "htpasswd -b"),
+            ("the password is hunter2\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "password is"),
+            ("token swordfish\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "token word"),
+            ("secret swordfish\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "secret word"),
+            ("rotate the api key?\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "the word key"),
+            ("auth header?\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "auth"),
+            ("use mysql -W now?\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "-W flag"),
+            ("ping 10.1.2.3?\n ❯ 1. Yes\n   2. No\n", "network address", "an IPv4 address"),
+            ("ping fe80::1?\n ❯ 1. Yes\n   2. No\n", "network address", "an IPv6 address"),
+            ("ping ::1?\n ❯ 1. Yes\n   2. No\n", "network address", "the IPv6 loopback"),
             # T-0179: the remaining short-password forms
-            ("Bash(ssh-keygen -N hunter2 -f k)\n > 1. Yes\n", "credential, login or flag word", "ssh-keygen -N"),
-            ("Bash(redis-cli -a hunter2 ping)\n > 1. Yes\n", "credential, login or flag word", "redis-cli -a"),
-            ("Bash(lftp -u bob,hunter2 host)\n > 1. Yes\n", "credential, login or flag word", "lftp -u user,pass"),
-            ("Bash(smbclient -U bob%hunter2 share)\n > 1. Yes\n", "credential, login or flag word", "smbclient -U user%pass"),
-            ("Bash(curl -u bob:hunter2 h)\n > 1. Yes\n", "credential, login or flag word", "curl -u user:pass"),
-            ("PIN 1234\n > 1. Yes\n", "credential, login or flag word", "PIN"),
-            ("Bash(docker run -e PW=hunter2 img)\n > 1. Yes\n", "credential, login or flag word", "-e PW="),
-            ("Bash(sudo --stdin apt update)\n > 1. Yes\n", "credential, login or flag word", "sudo --stdin"),
+            ("Bash(ssh-keygen -N hunter2 -f k)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "ssh-keygen -N"),
+            ("Bash(redis-cli -a hunter2 ping)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "redis-cli -a"),
+            ("Bash(lftp -u bob,hunter2 host)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "lftp -u user,pass"),
+            ("Bash(smbclient -U bob%hunter2 share)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "smbclient -U user%pass"),
+            ("Bash(curl -u bob:hunter2 h)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "curl -u user:pass"),
+            ("PIN 1234\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "PIN"),
+            ("Bash(docker run -e PW=hunter2 img)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "-e PW="),
+            ("Bash(sudo --stdin apt update)\n ❯ 1. Yes\n   2. No\n", "credential, login or flag word", "sudo --stdin"),
         ]
         for screen, reason, label in probes:
             text, why = fd(screen)
@@ -713,12 +713,14 @@ class TestForeignDialog(unittest.TestCase):
 
     def test_fake_prompt_lines_do_not_widen_the_dialog(self):
         fd = panel_sources.foreign_dialog
-        text, why = fd("Do you want to proceed?\nsecret=abc\n\n\nreal question?\n > 1. Yes\n")
-        self.assertEqual((text, why), ("real question?\n> 1. Yes", ""), "only the block adjacent to the options is shown")
-        self.assertEqual(fd("ls: permission denied\n"), ("ls: permission denied", ""), "without options, the one prompt-like line and nothing else")
-        self.assertEqual(fd("Do you want to proceed?\nsecret=abc\n")[0], "Do you want to proceed?")
+        text, why = fd("Do you want to proceed?\nsecret=abc\n\n\nreal question?\n ❯ 1. Yes\n   2. No\n")
+        self.assertEqual((text, why), ("real question?\n❯ 1. Yes\n2. No", ""), "only the block adjacent to the options is shown")
+        self.assertEqual(fd("ls: permission denied\n"), ("", "no prompt or dialog on the visible screen"),
+                         "T-0177: a bare prompt-like line is not a prompt; without a real dialog nothing is shown")
+        self.assertEqual(fd("Do you want to proceed?\nsecret=abc\n"), ("", "no prompt or dialog on the visible screen"))
+        self.assertEqual(fd("│ Do you want to proceed? │\nsecret=abc\n")[0], "Do you want to proceed?", "a boxed one is, and shows alone")
         long = "is this the question you wanted answered " * 5          # 205 clean characters, as on a wide pane
-        text, why = fd(long.strip() + "?\n > 1. Yes\n")
+        text, why = fd(long.strip() + "?\n ❯ 1. Yes\n   2. No\n")
         self.assertEqual(why, "")
         self.assertEqual(text.split("\n")[0], long[:159] + "\u2026", "the content rules see the whole line; the drawer shows 160 characters")
 

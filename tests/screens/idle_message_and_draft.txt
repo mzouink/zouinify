@@ -1,0 +1,14 @@
+› Message from @someproj-desk: desk, NEW RULE (manager, effective now): do not ask the human for permission in your own
+  window; every ask goes through the desk. Allow the desk to batch it.
+● Understood. I have nothing pending for you. I'm idle until T-0115's paid run reports on T-0084.
+✻ Sautéed for 10s · done 5:48 PM
+  ⎿  Read /tmp/scratch/t0083-contract.md
+  ⎿  Referenced file scripts/ticket.sh
+● Compacted while idle, before the prompt cache expired
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ give me the docker push commands for T-0084
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   [Opus 5.5] 📁 someproj | 🌿 dev
+   💰 $98.02 | ⏱️   5d 9h 23m | 0% ctx
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
