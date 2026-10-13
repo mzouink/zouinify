@@ -22,6 +22,10 @@ ENV_RE = re.compile(rf"\b([A-Z0-9_]*(?:PASSCODE|PASSWORD|PASSWD|TOKEN|SECRET|API
 URL_CRED_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s]+)@")
 # curl -u user:pw, --user user:pw, --user=user:pw
 CURL_USER_RE = re.compile(r"(?i)(\s(?:-u|--user)(?:\s+|=))([^\s:]+):(\S+)")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78]")
+PROMPT_RE = re.compile(r"(?i)((?:Password|Passphrase|Passcode|Token|Secret)\s+for\s+'[^']*':|Enter (?:passphrase|password)[^:]*:)[ \t]*(\S+)?")
+WRAP_RE = re.compile(r"^[ \t]*[A-Za-z0-9/+=_.\-]{8,}")
+MARKER_RE = re.compile(r"<redacted-next-line>")
 PEM_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S)
 PEM_OPEN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*\Z", re.S)
 SHAPES = [
@@ -33,6 +37,7 @@ SHAPES = [
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), "<redacted>"),
     (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), "<redacted>"),
     (re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"), "<redacted>"),
+    (re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"), "<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "<redacted>"),
     # a 40-char AWS-secret shape: mixed case plus a digit or /+ (so a 40-hex git sha is not touched)
     (re.compile(r"(?<![A-Za-z0-9/+=])(?=[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=]))(?=[A-Za-z0-9/+]{0,39}[A-Z])(?=[A-Za-z0-9/+]{0,39}[a-z])"
@@ -45,13 +50,27 @@ SHAPES = [
 def redact(text: str) -> str:
     if not text:
         return text
-    out = PEM_RE.sub("<redacted private key>", text)
+    out = ANSI_RE.sub("", text)
+    out = PEM_RE.sub("<redacted private key>", out)
     out = PEM_OPEN_RE.sub("<redacted private key>", out)
     out = URL_CRED_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>@", out)
     out = CURL_USER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}:<redacted>", out)
     out = LABEL_RE.sub(lambda m: f"{m.group(1)}<redacted>", out)
     out = FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
     out = ENV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", out)
+    out = PROMPT_RE.sub(lambda m: f"{m.group(1)} <redacted>" if m.group(2) else f"{m.group(1)} <redacted-next-line>", out)
     for rx, rep in SHAPES:
         out = rx.sub(rep, out)
-    return out
+    return wrapped_lines(out)
+
+
+def wrapped_lines(text: str) -> str:
+    """A secret that was cut by the pane width continues on the next line: when a redaction ends a line (or a
+    password prompt ended one), the leading token of the next line goes too."""
+    lines = text.split("\n")
+    for i in range(len(lines) - 1):
+        cur = lines[i].rstrip()
+        if cur.endswith("<redacted>") or cur.endswith("<redacted-next-line>"):
+            if WRAP_RE.match(lines[i + 1]):
+                lines[i + 1] = WRAP_RE.sub(lambda m: m.group(0)[: len(m.group(0)) - len(m.group(0).lstrip())] + "<redacted>", lines[i + 1], count=1)
+    return MARKER_RE.sub("<redacted>", "\n".join(lines))

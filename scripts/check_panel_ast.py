@@ -14,7 +14,8 @@ package is checked structurally. Every Python file under it may only:
   - never use a module as a value (no aliasing, no passing modules around);
   - never reference getattr/setattr/delattr/__import__/exec/eval/compile/globals/locals/vars/...,
     nor `open` / `print` except as the function of a direct call; never `*args` / `**kwargs` in a call;
-  - never open a file for writing (open()/.open() with a non-read or non-literal mode);
+  - never open a file for writing (the builtin open() with a non-read or non-literal mode); `.open` on anything is banned;
+  - import only at module level (an import inside a class or function would escape the attribute walk);
   - never touch an attribute that starts with `_`, nor one named os/subprocess/sys/ticket_sh/kill/
     replace/remove/write (except the response's `wfile.write`)/client/shutil/tempfile/...
 With no way to spawn, import dynamically, alias or write, a click cannot become a launch, a kill, a
@@ -76,6 +77,8 @@ BANNED_ATTRS = {
     "run_module", "interact", "startfile", "truncate", "client", "shutil", "tempfile", "functools", "partial", "copy", "copyfile",
     "copytree", "move", "rmtree", "request", "urlopen", "Popen", "run", "call", "check_output", "check_call", "io", "excepthook",
     "settrace", "setprofile", "zouinify", "panelctl", "registry", "agents",   # (.tmux / .status / .config are plain data fields)
+    "spawnlpe", "spawnvpe", "execlpe", "pwrite", "writev", "dup", "dup2", "fchmod", "fchown", "lchown", "mknod", "mkfifo", "utime",
+    "ftruncate", "open",   # `.open` on anything: only the builtin open(...) in a literal read mode exists for the panel
 }
 ALLOWED_DUNDERS = {"__name__", "__file__", "__doc__", "__future__", "__init__", "__enter__", "__exit__", "__str__", "__repr__",
                    "__eq__", "__hash__", "__iter__", "__len__", "__contains__", "__getitem__", "__setitem__", "__call__"}
@@ -169,7 +172,15 @@ class Checker(ast.NodeVisitor):
             self.problems.append(line)
 
     # -- imports ----------------------------------------------------------------------------------------
+    def module_level(self, node) -> bool:
+        if isinstance(getattr(node, "parent", None), ast.Module):
+            return True
+        self.flag(node, "an import inside a class, function or block: imports are allowed at module level only")
+        return False
+
     def visit_Import(self, node):
+        if not self.module_level(node):
+            return
         for a in node.names:
             if a.name == "zouinify" or a.name.startswith("zouinify."):
                 self.flag(node, f"`import {a.name}`: the panel imports zouinify only as `from zouinify import readonly|panelstate` "
@@ -186,6 +197,8 @@ class Checker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
+        if not self.module_level(node):
+            return
         mod = resolve(self.pkg_dir, node.module or "", node.level)
         shown = f"{'.' * node.level}{node.module or ''}"
         if mod is None:
@@ -275,8 +288,6 @@ class Checker(ast.NodeVisitor):
                 self.flag(node, "attribute .write is allowed only on the response's wfile")
         elif attr in BANNED_ATTRS:
             self.flag(node, f"attribute .{attr} is banned in the panel")
-        if attr == "open" and id(node) not in self.called_attr:
-            self.flag(node, ".open used as a value (only a direct read-mode call is allowed)")
         chain, root = [], node
         while isinstance(root, ast.Attribute):
             chain.append(root.attr)
@@ -306,8 +317,6 @@ class Checker(ast.NodeVisitor):
                 self.check_open(node, method=False)
         elif isinstance(f, ast.Attribute):
             self.called_attr.add(id(f))
-            if f.attr == "open":
-                self.check_open(node, method=True)
         for a in node.args:
             if isinstance(a, ast.Starred):
                 self.flag(node, "*args in a call")
@@ -320,8 +329,6 @@ class Checker(ast.NodeVisitor):
         mode = None
         if not method and len(node.args) >= 2:
             mode = node.args[1]
-        if method and len(node.args) >= 1:
-            mode = node.args[0]
         for kw in node.keywords:
             if kw.arg == "mode":
                 mode = kw.value

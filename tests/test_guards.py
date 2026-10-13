@@ -266,6 +266,19 @@ AST_OFFENDING = [
     "from zouinify.launch import cmd_up",
     "from zouinify.panel import nonexistent_module",
     "from .nonexistent import x",
+    # the desk's fourth round (T-0160): imports inside bodies, more process/file primitives, .open on anything
+    "class A:\n    import os as o\nA.o.spawnvpe(0, 'x', [], {})",
+    "def f():\n    import os\n    return os.getpid()",
+    "if True:\n    import json as j2",
+    "try:\n    import tempfile\nexcept ImportError:\n    pass",
+    "import os\nos.execlpe('x', 'x', {})",
+    "import os\nos.pwrite(1, b'x', 0)",
+    "import os\nos.dup2(1, 2)",
+    "import os\nos.fchmod(1, 0o777)",
+    "import os\nos.mkfifo('x')",
+    "from pathlib import Path\nPath('x').open()",
+    "x = Path('x').open",
+    "import io\nio.open('x', 'w')",
 ]
 
 # variants that need the real sibling files next to them (planted into a copy of the real panel dir)

@@ -207,7 +207,12 @@ class TestApi(PanelWorld):
                     "TICKET=T-0001 scripts/deploy_site.sh", "git push origin main", "scripts/ticket.sh apply x.tfplan --tickets T-0001",
                     "aws lambda update-function-code --function-name f", "scripts/tf.sh prod apply x.tfplan"):
             self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 2, cmd)
-        for cmd in ("cd /x && ./fix.sh", "aws sso login", "aws lambda get-function --function-name f", "git status", "terraform -chdir=terraform plan -out=x.tfplan"):
+        for cmd in ("terraform -chdir=x -auto-approve apply", "TF_CMD=apply; terraform $TF_CMD", "git -C /x push", "git -C /x --no-verify push origin dev",
+                    "aws s3 rm s3://b/k", "aws s3 sync . s3://b/", "aws s3 cp f s3://b/f", "gh pr merge 3 --rebase", "make deploy", "make -C infra deploy-prod",
+                    "docker --context prod push img", "kubectl -n x apply -f y.yaml", "helm upgrade rel chart", "aws lambda put-function-concurrency --function-name f"):
+            self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 2, cmd)
+        for cmd in ("cd /x && ./fix.sh", "aws sso login", "aws lambda get-function --function-name f", "git status", "git -C /x log -3",
+                    "terraform -chdir=terraform plan -out=x.tfplan", "aws s3 ls s3://b/", "make test", "kubectl get pods", "gh pr view 3"):
             self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 1, cmd)
         self.assertEqual(s["kpis"]["inbox"], 4)          # the items of human --json
 
@@ -474,6 +479,15 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(r("curl -u alice:s3cret https://h/"), "curl -u alice:<redacted> https://h/")
         self.assertEqual(r("curl --user=alice:s3cret https://h/"), "curl --user=alice:<redacted> https://h/")
         self.assertEqual(r("https://example.test/path stays"), "https://example.test/path stays")
+        # the desk's fourth round (T-0160)
+        self.assertEqual(r("\x1b[32maws_secret_access_key\x1b[0m = \x1b[1mabc\x1b[0m done"), "aws_secret_access_key = <redacted> done")
+        self.assertEqual(r("\x1b]0;title\x07plain \x1b[2K\x1b[1;31mred\x1b[0m"), "plain red")
+        self.assertEqual(r("tok " + "hf_" + "ABCDEFGHIJKLMNOPQRSTUVWX"), "tok <redacted>")
+        self.assertEqual(r("Password for 'https://alice@github.test': hunter2"), "Password for 'https://alice@github.test': <redacted>")
+        self.assertEqual(r("Password for 'https://alice@github.test':\nhunter2typed\nnext"), "Password for 'https://alice@github.test': <redacted>\n<redacted>\nnext")
+        wrapped = "aws_session_token = FQoGZXIvYXdzEBYaDHNvbWV0aGluZ2hl\ncmUiLGZha2V0b2tlbg==\n$ ls"
+        self.assertEqual(r(wrapped), "aws_session_token = <redacted>\n<redacted>\n$ ls")
+        self.assertEqual(r("x = <redacted>\nshort\n"), "x = <redacted>\nshort\n", "a short next line is not a continuation")
 
 
 class TestControl(World):
