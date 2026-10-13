@@ -26,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--non-interactive", action="store_true", help="no questions: --name, --short and --human are required, the rest "
                                                                    "default to the proposals")
     s.add_argument("--protocol", action="store_true", help="second step, after the config exists: install the ticket protocol "
-                   "(scripts/ticket.sh, tickets/ticket.env, tickets/plugins/none, the rendered README/_TEMPLATE/WORKER_BRIEF, a CLAUDE.md "
-                   "block) after a printed plan and your typed yes on this terminal; never non-interactive, never from a session")
+                   "(scripts/ticket.sh, tickets/ticket.env, tickets/plugins/none, the rendered README/_TEMPLATE/WORKER_BRIEF) after a printed "
+                   "plan and your typed yes on this terminal, and prints the CLAUDE.md block for you to paste; never non-interactive, never from a session")
     for f, h in (("name", "project name"), ("short", "short tag prefixing the session names (1-8 lowercase letters or digits)"),
                  ("trunk", "trunk branch (default: the checked-out branch)"), ("prod", "production branch ('' for none)"),
                  ("model", "model for every session (default fable)"), ("port", "panel port (default 4700 + crc32(root) %% 90, free)"),

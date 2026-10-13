@@ -13,7 +13,7 @@ set -u
 strict='AKIA[0-9A-Z]{16}|sk-ant-[A-Za-z0-9_-]{8,}|aws_secret_access_key *= *[A-Za-z0-9/+]{20,}|aws_session_token *= *[A-Za-z0-9/+=]{40,}|gh[pousr]_[A-Za-z0-9]{20,}'
 loose='\b[0-9]{12}\b|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|/(home|Users|groups)/[A-Za-z0-9._@-]+'
 self='^scripts/check_public\.sh$'
-exempt_loose='^(tests/|scripts/check_public\.sh$)'
+exempt_loose='^(tests/|templates/protocol/scripts/tests/|scripts/check_public\.sh$)'   # the vendored harness plants qa@example.invalid on purpose
 pats=${ZOUINIFY_PRIVATE_PATTERNS:-$HOME/.config/zouinify/private-patterns}
 files=$( { git ls-files; git diff --name-only --cached; } 2>/dev/null | sort -u | while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done)
 if [ -z "$files" ]; then

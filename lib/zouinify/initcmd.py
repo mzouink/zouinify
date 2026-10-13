@@ -32,7 +32,7 @@ HUMAN_ONLY_DEFAULT = ("production deploys and applies (every one goes through th
 PROMPTS = {"name": "project name", "short": "short tag (1-8 lowercase letters or digits; prefixes session names)",
            "trunk": "trunk branch", "prod": "production branch (empty for none)", "model": "model for every session",
            "port": "panel port (the terminal page takes +1, the hook listener +2)", "human": "your name (the briefs address you)"}
-SECOND_HALF = "tickets/, scripts/ticket.sh and the CLAUDE.md block come with `zouinify init --protocol`: a printed plan, then your own yes on that terminal"
+SECOND_HALF = "tickets/ and scripts/ticket.sh come with `zouinify init --protocol` (a printed plan, then your own yes on that terminal; it prints the CLAUDE.md block for you to paste)"
 TOP_KEYS = ("version", "project", "repos", "tickets", "human_only", "budget", "model", "sessions", "panel", "terminal", "contact")
 GITIGNORE_COVERS = (".ops/state/", ".ops/state", "/.ops/state/", "/.ops/state", ".ops/", ".ops", "/.ops/", "/.ops")
 

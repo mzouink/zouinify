@@ -39,8 +39,8 @@ Then, inside your project:
 zouinify init                  # asks for name, short tag, branches, model, port, your name; writes .ops/config.yaml,
                                # .ops/briefs/*.md and the .ops/state/ line in .gitignore; never overwrites, nothing outside the repo
 zouinify init --protocol       # shows the plan, then after your typed yes: scripts/ticket.sh (the vendored core), tickets/ticket.env,
-                               # tickets/plugins/none, the rendered tickets/README.md, _TEMPLATE.md, WORKER_BRIEF.md, a CLAUDE.md block;
-                               # you commit them (init commits nothing)
+                               # tickets/plugins/none, the rendered tickets/README.md, _TEMPLATE.md, WORKER_BRIEF.md; it prints the
+                               # CLAUDE.md block for you to paste (init never writes CLAUDE.md); you commit (init commits nothing)
 zouinify config --check        # validates the file (edit it first: repos, human_only, budget)
 zouinify up --dry-run          # shows the exact tmux + claude lines it would run
 zouinify up                    # starts the desk, manager and debug sessions

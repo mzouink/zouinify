@@ -4,10 +4,12 @@
 It writes, under the realpath'd repository root only and never over an existing file: `scripts/ticket.sh` (the vendored core,
 byte-identical to the pinned upstream commit, mode 755), `tickets/ticket.env` (this project's values, the parsed grammar),
 `tickets/plugins/none/` (the no-op deploy plugin with its docs), `tickets/README.md`, `tickets/_TEMPLATE.md` and
-`tickets/WORKER_BRIEF.md` (rendered), the worktrees line in `.gitignore`, and a marked block in `CLAUDE.md` (created, or
-appended once; left alone when the markers are present). Every one of those is a tracked file, so the run shows the plan
-first and goes on only after the human types `yes` on that terminal: never `--non-interactive`, never inside a Claude
-session, never on a relayed answer. `--dry-run` prints the plan anywhere. init commits nothing: the human commits.
+`tickets/WORKER_BRIEF.md` (rendered), and the worktrees line in `.gitignore`. Every one of those is a tracked file, so the
+run shows the plan first and goes on only after the human types `yes` on that terminal: never `--non-interactive`, never
+inside a Claude session. That gate stops accidents (a session, a pipe, a relayed answer); it cannot stop a deliberate
+process of the same user, which is why `CLAUDE.md` -- the one file that changes what every future session is told -- is
+NEVER written here (desk decision, T-0185 review): the marked block is printed, and the human pastes it themselves.
+`--dry-run` prints the plan anywhere. init commits nothing: the human commits.
 """
 from __future__ import annotations
 
@@ -38,15 +40,20 @@ def claude_block(cfg, fragments, sections) -> str:
 
 
 def claude_state(root: str) -> str:
+    """Informational only (init never writes CLAUDE.md): absent | present (both markers) | malformed (one marker) | missing-block."""
     p = os.path.join(root, "CLAUDE.md")
-    if os.path.islink(p):
-        return "symlink"
     if not os.path.lexists(p):
-        return "create"
+        return "absent"
     if not os.path.isfile(p):
-        return "not-a-file"
+        return "missing-block"
     with open(p, encoding="utf-8", errors="replace") as fh:
-        return "exists" if MARK_START in fh.read() else "append"
+        text = fh.read()
+    has_start, has_end = MARK_START in text, MARK_END in text
+    if has_start and has_end:
+        return "present"
+    if has_start or has_end:
+        return "malformed"
+    return "missing-block"
 
 
 def line_state(root: str, line: str) -> str:
@@ -59,7 +66,11 @@ def line_state(root: str, line: str) -> str:
         return "skip"
     with open(p, encoding="utf-8", errors="replace") as fh:
         lines = [ln.strip() for ln in fh.read().splitlines()]
-    return "exists" if line in lines or line.rstrip("/") in lines or "/" + line in lines else "append"
+    covers = {line, line.rstrip("/"), "/" + line, "/" + line.rstrip("/")}
+    top = line.split("/")[0]
+    if top and top != line.rstrip("/"):
+        covers |= {top, top + "/", "/" + top, "/" + top + "/"}            # `.claude/` already covers `.claude/worktrees/`
+    return "exists" if any(ln in covers for ln in lines) else "append"
 
 
 def check_supported(cfg) -> None:
@@ -83,6 +94,22 @@ def check_supported(cfg) -> None:
                             f"plugins/none/docs/; then set deploy_plugin back and regenerate ticket.env (zouinify config --env).")
 
 
+def check_target_dirs(root: str, rels: list) -> None:
+    """Before anything is written: every existing component on the way to a target is a real directory inside the root
+    (a symlinked tickets/ or scripts/ would carry the files elsewhere; initcmd.resolve_root does the same for .ops)."""
+    for rel in rels:
+        parts = rel.split(os.sep)[:-1]
+        cur = root
+        for part in parts:
+            cur = os.path.join(cur, part)
+            if os.path.islink(cur):
+                raise ZouinifyError(f"{os.path.relpath(cur, root)} is a symlink; init --protocol writes under the repository root only")
+            if os.path.lexists(cur) and not os.path.isdir(cur):
+                raise ZouinifyError(f"{os.path.relpath(cur, root)} exists and is not a directory")
+            if os.path.lexists(cur) and not initcmd.inside(root, cur):
+                raise ZouinifyError(f"{os.path.relpath(cur, root)} resolves outside the repository root; refusing")
+
+
 def build_plan(cfg, out) -> list:
     """[(rel, content_bytes, mode, state)] in write order; state write|exists; the CLAUDE.md and .gitignore items last."""
     items = []
@@ -103,9 +130,13 @@ def build_plan(cfg, out) -> list:
     rendered = protocol.render_all(cfg, out=out)
     for name in protocol.FILES:
         items.append((os.path.join("tickets", name), rendered[name].encode("utf-8"), 0o644))
+    check_target_dirs(cfg.root, [rel for rel, _c, _m in items])
     plan = []
     for rel, content, mode in items:
-        plan.append((rel, content, mode, "exists" if os.path.lexists(os.path.join(cfg.root, rel)) else "write"))
+        path = os.path.join(cfg.root, rel)
+        if os.path.islink(path):
+            raise ZouinifyError(f"{rel} is a symlink; init --protocol never writes through a link and never replaces one")
+        plan.append((rel, content, mode, "exists" if os.path.lexists(path) else "write"))
     return plan
 
 
@@ -114,12 +145,16 @@ def print_plan(cfg, plan, block, gi_line, gi_state, cl_state, out) -> None:
     for rel, content, mode, state in plan:
         print(f"  {state:<8} {rel}  ({len(content)} bytes{', mode 755' if mode == 0o755 else ''})", file=out)
     print(f"  {gi_state:<8} .gitignore  (line `{gi_line}`)", file=out)
-    print(f"  {cl_state:<8} CLAUDE.md  (the block between {MARK_START} and {MARK_END})", file=out)
+    print(f"  {'paste':<8} CLAUDE.md  (never written by init: " + {
+        "absent": "no CLAUDE.md yet; create it with the block printed below",
+        "present": "the block's markers are already there; nothing to paste",
+        "malformed": "WARNING: only one of the two markers is present; repair the block by hand",
+        "missing-block": "paste the block printed below at the end of the file"}[cl_state] + ")", file=out)
     print("  every file above is tracked: commit them yourself afterwards; init commits nothing", file=out)
     env_text = next(c for r, c, m, s in plan if r == os.path.join("tickets", "ticket.env")).decode("utf-8")
     print("\n--- tickets/ticket.env ---", file=out)
     out.write(env_text)
-    print("--- CLAUDE.md block ---", file=out)
+    print("--- CLAUDE.md block (paste it yourself; a session must never edit CLAUDE.md, and neither does init) ---", file=out)
     out.write(block)
 
 
@@ -149,8 +184,9 @@ def _cmd_protocol(target, dry_run, out) -> int:
     cl_state = claude_state(root)
     print_plan(cfg, plan, block, gi_line, gi_state, cl_state, out)
     todo = [p for p in plan if p[3] == "write"]
-    if not todo and gi_state in ("exists", "symlink", "skip") and cl_state in ("exists", "symlink", "not-a-file"):
-        print("\nnothing to write: the protocol is installed (init --protocol never overwrites).", file=out)
+    if not todo and gi_state in ("exists", "symlink", "skip"):
+        print("\nnothing to write: the protocol is installed (init --protocol never overwrites)." +
+              ("" if cl_state == "present" else " CLAUDE.md still lacks the block: paste it from above."), file=out)
         return 0
     if dry_run:
         print("\n(dry run: nothing written)", file=out)
@@ -171,6 +207,7 @@ def _cmd_protocol(target, dry_run, out) -> int:
                 print(f"exists     {rel}  (left as is)", file=out)
                 continue
             path = os.path.join(root, rel)
+            check_target_dirs(root, [rel])                            # again, right before the write: nothing moved meanwhile
             os.makedirs(os.path.dirname(path), exist_ok=True)
             if not initcmd.inside(root, os.path.dirname(path)):
                 raise ZouinifyError(f"refusing to write outside the repository root: {rel}")
@@ -193,24 +230,18 @@ def _cmd_protocol(target, dry_run, out) -> int:
         else:
             print(f"{'exists' if gi_state == 'exists' else 'skipped':<10} .gitignore  (line `{gi_line}`" +
                   ("" if gi_state == "exists" else "; a symlink or hard link: add it yourself") + ")", file=out)
-        if cl_state in ("create", "append"):
-            p = os.path.join(root, "CLAUDE.md")
-            with os.fdopen(os.open(p, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644), "a", encoding="utf-8") as fh:
-                if cl_state == "append" and not initcmd._ends_with_newline(p):
-                    fh.write("\n")
-                if cl_state == "append":
-                    fh.write("\n")
-                fh.write(block)
-            print(f"{'created' if cl_state == 'create' else 'appended':<10} CLAUDE.md  (the marked block)", file=out)
-        else:
-            print(f"{'exists' if cl_state == 'exists' else 'skipped':<10} CLAUDE.md  ({'markers present, left as is' if cl_state == 'exists' else 'a symlink or not a file: add the block yourself'})", file=out)
+        print(f"{'paste':<10} CLAUDE.md  (not written: " + ("the block is already there" if cl_state == "present" else
+                                                       "add the block printed above yourself") + ")", file=out)
     except BaseException:
         initcmd.undo(root, created, out)
         raise
-    verify_core(root, out)
-    print(f"\nnext: review and commit the files (`git add {CORE_REL} tickets .gitignore CLAUDE.md && git commit`), then "
-          f"`{cfg.tickets_script} board`. Changing .ops/config.yaml later: `zouinify config --env` and commit tickets/ticket.env through a ticket.",
-          file=out)
+    if CORE_REL in created:
+        verify_core(root, out)
+    else:
+        print(f"verify     skipped: {CORE_REL} was already here and is not this run's to execute", file=out)
+    print(f"\nnext: paste the CLAUDE.md block printed above (init never edits CLAUDE.md), review and commit the files "
+          f"(`git add {CORE_REL} tickets .gitignore CLAUDE.md && git commit`), then `{cfg.tickets_script} board`. Changing .ops/config.yaml "
+          f"later: `zouinify config --env` and commit tickets/ticket.env through a ticket.", file=out)
     return 0
 
 
