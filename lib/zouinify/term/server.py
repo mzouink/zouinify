@@ -77,6 +77,9 @@ class TermServer(ThreadingHTTPServer):
         self.unlocks: dict = {}         # unlock id -> {ip, ua, at, last}
         self.attachments: dict = {}     # tid -> {unlock, target, at, last}
         self.lock = threading.Lock()
+        # the one clock behind every idle, maximum and lockout time (unix seconds): the wall clock in production, a fake the
+        # tests advance by hand, so no test waits on real seconds and a slow run cannot cross a timer by itself (T-0225)
+        self.clock = time.time
 
     @property
     def times(self) -> dict:
@@ -85,7 +88,7 @@ class TermServer(ThreadingHTTPServer):
     # -- unlock and attachment lifecycle ----------------------------------------------------------------
     def sweep(self) -> None:
         """Expire unlocks (idle / max) and attachments (idle / max / unlock gone); each expiry is audited."""
-        now = time.time()
+        now = self.clock()
         t = self.times
         with self.lock:
             for uid, u in list(self.unlocks.items()):
@@ -117,7 +120,7 @@ class TermServer(ThreadingHTTPServer):
 
     def new_unlock(self, ip: str, ua: str) -> str:
         uid = secrets.token_hex(32)
-        now = time.time()
+        now = self.clock()
         with self.lock:
             self.unlocks[uid] = {"ip": ip, "ua": ua, "at": now, "last": now}
         return uid
@@ -133,7 +136,7 @@ class TermServer(ThreadingHTTPServer):
 
     def new_attachment(self, uid: str, target: dict) -> str:
         tid = secrets.token_hex(32)
-        now = time.time()
+        now = self.clock()
         with self.lock:
             self.attachments[tid] = {"unlock": uid, "target": target, "at": now, "last": now}
         return tid
@@ -149,7 +152,7 @@ class TermServer(ThreadingHTTPServer):
             return self.attachments.pop(tid, None)
 
     def touch(self, uid: str, tid: str | None = None) -> None:
-        now = time.time()
+        now = self.clock()
         with self.lock:
             if uid in self.unlocks:
                 self.unlocks[uid]["last"] = now
@@ -162,7 +165,7 @@ class TermServer(ThreadingHTTPServer):
             if not a:
                 return 0
             t = self.times
-            now = time.time()
+            now = self.clock()
             return int(max(0, min(t["idle_close_s"] - (now - a["last"]), t["max_open_s"] - (now - a["at"]))))
 
 
@@ -376,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
     def unlock(self) -> None:
         srv: TermServer = self.server
         ip = self.ip()
-        now = time.time()
+        now = srv.clock()
         until = srv.lockout.get(ip, 0)
         if until > now:
             self.drain()

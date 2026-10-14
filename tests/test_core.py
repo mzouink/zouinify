@@ -120,6 +120,13 @@ contact: {{human: tester}}
 """
 
 
+def mark_runner(world: str) -> None:
+    """`<world>/.test-runner` = this pytest's pid: a server started for this world whose runner is dead is a leftover that
+    tests/conftest.py reaps at the next session start (T-0225); a live runner's servers are left alone."""
+    with open(os.path.join(world, ".test-runner"), "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+
+
 def _chmod_x(path):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -135,6 +142,7 @@ class World(unittest.TestCase):
         self.assertTrue(os.path.isfile(ZOUINIFY) and os.access(ZOUINIFY, os.X_OK),
                         f"no executable CLI at {ZOUINIFY}")
         self.tmp = tempfile.mkdtemp(prefix="zouinify-test-")
+        mark_runner(self.tmp)
         self.root = os.path.join(self.tmp, "proj")
         self.sso = os.path.join(self.tmp, "sso")
         self.home = os.path.join(self.tmp, "home")

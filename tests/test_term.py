@@ -7,9 +7,15 @@ close and refusal is one audit line; idle and maximum times close attachments an
 Host/Origin and methods are checked. Then the process side through the CLI: `term secret rotate` refuses inside a Claude
 session or without a TTY and prints the passphrase once on a pty; `term start` needs the secret and the flag;
 start/status/stop with a real detached process; `up` starts it when autostart is on. The fake tmux records every
-send-keys in calls.log and allows it only with ZOUINIFY_FAKE_TMUX_ALLOW_SEND_KEYS=1, which only TermWorld sets."""
+send-keys in calls.log and allows it only with ZOUINIFY_FAKE_TMUX_ALLOW_SEND_KEYS=1, which only TermWorld sets.
+
+The server's idle, maximum and lockout times run on its one clock (TermServer.clock, T-0225): TermWorld gives it a fake
+clock frozen at setup, so no request in any test can cross a timer by itself however slow the run, and the timing tests
+advance that clock by hand instead of sleeping (the world's 2 s / 3 s timers were real seconds before, and a loaded run made
+a 400 into a 410)."""
 import http.client
 import json
+import signal
 import os
 import pty
 import re
@@ -44,6 +50,20 @@ TERM_BLOCK = "terminal: {{enabled: true, port: {port}, bind: loopback, idle_clos
 PROMPT_SCREEN = (" Bash(git push origin dev)\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again\n"
                  "   3. No, and tell Claude what to do differently (esc)\n aws_secret_access_key = x\n\n   [Fable 5.1] x | dev\n")
 PASSPHRASE_RE = re.compile(r"\b[a-z2-9]{5}(?:-[a-z2-9]{5}){3}\b")
+
+
+class FakeClock:
+    """A clock the tests move: frozen until advance() is called. It starts at the real time so a stamp taken from it sits where a
+    wall-clock one would (the lockout's `get(ip, 0)` sentinel stays in the past; nothing compares it with a wall stamp)."""
+
+    def __init__(self):
+        self.t = time.time()
+
+    def now(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
 
 
 def free_port():
@@ -122,6 +142,9 @@ class TermWorld(World):
         self.cfg = cfgmod.load(self.root)
         panelstate.set_term_secret(self.cfg, PASS)
         self.srv = term_server.make_server(self.cfg, port=0, bind="loopback", address="127.0.0.1")
+        self.assertIs(self.srv.clock, time.time, "a server made for real runs on the wall clock")
+        self.clock = FakeClock()
+        self.srv.clock = self.clock.now             # frozen: no timer expires unless a test advances it
         self.port = self.srv.server_address[1]
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
@@ -319,6 +342,8 @@ class TestTermApi(TermWorld):
         self.assertEqual(len(self.sent()), 2, "nothing more was typed")
 
     def test_bad_keys_are_refused_and_nothing_is_sent(self):
+        """Sixteen refusals in a row on one attachment: with the frozen clock the attachment cannot go idle between them, however
+        slow the run (before T-0225 this test read 410 instead of 400 under load)."""
         cookie, _ = self.unlock()
         st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
         tid = d["tid"]
@@ -329,6 +354,8 @@ class TestTermApi(TermWorld):
             self.assertEqual(st, 400, (ops if not isinstance(ops, list) else ops[:2], d))
         st, _, d = self.req("POST", f"/term/{tid}/keys", raw=b"ops=Enter", ctype="application/x-www-form-urlencoded", cookie=cookie)
         self.assertEqual(st, 400, "a form body is not JSON: nothing is parsed from it")
+        st, _, _ = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+        self.assertEqual(st, 200, "the attachment (and so the unlock) is still there: no second passed for the server")
         self.assertEqual(self.sent(), [])
         self.assertTrue(all(a["event"] == "refused" and a["reason"].startswith("keys:") for a in self.audit()[-len(bad) - 1:]))
 
@@ -338,12 +365,15 @@ class TestTermApi(TermWorld):
         tid = d["tid"]
         st, _, _ = self.req("POST", f"/term/{tid}/keys", {"ops": [{"k": "Enter"}]}, cookie=cookie)
         self.assertEqual(st, 200)
-        time.sleep(2.3)                                   # idle_close_s: 2 in this world
+        self.clock.advance(1.9)                           # idle_close_s: 2 in this world: not yet
+        st, _, _ = self.req("GET", f"/term/{tid}/screen", cookie=cookie)   # goes through the attachment: 410 once idle-closed
+        self.assertEqual(st, 200)
+        self.clock.advance(0.4)                           # 2.3 s since the keystroke: the attachment is idle
         st, _, d = self.req("POST", f"/term/{tid}/keys", {"ops": [{"k": "Enter"}]}, cookie=cookie)
         self.assertEqual(st, 410, d)
         self.assertTrue(any(a["event"] == "close" and a["reason"] == "idle" and a["tid8"] == tid[:8] for a in self.audit()))
         self.assertEqual(len(self.sent()), 1)
-        time.sleep(3.3)                                   # unlock_idle_s: 3
+        self.clock.advance(3.3)                           # unlock_idle_s: 3 since the last request
         st, _, _ = self.req("GET", "/term/me", cookie=cookie)
         self.assertEqual(st, 401, "the unlock expired without a keystroke")
         self.assertTrue(any(a["event"] == "lock" and a["reason"] == "idle" and a["unlock8"] == cookie[:8] for a in self.audit()))
@@ -563,9 +593,8 @@ class TestTermApi(TermWorld):
         self.addCleanup(s.close)
         marker = os.path.join(self.state, "hang-hung")
         open(marker, "w").close()
-        # the world's 2 s attachment idle would expire during the checks below; a 503 is not a keystroke, so widen it here
-        with mock.patch.object(tmuxmod, "LIST_CLIENTS_TIMEOUT_S", 0.5), mock.patch.object(tmuxmod, "CLIENTS_BUDGET_S", 1.0), \
-                mock.patch.dict(self.srv.times, {"idle_close_s": 30, "unlock_idle_s": 30}):
+        # the clock is frozen (TermWorld), so the 2 s attachment idle cannot expire during the checks below
+        with mock.patch.object(tmuxmod, "LIST_CLIENTS_TIMEOUT_S", 0.5), mock.patch.object(tmuxmod, "CLIENTS_BUDGET_S", 1.0):
             t0 = time.monotonic()
             st, hdr, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
             self.assertEqual(st, 503, k)
@@ -749,6 +778,20 @@ class TestTermKeys(unittest.TestCase):
 
 
 class TestTermControl(World):
+    """The process side: `term start` runs a real detached server; tearDown stops whatever is still recorded in term.json, so
+    a failing test leaves no server behind (a killed run is tests/conftest.py's job)."""
+
+    def tearDown(self):
+        p = os.path.join(self.root, ".ops", "state", "term.json")
+        try:
+            with open(p, encoding="utf-8") as fh:
+                pid = json.load(fh).get("pid")
+            if pid:
+                os.kill(int(pid), signal.SIGTERM)
+        except (OSError, ValueError, TypeError):
+            pass
+        super().tearDown()
+
     """The process side through the CLI: the passphrase on a real TTY only, start/status/stop of a detached process, `up`."""
 
     def setUp(self):
@@ -813,6 +856,30 @@ class TestTermControl(World):
             cfg = cfgmod.load(self.root)
             self.assertTrue(panelstate.term_secret_matches(cfg, passphrase))
             self.assertFalse(panelstate.term_secret_matches(cfg, passphrase + "x"))
+
+    def test_a_leftover_server_of_a_dead_run_is_reaped_and_a_live_runs_is_not(self):
+        """T-0225: a killed pytest leaves its detached server running for hours; tests/conftest.py stops, at the next session
+        start, every test server whose world's `.test-runner` names a dead pytest, and leaves a live run's alone."""
+        import conftest
+        self.set_secret()
+        self.ok("term", "start")
+        with open(os.path.join(self.root, ".ops", "state", "term.json")) as fh:
+            pid = int(json.load(fh)["pid"])
+        self.assertTrue(conftest._alive(pid))
+        marker = os.path.join(self.tmp, ".test-runner")
+        self.assertEqual(open(marker).read().strip(), str(os.getpid()), "the world names the pytest that owns it")
+        self.assertEqual([p for p, _, _ in conftest.leftover_test_servers() if p == pid], [], "a live runner's server is not a leftover")
+        self.assertEqual(conftest.reap_leftovers(), 0)
+        self.assertTrue(conftest._alive(pid), "left alone")
+        gone = subprocess.Popen(["true"])                             # a pid that has exited: the runner died
+        gone.wait()
+        with open(marker, "w") as fh:
+            fh.write(f"{gone.pid}\n")
+        self.assertEqual([p for p, _, _ in conftest.leftover_test_servers() if p == pid], [pid], "its runner is dead: a leftover")
+        self.assertEqual(conftest.reap_leftovers(), 1)
+        self.assertFalse(conftest._alive(pid), "stopped")
+        self.assertFalse(os.path.exists(self.tmp), "and the world directory is gone")
+        os.makedirs(self.root, exist_ok=True)                         # tearDown wants a tree to remove
 
     def test_start_needs_the_flag_and_the_secret(self):
         r = self.nz("term", "start")
