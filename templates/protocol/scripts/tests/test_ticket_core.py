@@ -2149,14 +2149,18 @@ class TestPlainWordsEdges(HumanInboxHelpers):
         self.fixture("T-0004", "cut-in-a-char", "backlog", "cut", investigation=self.INV, plain="a" * 1199 + "é and more")
         self.fixture("T-0005", "whole-chars", "backlog", "whole", investigation=self.INV, plain="é" * 700)
         self.commit_main("tickets: long plain words")
-        p = self.ts("board", "--json", env=self.env_without_who())
+        # T-0220: a UTF-8 locale for the script, so an awk that counts characters there (gawk) would show; the core runs
+        # its awks under LC_ALL=C and counts bytes whatever the runner's awk (TICKET_WORLD_AWK=/path/to/gawk reproduces CI)
+        p = self.ts("board", "--json", env=dict(self.env_without_who(), LANG="C.UTF-8", LC_ALL="C.UTF-8"))
         self.assertEqual(p.returncode, 0, p.out)
         by = {t["id"]: t["plain"] for t in json.loads(p.stdout)["tickets"]}
         self.assertEqual(len(by["T-0003"]), 1200); self.assertEqual(by["T-0003"], ("word " * 400)[:1200])
         self.assertEqual(by["T-0004"], "a" * 1199, "the cut would split the two-byte character: it goes, the text stays valid UTF-8")
         self.assertEqual(by["T-0005"], "é" * 600, "600 two-byte characters are exactly 1200 bytes")
-        items = {i["tickets"]: i for i in json.loads(self.ts("human", "--json", env=self.env_without_who()).stdout)}
-        self.assertNotIn("T-0003", items, "no ask, no item -- the cap is checked on the board side")
+        p = self.ts("ask", "T-0004", "CHECK the long one | open it | it shows | nothing")
+        self.assertEqual(p.returncode, 0, p.out)
+        items = {i["tickets"]: i for i in json.loads(self.ts("human", "--json", env=dict(self.env_without_who(), LANG="C.UTF-8", LC_ALL="C.UTF-8")).stdout)}
+        self.assertEqual(items["T-0004"]["plain"], "a" * 1199, "the same cap on the inbox side")
         self.assert_main_sane()
 
     def test_blocked_to_ready_is_gated_like_backlog(self):

@@ -28,7 +28,7 @@ the same suite gives RED evidence against the base version:
 
 The world's main gets tickets/ticket.env (TICKET_ENV below: two repos named backend and frontend, like the real project)
 and a copy of tickets/plugins/ ($TICKET_PLUGINS_UNDER_TEST, default: this worktree's); the template is
-$TICKET_TEMPLATE_UNDER_TEST (default: this worktree's); `plugin` (or $TICKET_WORLD_PLUGIN) picks the plugin the world
+$TICKET_TEMPLATE_UNDER_TEST (default: this worktree's); $TICKET_WORLD_AWK runs the script with that awk binary (T-0220); `plugin` (or $TICKET_WORLD_PLUGIN) picks the plugin the world
 runs with (default aws-terraform; the aws-only classes are not written for none).
 """
 
@@ -199,6 +199,11 @@ class TicketShWorld(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.env = dict(os.environ)
+        awk = os.environ.get("TICKET_WORLD_AWK")   # T-0220: run the script with this awk (gawk, busybox awk, nawk ...) instead of PATH's
+        if awk:
+            shim = os.path.join(self.tmp, "awkbin"); os.makedirs(shim, exist_ok=True)
+            os.symlink(awk, os.path.join(shim, "awk"))
+            self.env["PATH"] = shim + os.pathsep + self.env["PATH"]
         self.env.update({
             "HOME": self.home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
             "GIT_AUTHOR_NAME": "qa", "GIT_AUTHOR_EMAIL": "qa@example.invalid",

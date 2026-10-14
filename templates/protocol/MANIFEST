@@ -1,12 +1,12 @@
 # templates/protocol/MANIFEST -- the vendored ticket protocol core (T-0185; re-pinned by T-0190, T-0193, T-0204, T-0215): byte-identical copies of the upstream files at the pinned commit.
 # tests/test_vendored.py checks every sha256 below, and diffs each file against `git -C $ZOUINIFY_UPSTREAM_REPO show <pin>:<path>` when that variable names a checkout.
 # Re-pin: copy the files from the new commit, update pin/version/hooks and the sums, one commit, one ticket.
-pin 59ff64169774567b6fa39adeaa5fef1d842342d7
-version 1.2.1
+pin 8b12d852f6a4d61f669eb5ec76eb6ad2e300778b
+version 1.2.2
 hooks plugin_evidence_check plugin_plan_key plugin_plan_void plugin_command_void_reason plugin_ask_check plugin_verb_for plugin_expect_line plugin_ignored_valuable_re plugin_deploy_kinds plugin_deploy_check plugin_apply_usage plugin_apply_prepare plugin_apply
-sha256 d27b73cd4655b109e79b782ada7b32273fe7eeae3eb7a4b504717694fc86b0c9 scripts/ticket.sh
-sha256 d5d060f7f3f2b046634cc72002b8cb8fa695e010234262a0e29ac4dc28e64509 scripts/tests/ticket_world.py
-sha256 1d78853a015eb65d6413a9378a959699fe8d2758ae64c6959ece134cf1220ecd scripts/tests/test_ticket_core.py
+sha256 135da2f288d5e6986f6840eaebd94c91c6214b3345183d0c21aabf6f4ad06c19 scripts/ticket.sh
+sha256 cd3622181e48358743b88113d688e3be627df095364b05dd74d1b377029867c8 scripts/tests/ticket_world.py
+sha256 0c48998600b83cfc456287c71a35874a610aef83a8e64e548cd4eb28686e651e scripts/tests/test_ticket_core.py
 sha256 00ce30c3345331663acc35c9d9254dcedf88d853d0615153638948e855d2c008 scripts/tests/test_ticket_env.py
 sha256 765979b83877f810d98ab70d0b93edbaa52c04614dc380d461f3be25aacf9942 scripts/tests/test_ticket_repos.py
 sha256 29087ecef58d2911024b87c3b86cb066b614d0059b21264f4d5f818b511e41bb tickets/plugins/none/plugin.sh

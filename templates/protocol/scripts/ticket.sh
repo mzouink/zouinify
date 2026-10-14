@@ -16,7 +16,7 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.2.1"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.2.2"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready), T-0220 (1.2.2: the JSON-producing awks run under LC_ALL=C, so every awk counts bytes -- under gawk in a UTF-8 locale the 1200 cap was 1200 characters and %c wrote two bytes; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
@@ -1184,7 +1184,9 @@ human_collect() {
 # line at a time); HTML comments are stripped whatever they hold, a line that is only a `<placeholder>` is dropped, the
 # rest is joined by one space with the whitespace squeezed, capped at 1200 bytes on a UTF-8 boundary (plain_line); ""
 # when there is nothing. Shared by the -> ready gate (cmd_move), `board --json` (per ticket, inside board_json_tickets)
-# and `human --json` (per item, item_plain).
+# and `human --json` (per item, item_plain). Every awk that runs it runs under LC_ALL=C (T-0220): gawk in a UTF-8 locale
+# counts characters in length()/substr() and writes %c above 127 as two bytes, so the cap and the UTF-8 trim were wrong
+# there; in the C locale mawk, gawk, nawk and busybox all count bytes, and bytes above 127 pass through untouched.
 PLAIN_AWK='function plain_reset() { pw = ""; pon = 0; pseen = 0; pdone = 0 }
 function plain_feed(l) {
   if (pdone) return
@@ -1208,7 +1210,7 @@ function utf8_whole(s,   n, k, c, need, i) {
   return (n - k + 1 < need) ? substr(s, 1, k - 1) : s }
 '
 plain_words() { # file -> the one line (or nothing)
-  awk "$PLAIN_AWK"'BEGIN { plain_reset() } { plain_feed($0) } END { printf "%s", plain_line(pw) }' "$1"
+  LC_ALL=C awk "$PLAIN_AWK"'BEGIN { plain_reset() } { plain_feed($0) } END { printf "%s", plain_line(pw) }' "$1"
 }
 item_plain() { # "T-a + T-b" (an inbox item'"'"'s tickets) -> their plain words on one line; several tickets: each prefixed by its id
   local id f n=0 out="" p
@@ -1233,7 +1235,7 @@ JSON_ESC_AWK='function esc(s,   i, c, n, out) {
   return out
 }
 '
-human_json_str() { awk "$JSON_ESC_AWK"'{ printf "%s", esc($0) }' <<<"$1"; }   # lines are joined: an item is one line
+human_json_str() { LC_ALL=C awk "$JSON_ESC_AWK"'{ printf "%s", esc($0) }' <<<"$1"; }   # lines are joined (an item is one line); bytes, whatever the awk (T-0220)
 human_wrap() { # indent text -> the text verbatim, wrapped at 120 columns, continuation lines indented
   fold -s -w 120 <<<"$2" | sed "1s/^/$1/; 2,\$s/^/$1   /"
 }
@@ -1421,7 +1423,7 @@ board_json_tickets() { # files... -> one line per ticket, US-separated (empty co
   # on them: the six list keys are always arrays ("[a, b]" split on commas; free text = one element; "" = []), every
   # other key is always a string ("" when empty; a map {<repo>: x, <repo>: y} stays the text as written). A file
   # without front matter is skipped.
-  awk -v keys="$BOARD_JSON_KEYS" -v listkeys="$BOARD_JSON_LIST_KEYS" "$JSON_ESC_AWK$PLAIN_AWK"'
+  LC_ALL=C awk -v keys="$BOARD_JSON_KEYS" -v listkeys="$BOARD_JSON_LIST_KEYS" "$JSON_ESC_AWK$PLAIN_AWK"'
     function jval(k, s,   n, i, parts, out) {
       if (!(k in L)) return "\"" esc(s) "\""
       if (s ~ /^\[.*\]$/) { s = substr(s, 2, length(s) - 2); gsub(/^[ ]+/, "", s); gsub(/[ ]+$/, "", s) }
