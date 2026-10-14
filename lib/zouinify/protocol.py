@@ -8,9 +8,10 @@
   points 5 and 6 and the `## Deploy handoff` block of the ticket template;
 - the project's own README.md text from `<root>/.ops/README.project.md`: any numbered section `## N. <title>` it carries
   replaces the template's section N verbatim (the template's own text is the default; sections 0 and 7 have no template
-  text, so a project without them gets a stub saying where to write them), and a `## Preamble` block replaces the intro
-  paragraph under the H1 (T-0219). An overridden section stops receiving template updates; `protocol render` prints per
-  section where it came from.
+  text, so a project without them gets a stub saying where to write them), a `## N.M <title>` block appends its text to
+  rule M of the template's section N as an indented continuation while the rest of the section keeps following the
+  template (T-0224), and a `## Preamble` block replaces the intro paragraph under the H1 (T-0219). A replaced section
+  stops receiving template updates; `protocol render` prints per section where it came from.
 
 Optional plugin docs fragments (OPTIONAL_FRAGMENTS) carry the deploy wording that differs between plugins -- how the inbox
 names what waits for the human, the human's deploy step in the life line and the board table, the in-review evidence row,
@@ -67,6 +68,8 @@ STATES = ("backlog", "ready", "in-dev", "in-review", "ready-to-merge", "merged",
 VERB_HINTS = {"APPLY": "a saved plan", "DEPLOY": "a deploy", "PUSH": "an image", "RUN": "any other command", "DECIDE": "",
               "CHECK": "browser or email", "APPROVE": "a paid run, with the dollar amount", "SSO": "refresh credentials"}
 HEADING_RE = re.compile(r"^## (\d+)\. ")
+RULE_HEADING_RE = re.compile(r"^## (\d+)\.(\d+)(?:\s.*)?$")      # `## 4.5 <title>`: appends to rule 5 of section 4 (T-0224)
+ITEM_RE = re.compile(r"^(\d+)\. ")                                  # a numbered list item at the margin
 PREAMBLE_RE = re.compile(r"^## Preamble\s*$")
 FENCE_RE = re.compile(r"^(```|~~~)")
 RULE_RE = re.compile(r"^-{3,}\s*$")
@@ -103,9 +106,10 @@ def load_fragments(directory: str) -> dict:
 
 def project_sections(text: str) -> dict:
     """{number: block} for every `## N. <title>` section of .ops/README.project.md (that exact heading form, at the margin,
-    outside fenced code) plus {"preamble": text} for a `## Preamble` block (its body, without the heading; T-0219); the text
-    before the first heading is ignored, CRLF normalized, trailing blank and `---` rule lines dropped; the same number
-    or a second preamble is an error."""
+    outside fenced code), {(N, M): text} for every `## N.M <title>` block (its body, without the heading: it is appended to
+    rule M of the template's section N; T-0224) and {"preamble": text} for a `## Preamble` block (its body; T-0219); the
+    text before the first heading is ignored, CRLF normalized, trailing blank and `---` rule lines dropped; the same
+    section or rule twice, a second preamble, or a section replaced whole and also given rules is an error."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     sections: dict = {}
     current = None
@@ -125,6 +129,14 @@ def project_sections(text: str) -> dict:
             current = n
             sections[n] = [line]
             continue
+        r = RULE_HEADING_RE.match(line) if fenced is None else None
+        if r:
+            key = (int(r.group(1)), int(r.group(2)))
+            if key in sections:
+                raise ZouinifyError(f".ops/README.project.md: `## {key[0]}.{key[1]}` appears twice")
+            current = key
+            sections[key] = []                           # the body only: the rule keeps the template's own text
+            continue
         if fenced is None and PREAMBLE_RE.match(line):
             if "preamble" in sections:
                 raise ZouinifyError(".ops/README.project.md: `## Preamble` appears twice")
@@ -139,18 +151,27 @@ def project_sections(text: str) -> dict:
     for n, lines in sections.items():
         while lines and (not lines[-1].strip() or RULE_RE.match(lines[-1])):
             lines.pop()
-        while n == "preamble" and lines and not lines[0].strip():
-            lines.pop(0)
+        if n == "preamble" or isinstance(n, tuple):
+            while lines and not lines[0].strip():
+                lines.pop(0)
         if n == "preamble" and not lines:
             raise ZouinifyError(".ops/README.project.md: `## Preamble` is empty (write the intro under it, or drop the heading)")
+        if isinstance(n, tuple) and not lines:
+            raise ZouinifyError(f".ops/README.project.md: `## {n[0]}.{n[1]}` is empty (write the sentence to append under it, or drop the heading)")
         out[n] = "\n".join(lines)
+    for key in out:
+        if isinstance(key, tuple) and key[0] in out:
+            raise ZouinifyError(f".ops/README.project.md: section `## {key[0]}.` is replaced whole and `## {key[0]}.{key[1]}` appends to one of "
+                                f"its rules; a replaced section has no template rules to append to -- use one form or the other")
     return out
 
 
 def apply_overrides(body: str, sections: dict) -> tuple:
-    """The project's numbered sections replace the template's, verbatim, and its preamble replaces the intro under the H1.
-    Returns (text, provenance): provenance maps "preamble" and every section number of the template to "template",
-    "project" or, for 0 and 7 without a project block, "stub". A number the template does not have is an error."""
+    """The project's numbered sections replace the template's, verbatim; its `## N.M` blocks append to rule M of section N
+    (the rule keeps the template's text, the project's lines follow it indented as a continuation; T-0224); its preamble
+    replaces the intro under the H1. Returns (text, provenance): provenance maps "preamble" and every section number of
+    the template to "template", "project", "stub" (0 and 7 without a project block) or "template + project rules 1, 5".
+    A section the template does not have, or a rule number its section does not have, is an error."""
     heads = []                                          # (offset, number) of every real section heading: a `## N.` line inside
     pos, fenced = 0, None                               # fenced code is content (the project's sections may quote one)
     for line in body.split("\n"):
@@ -165,17 +186,33 @@ def apply_overrides(body: str, sections: dict) -> tuple:
         raise ZouinifyError("the rendered README has an unclosed code fence; nothing written")
     nums = [n for _, n in heads]
     for n in sections:
-        if n != "preamble" and n not in nums:
-            raise ZouinifyError(f".ops/README.project.md: the template has no section `## {n}.` to replace (it has "
-                                f"{', '.join(str(x) for x in nums)})")
+        sec = n[0] if isinstance(n, tuple) else n
+        if n != "preamble" and sec not in nums:
+            raise ZouinifyError(f".ops/README.project.md: the template has no section `## {sec}.` to {'append to' if isinstance(n, tuple) else 'replace'} "
+                                f"(it has {', '.join(str(x) for x in nums)})")
+    rules = {}                                          # section -> {rule: text}
+    for key, text in sections.items():
+        if isinstance(key, tuple):
+            rules.setdefault(key[0], {})[key[1]] = text
     prov = {}
     for _, n in heads:
-        prov[n] = "project" if n in sections else ("stub" if n in (0, 7) else "template")
+        if n in sections:
+            prov[n] = "project"
+        elif n in rules:
+            prov[n] = "template + project rules " + ", ".join(str(m) for m in sorted(rules[n]))
+        else:
+            prov[n] = "stub" if n in (0, 7) else "template"
+    for n in rules:
+        if n in sections:
+            raise ZouinifyError(f".ops/README.project.md: section `## {n}.` is replaced whole and also given rules; use one form or the other")
     for idx in range(len(heads) - 1, -1, -1):
         start, n = heads[idx]
+        end = heads[idx + 1][0] if idx + 1 < len(heads) else len(body)
+        if n in rules:
+            body = body[:start] + append_to_rules(body[start:end], n, rules[n]) + body[end:]
+            continue
         if n not in sections:
             continue
-        end = heads[idx + 1][0] if idx + 1 < len(heads) else len(body)
         old = body[start:end].rstrip("\n")
         # the template's `---` rule after a section (sections 0 and 1 are framed by two) stays where it was
         tail = "\n\n---\n\n" if RULE_RE.match(old.rsplit("\n", 1)[-1]) else "\n\n"
@@ -277,6 +314,43 @@ def context(cfg, fragments: dict, sections: dict) -> dict:
     return ctx
 
 
+def append_to_rules(block: str, n: int, rules: dict) -> str:
+    """`block` is the rendered text of section N (heading included). For each rule M, the project's lines go after the
+    last line of the numbered item `M. ...` (a markdown list item at the margin, outside fenced code; the item runs to the
+    next item or the end of the section, trailing blank lines excluded), each indented by the item's own continuation
+    indent (3 spaces for `1.`, 4 for `10.`), so they read as the rule's continuation and the template's text stays."""
+    lines = block.split("\n")
+    items = {}                                          # rule -> (first line index, continuation indent)
+    margin = []                                         # every line at the margin outside fenced code: where an item ends
+    fenced = None
+    for i, line in enumerate(lines):
+        f = FENCE_RE.match(line)
+        if f:
+            fenced = None if fenced == f.group(1) else (fenced or f.group(1))
+            margin.append(i)
+            continue
+        if fenced is not None or not line.strip():
+            continue
+        if not line[0].isspace():
+            margin.append(i)
+        m = ITEM_RE.match(line)
+        if m:
+            items.setdefault(int(m.group(1)), (i, len(m.group(0))))
+    for m in rules:
+        if m not in items:
+            have = ", ".join(str(k) for k in sorted(items)) or "none"
+            raise ZouinifyError(f".ops/README.project.md: section `## {n}.` has no numbered rule {m} to append to (it has {have})")
+    for m in sorted(rules, key=lambda r: items[r][0], reverse=True):     # from the last item up, so the earlier offsets hold
+        first, indent = items[m]
+        later = [i for i in margin if i > first]        # the item runs to the next margin-level line (an item, a paragraph, a
+        end = later[0] if later else len(lines)         # rule, a fence), trailing blank lines excluded
+        while end > first + 1 and not lines[end - 1].strip():
+            end -= 1
+        extra = [(" " * indent + l) if l.strip() else "" for l in rules[m].split("\n")]
+        lines[end:end] = extra
+    return "\n".join(lines)
+
+
 def sources_of(cfg, name: str) -> str:
     """What the header of a generated protocol file names as its sources: the places to edit, never a value of the config
     (the plugin's name, say): the config is a source too, and changing it must render straight through (review)."""
@@ -360,8 +434,11 @@ def cmd_render(cfg, out_dir: str, plugin_docs: str | None = None, project_readme
     for key in ["preamble"] + sorted(k for k in prov if k != "preamble"):
         label = "preamble" if key == "preamble" else f"section {key}"
         src = prov[key]
-        note = {"project": f"project ({PROJECT_README_REL} overrides the template's text; it receives no template updates)",
-                "stub": f"stub (write `## {key}.` in {PROJECT_README_REL}; the template has no text of its own here)",
-                "template": "template"}[src]
+        if src.startswith("template + "):
+            note = f"{src} ({PROJECT_README_REL} appends to those rules; the rest of the section follows the template)"
+        else:
+            note = {"project": f"project ({PROJECT_README_REL} overrides the template's text; it receives no template updates)",
+                    "stub": f"stub (write `## {key}.` in {PROJECT_README_REL}; the template has no text of its own here)",
+                    "template": "template"}[src]
         print(f"{label:<10} {note}", file=out)
     return 0

@@ -479,6 +479,65 @@ class TestProtocol(World):
             protocol.apply_overrides("# t\n\nintro\n\n## 0. A\n\n```\nnever closed\n\n## 1. B\n", {})
         self.assertIn("unclosed code fence", str(cm.exception))
 
+    # ---- T-0224: a project sentence attaches to one rule; the section keeps following the template -----------------
+    def test_a_rule_block_appends_to_one_rule_and_the_rest_of_the_section_follows_the_template(self):
+        self.render()
+        before = self.read_out("README.md")
+        self.write(".ops/README.project.md", "## 4.5 Busy files\n\nBusy shared files here: `app.js`, `web_bridge.py`.\n\n```\n## 4.3 fenced: content, not a block\n```\n\n"
+                                            "## 4.10\n\nA zouinify ticket always names an existing worktree at claim.\nTwo lines of it.\n\n"
+                                            "## 4.1\n\nMain is also where plans are made.\n")
+        r = self.render()
+        self.assertIn("overwrote  " + os.path.join(self.out, "README.md"), r.stdout)
+        self.assertIn("section 4  template + project rules 1, 5, 10 (.ops/README.project.md appends to those rules; the rest of the section follows the template)", r.stdout)
+        self.assertIn("section 3  template", r.stdout)
+        readme = self.read_out("README.md")
+        s4 = section(readme, 4)
+        # rule 1: the template's text, then the project's line as a 3-space continuation; rule 2 untouched right after
+        self.assertRegex(s4, r"\n1\. \*\*Nobody develops in the main worktree\*\*.*\n   `ticket\.sh merge`\. Develop in your ticket's worktree\.\n"
+                             r"   Main is also where plans are made\.\n2\. ")
+        # rule 5: appended after its last line, before rule 6
+        self.assertIn("   if another session's ticket lists your file, `SendMessage` its `owner` and agree an order first.\n"
+                      "   Busy shared files here: `app.js`, `web_bridge.py`.\n\n   ```\n   ## 4.3 fenced: content, not a block\n   ```\n"
+                      "6. **One in-dev ticket per session.**", s4, "a blank line inside the block stays blank; a fenced heading is content of the block")
+        # rule 10: a two-digit item, 4-space continuation, two lines, before rule 11
+        self.assertIn("    the merge logs it in both tickets.\n    A zouinify ticket always names an existing worktree at claim.\n    Two lines of it.\n11. **At `done`, the worktree goes.**", s4)
+        self.assertNotIn("project rules 1, 3", r.stdout, "the fenced `## 4.3` opened no block")
+        # everything else in section 4 is the template's: the plugin fragments keep flowing
+        self.assertIn("2. **Never run anything on the human-only list**", s4)
+        self.assertIn("8. **Verify a deploy where its users see it**", s4)
+        self.assertEqual(section(readme, 3), section(before, 3))
+        self.assertEqual(section(readme, 5), section(before, 5))
+        self.assertEqual(self.render().stdout.count("unchanged"), 3, "idempotent")
+        # a rule the section does not have; a replaced section with rules too; an empty block; a repeat; an unknown section
+        for text, needle in (("## 4.13\n\nx\n", "section `## 4.` has no numbered rule 13 to append to (it has 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)"),
+                             ("## 4. Mine\n\nwhole\n\n## 4.2\n\nx\n", "section `## 4.` is replaced whole and `## 4.2` appends to one of its rules"),
+                             ("## 4.2\n\n\n## 0. E\n\ny\n", "`## 4.2` is empty"),
+                             ("## 4.2\n\na\n\n## 4.2\n\nb\n", "`## 4.2` appears twice"),
+                             ("## 9.1\n\nx\n", "the template has no section `## 9.` to append to (it has 0, 1, 2, 3, 4, 5, 6, 7, 8)"),
+                             ("## 1.1\n\nx\n", "section `## 1.` has no numbered rule 1 to append to (it has none)")):
+            self.write(".ops/README.project.md", text)
+            r = self.nz("protocol", "render", "--out", self.out)
+            self.assertIn(needle, r.stderr, text)
+        # the appender on synthetic sections: an item ends at the first margin-level line after it, not only at the next item
+        if LIB not in sys.path:
+            sys.path.insert(0, LIB)
+        from zouinify import protocol, ZouinifyError
+        block = "## 4. T\n\n1. one\n   more of one\n2. two\n\nClosing paragraph at the margin.\n\n---\n\n1. second list a\n2. second list b\n"
+        out = protocol.append_to_rules(block, 4, {2: "ADDED to two", 1: "ADDED to one"})
+        self.assertEqual(out, "## 4. T\n\n1. one\n   more of one\n   ADDED to one\n2. two\n   ADDED to two\n\nClosing paragraph at the margin.\n\n---\n\n"
+                              "1. second list a\n2. second list b\n", "the first items of each number get the text; the paragraph, rule and second list stay")
+        out = protocol.append_to_rules("## 4. T\n\n10. ten\n    tail\n\n```\n1. fenced item\n```\n11. eleven\n", 4, {10: "A\n\nB"})
+        self.assertEqual(out, "## 4. T\n\n10. ten\n    tail\n    A\n\n    B\n\n```\n1. fenced item\n```\n11. eleven\n",
+                         "a fence ends the item and its content is no item; two-digit indent; a blank line inside the text stays blank")
+        with self.assertRaises(ZouinifyError) as cm:
+            protocol.apply_overrides("# t\n\nintro\n\n## 4. R\n\n1. a\n", {4: "## 4. mine\n\nx", (4, 1): "y"})
+        self.assertIn("replaced whole and also given rules", str(cm.exception))
+        # a bare `## 4.` still replaces the section whole
+        self.write(".ops/README.project.md", "## 4. Our rules\n\njust ours\n")
+        r = self.render()
+        self.assertIn("section 4  project (.ops/README.project.md overrides", r.stdout)
+        self.assertIn("\n## 4. Our rules\n\njust ours\n\n## 5. States", self.read_out("README.md"))
+
     def test_twelve_states_everywhere(self):
         with open(os.path.join(REPO_UNDER_TEST, "templates", "ops", "config.yaml.example"), encoding="utf-8") as fh:
             example = fh.read()
