@@ -241,9 +241,9 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
         except Exception as e:  # noqa: BLE001 - never take the server down for one request, and never leave it unanswered
-            self.log_message("error on POST /api/receipts: %r", e)
+            self.log_message("error on POST /api/receipts: %r", e)       # the detail goes to server.log, never to the client
             try:
-                return self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(e).__name__}: {e}"[:300]})
+                return self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error (see server.log)"})
             except OSError:
                 self.close_connection = True
 

@@ -20,8 +20,9 @@ listener's own Host, the nonce): `GET /api/poll?since=<id>&timeout_ms=<n>` block
 `POST /api/ack {ids}` acknowledges what the desk printed (fetching marks nothing: at-least-once delivery), and
 `GET /api/receipts/<id>` answers from memory. Never on the LAN-facing port: a LAN device without the token cannot read
 receipts, and the desk needs no browser token (it reads the nonce from panel.json, its own user's 0600 file). Another
-same-uid process can read that nonce too, so it can fetch or acknowledge receipts (delay or swallow a click) -- it
-cannot create one without the token -- which is one more reason the desk verifies every receipt.
+same-uid process can read that nonce too, so it can fetch or acknowledge receipts (delay or swallow a click), and it
+can run a listener of its own and point panel.json at it: a receipt is a claim, full stop, and the desk verifies
+every one before acting.
 """
 from __future__ import annotations
 

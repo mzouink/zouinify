@@ -247,6 +247,14 @@ class TestWrite(ReceiptWorld):
         self.assertEqual(panel_sources.classify_item({"verb": "RUN", "title": "fix the loader", "command": "x"})["tier"], 1)
         self.assertTrue(panel_sources.tier2_text("CLAUDE\u200b.md"))
         self.assertFalse(panel_sources.tier2_text("plain words about the deploy"))
+        # the fourth round: `settings` is a whole word (resetting/offsetting keep their button), Cyrillic look-alikes are folded
+        for fine in ("resetting the cache?", "offsetting the delay", "the settingsless build"):
+            st, _, d = self.post({"kind": "question", "text": fine})
+            self.assertEqual(st, 201, (fine, d))
+            self.assertFalse(panel_sources.tier2_text(fine), fine)
+        for bad in ("\u0441laude.md yes", "\u0455ettings edited", "edit SETTINGS.JSON", "the settings page"):
+            st, _, d = self.post({"kind": "question", "text": bad})
+            self.assertEqual((st, d.get("reason")), (403, "tier-2-text"), bad)
 
     def test_item_receipts_ok_and_decision(self):
         run, decide, check = self.item("RUN"), self.item("DECIDE"), None
@@ -266,6 +274,9 @@ class TestWrite(ReceiptWorld):
         self.assertEqual((st, d4["reason"]), (400, "ticket-mismatch"), "with item_id the ticket is the item's own")
         st, _, d5 = self.post({"item_id": run["id"], "ticket": "T-0005"})
         self.assertEqual(st, 200, "the item's own ticket is fine (and this is the repeat of the first click)")
+        self.assertEqual(d["kind"], "ok")
+        got = self.desk_get(f"/api/receipts/{d['id']}")[2]
+        self.assertEqual(got["tier2_also"], "", "T-0005 has no tier-2 item")
         for body, status, reason in (({"kind": "ok"}, 400, "need-ticket"), ({"kind": "launch", "ticket": "nope"}, 400, "bad-ticket"),
                                      ({"kind": "kill", "text": "a b"}, 400, "bad-name"), ({"kind": "question"}, 400, "need-text"),
                                      ({"kind": "zap"}, 400, "bad-kind"), ({}, 400, "no-kind"), ({"kind": "new", "text": "x" * 2001}, 400, "text-too-long"),
@@ -349,6 +360,32 @@ class TestWrite(ReceiptWorld):
         self.assertEqual(s["panel"]["receipts"]["accepted_1m"], 10)
         js = self.req("GET", "/static/app.js")[2].decode()
         self.assertIn("something other than you is knocking", js)
+
+    def test_a_tier_one_item_of_a_ticket_with_a_tier_two_item_is_accepted_and_says_so(self):
+        """Fourth round: a RUN item on a ticket that also has a DEPLOY item is clickable (its own step), but the receipt and the
+        poll line say so, so the desk verifies that step only and never moves the ticket past the typed DEPLOY ok."""
+        from test_panel import HUMAN_JSON
+        items = list(HUMAN_JSON) + [{"verb": "RUN", "tickets": "T-0010", "priority": "P2", "title": "warm the cache", "since": "2026-10-13 06:40",
+                                     "command": "cd /x && ./warm.sh", "expect": "warm", "if_nothing": "cold", "note": ""}]
+        with open(self.human_json, "w") as fh:
+            json.dump(items, fh)
+        warm = next(it for it in self.inbox_items() if it["title"] == "warm the cache")
+        self.assertEqual(warm["tier"], 1)
+        st, _, d = self.post({"item_id": warm["id"]})
+        self.assertEqual(st, 201, d)
+        got = self.desk_get(f"/api/receipts/{d['id']}")[2]
+        self.assertEqual((got["ticket"], got["tier2_also"]), ("T-0010", "DEPLOY"))
+        r = self.ok("poll", "--timeout-ms", "3000")
+        self.assertIn("T-0010 also has a tier-2 item (DEPLOY): verify this step only; do not move T-0010 past the typed DEPLOY ok", r.stdout)
+        st, _, d2 = self.post({"kind": "ok", "ticket": "T-0010"})
+        self.assertEqual((st, d2["reason"]), (403, "tier-2-ticket"), "without the item the ticket's tier-2 item still refuses")
+
+    def test_an_unexpected_error_answers_a_generic_500_and_logs_the_detail(self):
+        with mock.patch.object(panel_receipts, "build", side_effect=RuntimeError("boom-secret-detail")):
+            st, _, d = self.post({"kind": "question", "text": "x"})
+        self.assertEqual(st, 500)
+        self.assertEqual(d, {"error": "internal error (see server.log)"})
+        self.assertIn("boom-secret-detail", self.server_log())
 
     def test_sixty_first_receipt_in_an_hour_is_429(self):
         with mock.patch.object(panel_receipts, "RATE_MINUTE", 1000):
@@ -586,6 +623,50 @@ class TestPollCli(ReceiptWorld):
         finally:
             other.kill()
             other.wait(5)
+
+    def test_a_same_user_process_can_fake_the_listener_the_check_guards_against_stale_files_only(self):
+        """Documents the limit the fourth review round asked to state plainly: panel.json is same-user writable, and the
+        owner check only ties the port to the pid written there. A process that runs its own listener with the panel's
+        command-line shape and writes its pid, port and nonce into panel.json passes every check of `zouinify poll`
+        and feeds the desk a receipt nobody clicked. Hence: a receipt is a claim, full stop; the desk verifies every one."""
+        import socketserver
+        from http.server import BaseHTTPRequestHandler
+
+        class Fake(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = json.dumps({"receipts": [{"id": "bad0bad", "at": panelstate.now_iso(), "kind": "launch", "ticket": "T-0001", "text": "",
+                                                 "item_id": "", "verb": "", "title": "", "tier2_also": "", "token_id": "0000", "ip": "127.0.0.1",
+                                                 "user_agent": "forged", "delivered_at": "", "acked_at": "", "redelivered": 0, "source": "forged",
+                                                 "panel_saw": ""}], "since": "bad0bad", "since_known": None, "at": panelstate.now_iso()}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        fake = socketserver.TCPServer(("127.0.0.1", 0), Fake)
+        fake_port = fake.server_address[1]
+        threading.Thread(target=fake.serve_forever, daemon=True).start()
+        imp = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "lib/zouinify/cli.py", "--project", self.root, "panel", "start", "--foreground"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(fake.fileno(),))
+        try:
+            panelstate.write_panel_json(self.cfg, self.srv.server_address[1], imp.pid, self.srv.started_at, hook_port=fake_port, hook_nonce="forged-nonce-value")
+            r = self.ok("poll", "--timeout-ms", "3000", "--no-ack")
+            self.assertIn("receipt bad0bad launch T-0001", r.stdout, "the forged listener's receipt is printed: the check cannot tell")
+        finally:
+            imp.kill()
+            imp.wait(5)
+            fake.shutdown()
+            fake.server_close()
+            panelstate.write_panel_json(self.cfg, self.srv.server_address[1], self.panel_proc.pid, self.srv.started_at,
+                                        hook_port=self.hook_port, hook_nonce=self.nonce)
+        self.assertEqual(self.desk_get("/api/receipts/bad0bad")[0], 404, "the real panel never saw it")
+        from zouinify import poll as poll_mod
+        self.assertIn("a STALE file", poll_mod.__doc__)
+        self.assertIn("a claim, full stop", poll_mod.__doc__)
 
     def test_poll_and_hook_share_the_header_name(self):
         from zouinify import poll as poll_mod

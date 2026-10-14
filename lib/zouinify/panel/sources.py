@@ -31,9 +31,14 @@ CHIPS = ("backlog", "blocked", "done", "dropped")
 SEV = MappingProxyType({"P0": 0, "P1": 1, "P2": 2, "P3": 3})
 STATE_ORDER = MappingProxyType({"waiting": 0, "working": 1, "idle": 2, "shell": 3, "gone": 4})
 # a text that names CLAUDE.md or settings is tier 2 whatever the verb or the receipt kind: the human types it. Checked after NFKC
-# normalisation with Unicode format characters removed (T-0162 review: a zero-width space inside CLAUDE.md, fullwidth letters,
-# `setting.json` all passed the old `CLAUDE\.md|settings`)
-TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|setting", re.I)
+# normalisation, Unicode format characters removed and the common Cyrillic look-alikes of Latin letters folded (T-0162 review: a
+# zero-width space inside CLAUDE.md, fullwidth letters, `setting.json`, `сlaude.md` all passed the old `CLAUDE\.md|settings`);
+# the word is `settings` or `setting` (optionally `.json`) as a whole word, so "resetting the cache" keeps its button. Other
+# look-alike alphabets still pass: the desk verifies every receipt anyway.
+TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|\bsettings?(?:\.json)?\b", re.I)
+CONFUSABLES = str.maketrans({"с": "c", "а": "a", "е": "e", "о": "o", "ѕ": "s", "р": "p", "х": "x", "і": "i",
+                             "С": "C", "А": "A", "Е": "E", "О": "O", "Ѕ": "S", "Р": "P", "Х": "X", "І": "I",
+                             "т": "t", "у": "y", "һ": "h", "ԁ": "d", "ԛ": "q", "ј": "j", "ӏ": "l", "մ": "n"})
 # a command that mutates production however the ask is labelled: the human runs it, never a button (any version)
 FLAGS = r"(?:-\S*\s+(?:\S+\s+)?)*"   # `-chdir=x -auto-approve`, `-C dir`, `-f file` between a tool and its verb
 TIER2_COMMAND_RE = re.compile(
@@ -59,7 +64,7 @@ def tier2_text(text) -> bool:
     if not isinstance(text, str) or not text:
         return False
     t = unicodedata.normalize("NFKC", text)
-    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf").translate(CONFUSABLES)
     return bool(TIER2_TEXT_RE.search(t))
 
 

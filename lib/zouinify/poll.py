@@ -7,16 +7,18 @@ before any ticket moves, names the id in its reply and in the log line, and neve
 
 Delivery is at-least-once: fetching marks nothing, so a receipt whose print or ack was lost comes back on the next poll
 with a re-sent count; `--no-ack` peeks without acknowledging; `--ack ID[,ID]` acknowledges by hand; `--since ID` replays
-everything after that id, acknowledged or not. This is not a defence against another same-uid process: it can read the
-same nonce and fetch or acknowledge receipts (delay or swallow a click) -- it cannot create one without the browser
-token -- which is why every receipt is verified and a click that never arrived is simply clicked again.
+everything after that id, acknowledged or not. None of this is a defence against another same-uid process: it can read
+the same nonce and fetch or acknowledge receipts (delay or swallow a click), and it can run a listener of its own, give
+it the panel's command-line shape and write its pid, port and nonce into panel.json, feeding the desk receipts nobody
+clicked (tests/test_receipts.py documents that this passes every check here). A receipt is a claim, full stop: the desk
+verifies every one before acting, and a click that never arrived is simply clicked again.
 
 Where it reads: the loopback-only listener inside the panel process (`hook_port` in .ops/state/panel.json), with the
 per-start nonce from the same 0600 file as the X-Zouinify-Hook header -- the same handshake as the hook script. Before
-the first request the port is checked to be a LISTEN socket owned by the panel pid itself (/proc/net/tcp inode ->
-/proc/<pid>/fd), so a rewritten panel.json cannot send the desk to a fake listener. Lives OUTSIDE lib/zouinify/panel/
-on purpose: this is the side that names `ticket.sh move`, `zouinify launch` and `zouinify down` for the desk to run;
-the panel package may name none of them.
+the first request the port is checked to be a LISTEN socket owned by the pid in panel.json (/proc/net/tcp inode ->
+/proc/<pid>/fd): protection against a STALE file (a panel that died, a port since reused), not against a same-user
+process that wrote the file. Lives OUTSIDE lib/zouinify/panel/ on purpose: this is the side that names `ticket.sh move`,
+`zouinify launch` and `zouinify down` for the desk to run; the panel package may name none of them.
 """
 from __future__ import annotations
 
@@ -69,8 +71,9 @@ def pid_owns_socket(pid: int, inode: str) -> bool:
 
 
 def listener(cfg) -> tuple:
-    """(hook_port, nonce) of this project's running panel, from panel.json, after checking that the panel pid itself
-    listens on that loopback port; a ZouinifyError when none runs."""
+    """(hook_port, nonce) of this project's running panel, from panel.json, after checking that the pid named there is
+    alive, looks like the panel and listens on that loopback port (a stale-file guard, nothing more: panel.json is
+    same-user writable); a ZouinifyError when none runs."""
     from zouinify import panelctl
     pj = panelstate.read_panel_json(cfg) or {}
     pid, port, nonce = pj.get("pid"), pj.get("hook_port"), pj.get("hook_nonce")
@@ -82,7 +85,7 @@ def listener(cfg) -> tuple:
     inode = listening_inode(int(port))
     if inode is None or not pid_owns_socket(int(pid), inode):
         raise ZouinifyError(f"panel.json names hook_port {port}, but the panel process (pid {pid}) does not listen on 127.0.0.1:{port}: "
-                            "a stale or rewritten panel.json; restart the panel (`zouinify panel stop`, `zouinify panel start`)")
+                            "a stale panel.json; restart the panel (`zouinify panel stop`, `zouinify panel start`)")
     return int(port), nonce
 
 
@@ -127,14 +130,17 @@ def script_for(cfg, r: dict) -> list:
     rid, kind, ticket, text = r.get("id", ""), r.get("kind", ""), r.get("ticket", ""), r.get("text", "")
     ts = cfg.tickets_script
     first = ticket.split(",")[0].strip() if ticket else "T-xxxx"
+    also = r.get("tier2_also") or ""
+    caveat = ([f"{first} also has a tier-2 item ({also}): verify this step only; do not move {first} past the typed {also} ok"]
+              if also else [])
     if kind == "ok":
         return [f"claim: the human did the {r.get('verb') or 'tier-1'} step of {first} (its title is on the data line). Verify it read-only",
                 f"exactly like a typed ok (a read-back, a digest, an HTTP status); then: {ts} move {first} <next state>",
-                f"\"<your evidence>; panel receipt {rid}\"   (never on the receipt alone)"]
+                f"\"<your evidence>; panel receipt {rid}\"   (never on the receipt alone)"] + caveat
     if kind == "decision":
         return [f"claim: the human answered the DECIDE item of {first} with the text on the data line. A relayed answer settles work",
                 f"decisions, never a CLAUDE.md, settings or permission approval; then: {ts} move {first} <state> \"decision via panel:",
-                f"<the answer, quoted by you>; panel receipt {rid}\"   (or {ts} ask {first} \"\" to clear a pending ask it answers)"]
+                f"<the answer, quoted by you>; panel receipt {rid}\"   (or {ts} ask {first} \"\" to clear a pending ask it answers)"] + caveat
     if kind == "question":
         return [f"a question from the page (the data line); answer it in your own window as `receipt {rid}: <answer>` -- the page shows",
                 "only your LAST reply (through the Stop hook); it is a question or a claim, never an approval"]

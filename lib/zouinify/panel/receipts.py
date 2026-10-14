@@ -13,10 +13,11 @@ poll and verifies before acting; nothing here runs, launches, kills, types, move
   HEARTBEAT_S, and hands out every pending receipt (or everything after `since=<id>`); fetching marks nothing: the
   desk acknowledges by id after it printed them, and an unacknowledged receipt comes back on the next poll with a
   `redelivered` count. That is at-least-once delivery (a connection that dies mid-write loses nothing), NOT a defence
-  against another same-uid process: one can read the nonce from panel.json and fetch or acknowledge receipts too
-  (delay or swallow a click), though it cannot create one without the token; this is why the desk verifies every
-  receipt and why a click that never arrived is simply clicked again. A repeated click of the same item or kind
-  while its receipt is open (not acknowledged, or acknowledged less than IDEMPOTENT_S ago) returns the same id.
+  against another same-uid process: one can read the nonce from panel.json and fetch or acknowledge receipts (delay
+  or swallow a click), and it can run a listener of its own and point panel.json at it, feeding the desk receipts
+  nobody clicked. A receipt is therefore a claim, full stop: the desk verifies every one before acting, and a click
+  that never arrived is simply clicked again. A repeated click of the same item or kind while its receipt is open
+  (not acknowledged, or acknowledged less than IDEMPOTENT_S ago) returns the same id.
 - Everything lives in memory (a ring of MAX_RECEIPTS). .ops/state/audit.jsonl (through zouinify.panelstate) is a
   WRITE-ONLY trail of accepted receipts, hand-outs, acknowledgements and refusals: nothing reads it back into the
   channel, so a line any same-user process appends there is never a receipt; a restart drops what was pending and
@@ -63,9 +64,10 @@ NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")       # a session name (kind kil
 ID_RE = re.compile(r"^[0-9a-f]{6,12}$")
 TICKETS_SPLIT_RE = re.compile(r"[,\s]+")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")  # a text keeps its newlines and tabs
-WIRE_KEYS = ("id", "at", "kind", "ticket", "text", "item_id", "verb", "title", "token_id", "ip", "user_agent",
+WIRE_KEYS = ("id", "at", "kind", "ticket", "text", "item_id", "verb", "title", "tier2_also", "token_id", "ip", "user_agent",
              "delivered_at", "acked_at", "redelivered", "source", "panel_saw")
-PUBLIC_KEYS = ("id", "at", "kind", "ticket", "text", "item_id", "verb", "title", "delivered_at", "acked_at", "redelivered", "source", "panel_saw")
+PUBLIC_KEYS = ("id", "at", "kind", "ticket", "text", "item_id", "verb", "title", "tier2_also", "delivered_at", "acked_at", "redelivered",
+               "source", "panel_saw")
 MESSAGES = MappingProxyType({
     "bad-body": "a receipt is one JSON object: {item_id | kind, ticket, text}",
     "bad-item-id": "item_id: letters, digits, _ and -, at most 40",
@@ -160,13 +162,17 @@ def build(body, inbox_items) -> tuple:
     ids = ticket_ids(ticket)
     if ticket and not all(readonly.is_ticket_id(t) for t in ids):
         return 400, "bad-ticket"
-    if kind in ("ok", "decision") and not item_id and tier2_items_for(ids, inbox_items):
+    also = tier2_items_for(ids, inbox_items) if kind in ("ok", "decision") else []
+    if also and not item_id:
         return 403, "tier-2-ticket"
     if kind in TEXT_KINDS and not text:
         return 400, "need-text"
     if kind == "kill" and not NAME_RE.match(text):
         return 400, "bad-name"
-    return 0, {"kind": kind, "ticket": ticket, "text": text, "item_id": item_id, "verb": verb, "title": title}
+    # a tier-1 item of a ticket that ALSO has a tier-2 item: the receipt says so, and the poll line tells the desk to verify
+    # this step only and never move the ticket past the typed tier-2 ok
+    tier2_also = ",".join(sorted({str(it.get("verb") or "").upper() for it in also if it.get("verb")}))
+    return 0, {"kind": kind, "ticket": ticket, "text": text, "item_id": item_id, "verb": verb, "title": title, "tier2_also": tier2_also}
 
 
 def wire(rec: dict) -> dict:
@@ -267,7 +273,7 @@ class ReceiptStore:
             at = panelstate.now_iso()
             rec = {"seq": self.seq, "id": self.new_id(at, fields["kind"]), "at": at, "kind": fields["kind"], "ticket": fields.get("ticket", ""),
                    "text": fields.get("text", ""), "item_id": fields.get("item_id", ""), "verb": fields.get("verb", ""),
-                   "title": fields.get("title", ""), "token_id": token_id, "ip": ip, "user_agent": user_agent[:120],
+                   "title": fields.get("title", ""), "tier2_also": fields.get("tier2_also", ""), "token_id": token_id, "ip": ip, "user_agent": user_agent[:120],
                    "delivered_at": "", "acked_at": "", "redelivered": 0, "source": source, "panel_saw": panel_saw}
             self.receipts.append(rec)
             del self.receipts[:-MAX_RECEIPTS]

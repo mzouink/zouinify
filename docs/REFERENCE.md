@@ -218,8 +218,12 @@ apply to the panel package; `tests/test_receipts.py` pins the write path).
 - Refused with 403, no endpoint behaviour: a tier-2 item (APPROVE, APPLY, DEPLOY, PUSH, or any item whose text names
   `CLAUDE.md` or settings), an `ok`/`decision` for a ticket that has any tier-2 item in the inbox (the item's tier cannot be
   dodged by naming the ticket), a kind that names an approval, apply, deploy, push, budget, permission, merge or grant, and a
-  text of ANY kind that names `CLAUDE.md` or settings (checked after NFKC normalisation with Unicode format characters removed:
-  a zero-width space inside the word, fullwidth letters or `setting.json` do not get past it). With `item_id` the ticket is
+  text of ANY kind that names `CLAUDE.md` or `settings`/`setting`/`settings.json` as a word (checked after NFKC normalisation
+  with Unicode format characters removed and the common Cyrillic look-alikes folded: a zero-width space inside the word,
+  fullwidth letters, `setting.json` or a Cyrillic `с` do not get past it; other look-alike alphabets may, and the desk verifies
+  anyway; "resetting the cache" keeps its button). A tier-1 item of a ticket that also has a tier-2 item is accepted and says
+  so (`tier2_also`): the poll line tells the desk to verify that step only and never move the ticket past the typed tier-2
+  ok. With `item_id` the ticket is
   the item's own (another `ticket` in the body is 400). 401 without the token (or before one is set), 404 for an item the inbox
   no longer prints, 409 for a void item, 411/413/415/400 for a body that is not one small JSON object. Every refusal is an
   `AUDIT` line in `server.log` and a `refused` record in `audit.jsonl` (at most 30 lines a minute; the rest are counted,
@@ -241,9 +245,12 @@ apply to the panel package; `tests/test_receipts.py` pins the write path).
   (the first hand-out stamps `delivered_at`, later ones count in `redelivered`): the desk acknowledges by id with
   `POST /api/ack {ids}` after it printed them, and a receipt stays pending until then (re-sent on every poll, for an hour).
   That is at-least-once delivery, not a defence against another same-uid process: one can read the nonce from `panel.json`
-  and fetch or acknowledge receipts too (delay or swallow a click), though it cannot create one without the token; this is
-  why the desk verifies every receipt and why a click that never arrived is simply clicked again. With `since=<id>` the poll
-  answers everything after that id, acknowledged or not. `zouinify poll` wraps all of it.
+  and fetch or acknowledge receipts (delay or swallow a click), and it can run a listener of its own, give it the panel's
+  command-line shape and write its pid, port and nonce into `panel.json`, feeding the desk receipts nobody clicked (the
+  owner check `zouinify poll` runs guards against a STALE file, nothing more; a test documents that a forged one passes).
+  A receipt is therefore a claim, full stop: the desk verifies every one before acting, and a click that never arrived is
+  simply clicked again. With `since=<id>` the poll answers everything after that id, acknowledged or not. `zouinify poll`
+  wraps all of it.
 - Presence: the page shows `desk polling` while a poll is open and `not polling since HH:MM` otherwise (from the active-poll
   count, read through the panel port like the rest of the page); the snapshot's `panel.receipts` block carries the counters and
   the last 20 receipts without address, user agent or token id, which the page uses for the "receipt <id> · waiting for the
