@@ -509,6 +509,134 @@ class TestApi(PanelWorld):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout), [c for _, _, c in cases])
 
+    # ---- T-0214: the ticket drawer's composer ---------------------------------------------------------------
+    STATUSES = ("backlog", "ready", "in-dev", "in-review", "ready-to-merge", "merged", "ready-to-deploy", "deployed", "done",
+                "dropped", "blocked", "skipped")
+
+    def _ticket_chat_in_node(self, statuses, recent=(), typed=None, can_write=True):
+        """Run the page's own ticketChat(id, status) in node from its source, with the page's esc() and the drafts kept in
+        state.typed, the rest of the helpers stubbed: no DOM, the receipt button rendered as its data-rc JSON (no token
+        logic). Returns {status: html}."""
+        import shutil
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here (CI has it)")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        fns = []
+        for name in ("composer", "questionMsgs", "ticketChat"):
+            m = re.search(r"\n  function " + name + r"\(.*?\n  \}\n", js, re.S)
+            self.assertTrue(m, f"{name}() is a function of the page")
+            fns.append(m.group(0))
+        chips = re.search(r"\n  const BACKLOG_CHIPS = \[.*?\];\n", js)
+        self.assertTrue(chips, "the backlog chips are one list in the page")
+        esc = re.search(r"\n  const esc = .*?;\n", js)
+        self.assertTrue(esc, "the page's own escaper")
+        stubs = esc.group(0) + """
+const NO_TOKEN = 'no token';
+const CSS = { escape: (x) => x };
+const document = { querySelector: () => null };
+const state = { sent: {}, typed: """ + json.dumps(typed or {}) + """, snap: { panel: { receipts: { recent: """ + json.dumps(list(recent)) + """ } } } };
+function canWrite() { return """ + ("true" if can_write else "false") + """; }
+function rc(label, data, cls = '') { return `<button type="button" class="btn" data-rc='${JSON.stringify(data)}'>${label}</button>`; }
+function sentBadge(key, pred) { return `<span class="badge sent">badge:${key}</span>`; }
+function verdictClass(r) { return ''; }
+"""
+        script = stubs + chips.group(0) + "".join(fns) + "\nconst out = {};\nfor (const st of " + json.dumps(list(statuses)) + ") out[st] = ticketChat('T-0001', st);\nconsole.log(JSON.stringify(out));"
+        r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_every_ticket_drawer_has_a_composer_that_posts_a_question_with_the_ticket_id(self):
+        """T-0214: the drawer composer is the chat composer with the ticket id in the receipt body; present whatever the status."""
+        out = self._ticket_chat_in_node(self.STATUSES)
+        for st, html in out.items():
+            self.assertIn('data-rc-input="ticket:T-0001"', html, st)
+            self.assertIn('maxlength="1500"', html, f"{st}: the chat's limit")
+            self.assertIn('placeholder="message the desk about T-0001 (Enter sends)"', html, st)
+            m = re.search(r"data-rc='(\{.*?\})'", html)
+            self.assertTrue(m, st)
+            self.assertEqual(json.loads(m.group(1)), {"kind": "question", "ticket": "T-0001", "from": "input", "key": "ticket:T-0001"},
+                             f"{st}: the POST body carries the ticket id and the kind question, nothing else")
+            self.assertEqual(html.count("data-rc='"), 1, f"{st}: one receipt button, the send")
+            self.assertIn("badge:ticket:T-0001", html, f"{st}: the receipt badge and the desk's reply sit under the composer")
+            self.assertNotIn("decision", html, st)
+
+    def test_backlog_chips_fill_the_box_and_post_nothing(self):
+        out = self._ticket_chat_in_node(self.STATUSES)
+        for st, html in out.items():
+            chips = re.findall(r'<button type="button" class="chip" data-fill="ticket:T-0001" data-text="([^"]*)">', html)
+            if st == "backlog":
+                self.assertEqual(chips, ["triage now", "drop it (not needed)", "raise to P1"], "the three presets, on backlog only")
+                self.assertNotIn("data-rc=", html.split("<div class=\"composer\">")[0], "no chip is a receipt button")
+            else:
+                self.assertEqual(chips, [], f"{st}: chips are for backlog tickets only")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        fill = re.search(r"const fill = ev\.target\.closest\('\[data-fill\]'\);\n\s*if \(fill\) \{(.*?)\}\s*//", js, re.S)
+        self.assertTrue(fill, "the click handler has a data-fill branch")
+        self.assertIn("inp.value = fill.getAttribute('data-text')", fill.group(1), "a chip fills the box")
+        self.assertNotIn("sendReceipt", fill.group(1), "and posts nothing")
+        self.assertNotIn("fetch(", fill.group(1))
+        self.assertRegex(fill.group(1), r"return; $", "the handler stops there")
+        self.assertLess(js.index("closest('[data-fill]')"), js.index("closest('[data-rc]')"), "the chip branch runs before the receipt branch")
+
+    def test_drawer_shows_this_tickets_question_receipts_and_the_desks_reply(self):
+        recent = [{"id": "aa1111", "kind": "question", "ticket": "T-0001", "text": "triage now", "at": "2026-10-14T10:00:00", "reply": "noted: ready in an hour", "replied_at": "2026-10-14T10:05:00"},
+                  {"id": "bb2222", "kind": "question", "ticket": "T-0002", "text": "other ticket", "at": "2026-10-14T10:01:00"},
+                  {"id": "cc3333", "kind": "question", "ticket": "", "text": "chat without a ticket", "at": "2026-10-14T10:02:00"},
+                  {"id": "dd4444", "kind": "launch", "ticket": "T-0001", "text": "", "at": "2026-10-14T10:03:00"}]
+        html = self._ticket_chat_in_node(["ready"], recent)["ready"]
+        self.assertIn("you · receipt aa1111 · 10:00", html)
+        self.assertIn("triage now", html)
+        self.assertIn("desk (aa1111) · 10:05", html)
+        self.assertIn("noted: ready in an hour", html)
+        for other in ("bb2222", "cc3333", "dd4444"):
+            self.assertNotIn(other, html, "only this ticket's question receipts")
+        empty = self._ticket_chat_in_node(["ready"], [])["ready"]
+        self.assertNotIn('class="msgs"', empty, "no message list when nothing was asked yet")
+
+    def test_a_draft_survives_a_repaint_and_is_escaped(self):
+        """T-0214 review: the drawer is repainted on every refresh (and the page too), so the draft lives in state.typed, not in
+        the DOM, and comes back as the input's value; a chip's text is a draft too; sending clears it; Escape keeps it."""
+        html = self._ticket_chat_in_node(["ready"], typed={"ticket:T-0001": 'a "quoted" <draft> & more'})["ready"]
+        self.assertIn('data-rc-input="ticket:T-0001" maxlength="1500" placeholder="message the desk about T-0001 (Enter sends)" aria-label="message to the desk" value="a &quot;quoted&quot; &lt;draft&gt; &amp; more">', html)
+        other = self._ticket_chat_in_node(["ready"], typed={"ticket:T-0002": "someone else's"})["ready"]
+        self.assertNotIn("value=", other, "a draft belongs to its own key")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertRegex(js, r"if \(ev\.target\.matches\('\[data-rc-input\]'\)\) \{ const k = ev\.target\.getAttribute\('data-rc-input'\); if \(ev\.target\.value\) state\.typed\[k\] = ev\.target\.value; else delete state\.typed\[k\]; \}",
+                         "the input listener keeps the draft under the input's key")
+        self.assertIn("if (data.from === 'input') { delete state.typed[data.key];", js, "a sent message is no longer a draft")
+        self.assertIn("state.typed[key] = inp.value; inp.focus(); } else toast(NO_TOKEN); return; }", js, "a chip's text is the draft; without a composer it says why")
+        self.assertIn("if (ev.key === 'Escape') { if (ev.target.matches && ev.target.matches('[data-rc-input]') && ev.target.value) return; closeDrawer(true); }", js,
+                      "Escape does not throw a draft away")
+        # the repaint itself: no skeleton while the same ticket is open, the focus stays in the composer, the close button is
+        # focused on opening only
+        self.assertIn("const reopen = state.drawer === 'ticket:' + id && !$('#drawer').hidden;", js)
+        self.assertIn("if (!reopen) drawerShell(`<span class=\"mono\">${esc(id)}</span>`, '<div class=\"skeleton\"></div>');", js)
+        self.assertRegex(js, r"const typing = focusedComposer\(\);\n\s*d\.innerHTML = .*?\n\s*d\.hidden = false;\n\s*if \(typing\) refocusComposer\(typing\);\s*//[^\n]*\n\s*else if \(opening\) \$\('\[data-close-drawer\]', d\)\.focus\(\);",
+                         "the drawer gives the focus back to the composer after a repaint; the close button gets it on opening only")
+        self.assertRegex(js, r"const typing = focusedComposer\(\);\n\s*el\.innerHTML = banner \+ .*?;\n\s*refocusComposer\(typing\);", "the page repaint does the same for the chat composer")
+
+    def test_without_a_token_the_drawer_composer_is_disabled_and_has_no_chips(self):
+        html = self._ticket_chat_in_node(["backlog"], can_write=False)["backlog"]
+        self.assertIn('<input class="input" disabled placeholder="message the desk about T-0001 (Enter sends)" title="no token"', html)
+        self.assertNotIn("data-fill", html, "no chips when nothing can be sent")
+        self.assertNotIn("data-rc-input", html)
+
+    def test_the_read_only_note_points_at_the_composer_and_the_page_parses(self):
+        import shutil
+        js = self.req("GET", "/static/app.js")[2].decode()
+        note = re.search(r"Nothing here is editable:[^<]*", js)
+        self.assertTrue(note)
+        self.assertIn("the composer below is the way to reach the desk about this ticket", note.group(0))
+        self.assertIn("${ticketChat(id, fm.status)}", js, "the drawer ends with the composer block")
+        self.assertIn("${composer('chat', 'ask the desk… (Enter sends)', { kind: 'question' })}", js, "the chat uses the same composer")
+        css = self.req("GET", "/static/app.css")[2].decode()
+        self.assertIn(".chat .composer, .ticket-chat .composer {", css, "one composer style for both")
+        node = shutil.which("node")
+        if node:
+            r = subprocess.run([node, "-e", "new Function(require('fs').readFileSync(0, 'utf8'))"], input=js, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_lanes_scroll_inside_and_content_stays_in_its_box(self):
         """T-0199: the board is no longer as tall as its longest lane; a sha list, a receipt badge and the sessions table stay
         inside their boxes."""

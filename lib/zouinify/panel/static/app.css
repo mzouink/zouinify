@@ -102,8 +102,8 @@ button { font: inherit; color: inherit; }
 .badge.sent { color: var(--accent-teal); border-color: var(--accent-teal); font-weight: 500; white-space: normal; max-width: 100%; overflow-wrap: anywhere; line-height: 1.4; }
 .badge.sent.ok { color: var(--accent-green); border-color: var(--accent-green); }
 .badge.sent.warn { color: var(--accent-amber); border-color: var(--accent-amber); }
-.chat .msg.desk { border-color: var(--border-strong); }
-.chat .msg.desk.ok { border-color: var(--accent-green); } .chat .msg.desk.warn { border-color: var(--accent-amber); }
+.chat .msg.desk, .ticket-chat .msg.desk { border-color: var(--border-strong); }
+.chat .msg.desk.ok, .ticket-chat .msg.desk.ok { border-color: var(--accent-green); } .chat .msg.desk.warn, .ticket-chat .msg.desk.warn { border-color: var(--accent-amber); }
 .tbl td.reply { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tbl td.reply.ok { color: var(--accent-green); } .tbl td.reply.warn { color: var(--accent-amber); }
 .banner.red { padding: 10px 14px; border-radius: var(--radius-card); background: color-mix(in srgb, var(--accent-red) 16%, var(--bg-surface)); border: 1px solid var(--accent-red); color: var(--text-primary); display: flex; align-items: center; gap: 10px; }
@@ -197,9 +197,15 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .wait-row .what { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
 .wait-row .since { font-size: 12px; color: var(--accent-amber); }
 .chat .msgs { display: flex; flex-direction: column; gap: 8px; min-height: 80px; }
-.chat .msg { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-card); padding: 8px 10px; font-size: 12.5px; }
-.chat .msg .who { color: var(--text-muted); font-size: 11.5px; margin-bottom: 2px; }
-.chat .composer { display: flex; gap: 8px; margin-top: 10px; }
+.ticket-chat .msgs { display: flex; flex-direction: column; gap: 8px; }
+.chat .msg, .ticket-chat .msg { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-card); padding: 8px 10px; font-size: 12.5px; }
+.chat .msg .who, .ticket-chat .msg .who { color: var(--text-muted); font-size: 11.5px; margin-bottom: 2px; }
+.chat .composer, .ticket-chat .composer { display: flex; gap: 8px; margin-top: 10px; }
+.ticket-chat { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border-subtle); padding-top: 10px; }
+.ticket-chat .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ticket-chat .chips .chip { cursor: pointer; }
+.ticket-chat .chips .muted { font-size: 11.5px; }
+.ticket-chat .composer .input { flex: 1; min-width: 0; }
 .presence { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
 .presence::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .presence.working::before { background: var(--status-working); } .presence.idle::before { background: var(--status-idle); }
@@ -209,7 +215,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .topbar .sso .btn { min-height: 26px; padding: 2px 10px; }
 .sso-waiting { font-size: 12px; color: var(--text-secondary); }
 .sso-still { font-size: 12px; color: var(--accent-amber); }
-.chat .msg.you { border-color: var(--accent-teal); }
+.chat .msg.you, .ticket-chat .msg.you { border-color: var(--accent-teal); }
 .inbox-item .options label { opacity: 1; }
 .logtail pre { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; max-height: 260px; overflow: auto; font-size: 12px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

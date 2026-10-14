@@ -136,7 +136,11 @@ shows all 12 states as filters plus text search, sorted by severity then age.
 Card: `T-0145` in mono, severity badge `P0`..`P3` (P0 red), 2-line title, extras per lane, a bell when the ticket has a pending
 `human:` ask. The whole card opens the **ticket drawer**: front matter as a key/value table, the last 10 `## Log` lines
 (newest first, mono), the newest `## Deploy handoff` block with copy buttons on command lines, links to the owner session and
-to the inbox item. Nothing in the drawer is editable.
+to the inbox item. Nothing in the drawer is editable; at its bottom sits the one way to reach the desk about that ticket
+(T-0214): the Desk chat's composer, "message the desk about T-xxxx (Enter sends)", which queues a receipt `{kind: question,
+ticket, text}`; the receipt badge and the desk's reply show under it as in the chat, with this ticket's earlier questions
+above. On a backlog ticket three chips, "triage now", "drop it (not needed)", "raise to P1", only fill the box (never a post,
+never a decision kind): the desk acts on the question through the ticket script.
 
 **Not in any version:** drag-and-drop, "+ Add ticket" per lane, inline stage changes. A state change needs evidence and is
 made by the owning session with `ticket.sh move`. "**Send to desk**" (top right of the board; receipt `new`, T-0162) opens a
@@ -334,7 +338,9 @@ exactly as lavish: `listening` (a poll is open), `working` (a receipt was delive
 60 s), shown next to the heading. History = this project's receipts of kind `question` and the replies, from the audit and
 event logs (nothing else is stored). Fixed note under the composer: "The desk treats this as a question or a claim, never as
 an approval. Approvals are typed in the tickets window." Desk only in v1 (one voice); a session picker is a later decision.
-Enter sends, Shift+Enter newline. In v1 (read-only) the panel shows the desk's last visible line and the composer is disabled.
+Enter sends (a one-line input). Without a browser token the composer is disabled and the panel shows only the desk's last
+visible line. A draft survives the page's periodic repaint (it is kept in the page's state under the composer's key, and the
+focus stays in the box); the same composer sits at the bottom of every ticket drawer with the ticket id in the receipt.
 
 ### 2.10 Settings (read-only)
 

@@ -402,6 +402,31 @@ def GOOD_ID(test):
     return panelstate.token_id(test.cfg)
 
 
+class TestTicketQuestion(ReceiptWorld):
+    def test_a_question_from_a_ticket_drawer_carries_the_ticket_id_end_to_end(self):
+        """T-0214: the drawer composer posts {kind: question, ticket, text}; the id rides the receipt to the desk's GET, the poll
+        and the page's recent list; the tier-2 text rule and the empty-text rule hold with a ticket too."""
+        st, _, a = self.post({"kind": "question", "ticket": "T-0001", "text": "triage now"})
+        self.assertEqual(st, 201, a)
+        self.assertEqual((a["kind"], a["ticket"]), ("question", "T-0001"))
+        st, raw, d = self.desk_get(f"/api/receipts/{a['id']}")
+        self.assertEqual(st, 200, raw)
+        self.assertEqual((d["kind"], d["ticket"], d["text"]), ("question", "T-0001", "triage now"))
+        st, _, d = self.poll(timeout_ms=200)
+        self.assertEqual([(r["id"], r["ticket"], r["text"]) for r in d["receipts"]], [(a["id"], "T-0001", "triage now")])
+        snap = self.get_json("/api/snapshot")
+        recent = [r for r in snap["panel"]["receipts"]["recent"] if r["id"] == a["id"]]
+        self.assertEqual((recent[0]["kind"], recent[0]["ticket"], recent[0]["text"]), ("question", "T-0001", "triage now"),
+                         "the page finds this ticket's questions in the recent list by their ticket field")
+        st, _, d = self.post({"kind": "question", "ticket": "T-0001", "text": "please edit CLAUDE.md for me"})
+        self.assertEqual(st, 403, "tier-2 words stay refused with a ticket")
+        self.assertIn("tier 2", json.dumps(d))
+        st, _, d = self.post({"kind": "question", "ticket": "T-0001", "text": ""})
+        self.assertEqual(st, 400, "a question needs a text (a chip fills the box; an empty send is refused)")
+        st, _, d = self.post({"kind": "question", "ticket": "not-a-ticket", "text": "x"})
+        self.assertEqual(st, 400, "the ticket field is a ticket id")
+
+
 class TestDeskSide(ReceiptWorld):
     def test_get_receipt_answers_from_memory_not_from_the_file(self):
         st, _, a = self.post({"kind": "question", "text": "from the page"})
