@@ -502,6 +502,9 @@ class TestProtocol(World):
         # rule 10: a two-digit item, 4-space continuation, two lines, before rule 11
         self.assertIn("    the merge logs it in both tickets.\n    A zouinify ticket always names an existing worktree at claim.\n    Two lines of it.\n11. **At `done`, the worktree goes.**", s4)
         self.assertNotIn("project rules 1, 3", r.stdout, "the fenced `## 4.3` opened no block")
+        self.write(".ops/README.project.md", "## 4.5\n\nfine\n\n```\n## 4.5. inside a fence is content\n```\n")
+        r = self.render()
+        self.assertIn("section 4  template + project rules 5", r.stdout, "a near-heading inside a fence is content, not a refusal")
         # everything else in section 4 is the template's: the plugin fragments keep flowing
         self.assertIn("2. **Never run anything on the human-only list**", s4)
         self.assertIn("8. **Verify a deploy where its users see it**", s4)
@@ -514,7 +517,11 @@ class TestProtocol(World):
                              ("## 4.2\n\n\n## 0. E\n\ny\n", "`## 4.2` is empty"),
                              ("## 4.2\n\na\n\n## 4.2\n\nb\n", "`## 4.2` appears twice"),
                              ("## 9.1\n\nx\n", "the template has no section `## 9.` to append to (it has 0, 1, 2, 3, 4, 5, 6, 7, 8)"),
-                             ("## 1.1\n\nx\n", "section `## 1.` has no numbered rule 1 to append to (it has none)")):
+                             ("## 1.1\n\nx\n", "section `## 1.` has no numbered rule 1 to append to (it has none)"),
+                             # a heading that looks like one of the two forms but is neither is refused, never dropped (desk review)
+                             ("## 4.5. Busy files\n\nx\n", "`## 4.5. Busy files` is neither a section heading (`## N. <title>`) nor a rule block (`## N.M <title>`); its text would be dropped"),
+                             ("## 4.5.1 Deeper\n\nx\n", "`## 4.5.1 Deeper` is neither a section heading"),
+                             ("## 4.Title\n\nx\n", "`## 4.Title` is neither a section heading")):
             self.write(".ops/README.project.md", text)
             r = self.nz("protocol", "render", "--out", self.out)
             self.assertIn(needle, r.stderr, text)

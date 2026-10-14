@@ -69,6 +69,7 @@ VERB_HINTS = {"APPLY": "a saved plan", "DEPLOY": "a deploy", "PUSH": "an image",
               "CHECK": "browser or email", "APPROVE": "a paid run, with the dollar amount", "SSO": "refresh credentials"}
 HEADING_RE = re.compile(r"^## (\d+)\. ")
 RULE_HEADING_RE = re.compile(r"^## (\d+)\.(\d+)(?:\s.*)?$")      # `## 4.5 <title>`: appends to rule 5 of section 4 (T-0224)
+NEAR_HEADING_RE = re.compile(r"^## \d+\.")                         # looks like one of the two but is neither: refused, never dropped
 ITEM_RE = re.compile(r"^(\d+)\. ")                                  # a numbered list item at the margin
 PREAMBLE_RE = re.compile(r"^## Preamble\s*$")
 FENCE_RE = re.compile(r"^(```|~~~)")
@@ -137,6 +138,9 @@ def project_sections(text: str) -> dict:
             current = key
             sections[key] = []                           # the body only: the rule keeps the template's own text
             continue
+        if fenced is None and NEAR_HEADING_RE.match(line):    # `## 4.5. title`, `## 4.5.1 x`, `## 4.Title`: a block nobody would get
+            raise ZouinifyError(f".ops/README.project.md: `{line.strip()}` is neither a section heading (`## N. <title>`) nor a rule block "
+                                f"(`## N.M <title>`); its text would be dropped, so it is refused")
         if fenced is None and PREAMBLE_RE.match(line):
             if "preamble" in sections:
                 raise ZouinifyError(".ops/README.project.md: `## Preamble` appears twice")
