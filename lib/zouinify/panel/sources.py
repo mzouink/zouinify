@@ -30,7 +30,10 @@ CHIPS = ("backlog", "blocked", "done", "dropped")
 # frozen (T-0164): a panel module must not be able to widen the tier classifier or reorder the lanes at runtime
 SEV = MappingProxyType({"P0": 0, "P1": 1, "P2": 2, "P3": 3})
 STATE_ORDER = MappingProxyType({"waiting": 0, "working": 1, "idle": 2, "shell": 3, "gone": 4})
-TIER2_DECIDE_RE = re.compile(r"CLAUDE\.md|settings", re.I)
+# a text that names CLAUDE.md or settings is tier 2 whatever the verb or the receipt kind: the human types it. Checked after NFKC
+# normalisation with Unicode format characters removed (T-0162 review: a zero-width space inside CLAUDE.md, fullwidth letters,
+# `setting.json` all passed the old `CLAUDE\.md|settings`)
+TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|setting", re.I)
 # a command that mutates production however the ask is labelled: the human runs it, never a button (any version)
 FLAGS = r"(?:-\S*\s+(?:\S+\s+)?)*"   # `-chdir=x -auto-approve`, `-C dir`, `-f file` between a tool and its verb
 TIER2_COMMAND_RE = re.compile(
@@ -49,6 +52,15 @@ AWS_BOOLEAN_FLAGS = frozenset({"--debug", "--version", "--no-verify-ssl", "--no-
                      "--no-cli-auto-prompt", "--cli-auto-prompt", "--dryrun", "--recursive", "--quiet", "--exact-timestamps", "--only-show-errors"})
 SEGMENT_RE = re.compile(r"\s*(?:&&|\|\||\||;|\n)\s*")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def tier2_text(text) -> bool:
+    """Whether a text names CLAUDE.md or settings once Unicode tricks are normalised away (NFKC, format characters dropped)."""
+    if not isinstance(text, str) or not text:
+        return False
+    t = unicodedata.normalize("NFKC", text)
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+    return bool(TIER2_TEXT_RE.search(t))
 
 
 def aws_mutating(command: str) -> bool:
@@ -96,7 +108,7 @@ def classify_item(it: dict) -> dict:
     verb = str(it.get("verb", "")).upper()
     text = " ".join(str(it.get(k, "")) for k in ("title", "command", "expect"))
     options = re.findall(r'"([^"]+)"', str(it.get("command", ""))) if verb == "DECIDE" else []
-    if verb == "APPROVE" or (verb == "DECIDE" and TIER2_DECIDE_RE.search(text)):
+    if verb == "APPROVE" or tier2_text(text):
         tier, hint = 2, f"type in the desk's tmux window: {it.get('expect') or it.get('command') or ''}".strip()
     elif verb in ("APPLY", "DEPLOY", "PUSH") or TIER2_COMMAND_RE.search(str(it.get("command", ""))) or aws_mutating(str(it.get("command", ""))):
         # a production apply, deploy or image push: the human runs the command in their terminal and types the

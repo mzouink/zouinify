@@ -16,9 +16,12 @@ body must be application/json (so a page would have to preflight, and OPTIONS is
 own loopback name, and the per-start nonce from panel.json (0600) must come back as X-Zouinify-Hook.
 
 The desk's side of the receipts (T-0162) lives here too, under the same checks (same-uid loopback peer, no Origin, the
-listener's own Host, the nonce): `GET /api/poll?since=<id>&timeout_ms=<n>` blocks until a receipt is pending and
+listener's own Host, the nonce): `GET /api/poll?since=<id>&timeout_ms=<n>` blocks until a receipt is pending,
+`POST /api/ack {ids}` acknowledges what the desk printed (fetching marks nothing: at-least-once delivery), and
 `GET /api/receipts/<id>` answers from memory. Never on the LAN-facing port: a LAN device without the token cannot read
-receipts, and the desk needs no browser token (it reads the nonce from panel.json, its own user's 0600 file).
+receipts, and the desk needs no browser token (it reads the nonce from panel.json, its own user's 0600 file). Another
+same-uid process can read that nonce too, so it can fetch or acknowledge receipts (delay or swallow a click) -- it
+cannot create one without the token -- which is one more reason the desk verifies every receipt.
 """
 from __future__ import annotations
 
@@ -51,7 +54,8 @@ UNDERSCORE_RE = re.compile(r"_")
 QUERY_RE = re.compile(r"\?[^ \"]*")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 HOOK_HEADER = "X-Zouinify-Hook"
-DESK_PATHS = ("/api/poll", "/api/receipts/")
+DESK_PATHS = ("/api/poll", "/api/receipts/", "/api/ack")
+DESK_ALLOW = "the hook listener takes POST /api/hook and, for the desk, GET /api/poll, GET /api/receipts/<id> and POST /api/ack"
 
 
 def clip(value, n: int) -> str:
@@ -202,12 +206,45 @@ class HookHandler(BaseHTTPRequestHandler):
         path = CONTROL_RE.sub("", self.path.split("?", 1)[0])[:80]
         panelstate.log(self.server.cfg, f"AUDIT hook {status} {reason} ip={self.client_address[0]} {self.command} {path}")
         self.close_connection = True
-        self.reply(status, {"error": reason}, {"Allow": "POST"} if status == 405 else None)
+        allow = None
+        if status == 405:
+            allow = {"Allow": "GET" if path == DESK_PATHS[0] or path.startswith(DESK_PATHS[1]) else "POST"}
+        self.reply(status, {"error": reason}, allow)
+
+    def serve_ack(self) -> None:
+        """POST /api/ack {ids: [...]}: the desk acknowledges the receipts it printed; they stop being pending."""
+        why = self.desk_refusal()
+        if why:
+            return self.refuse(HTTPStatus.FORBIDDEN, why)
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            return self.refuse(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "an ack is application/json")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.refuse(HTTPStatus.BAD_REQUEST, "bad Content-Length")
+        if length <= 0 or length > 64 * 1024:
+            return self.refuse(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "an ack is 1..65536 bytes")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+        except (ValueError, RecursionError):
+            return self.refuse(HTTPStatus.BAD_REQUEST, "not JSON")
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list):
+            return self.refuse(HTTPStatus.BAD_REQUEST, "an ack is {ids: [<receipt id>, ...]}")
+        done = self.server.receipts.ack(ids)
+        panelstate.log(self.server.cfg, f"ACK {self.address_string()} {len(done)} of {len(ids)} receipt(s): {' '.join(done) or '-'}")
+        self.reply(HTTPStatus.OK, {"acked": done, "at": panelstate.now_iso()})
 
     def do_POST(self):
         if not self.peer_is_same_user():
             return self.refuse(HTTPStatus.FORBIDDEN, "hooks are accepted from this user's processes on this machine only")
-        if self.path.split("?", 1)[0] != "/api/hook":
+        path = self.path.split("?", 1)[0]
+        if path == DESK_PATHS[2]:
+            if self.server.receipts is None:
+                return self.refuse(HTTPStatus.NOT_FOUND, "no receipts on this listener")
+            return self.serve_ack()
+        if path != "/api/hook":
             return self.refuse(HTTPStatus.NOT_FOUND, "not found")
         if self.headers.get("Origin") is not None:
             return self.refuse(HTTPStatus.FORBIDDEN, "a browser page may not post hooks (Origin present)")
@@ -274,9 +311,9 @@ class HookHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
         batch: list = []
         try:
-            batch = self.server.receipts.poll(since, timeout_s, beat)
+            batch, known = self.server.receipts.poll(since, timeout_s, beat)
             body = {"receipts": [receipts_mod.wire(r) for r in batch], "since": batch[-1]["id"] if batch else since,
-                    "presence": self.server.receipts.presence(), "at": panelstate.now_iso()}
+                    "since_known": known if since else None, "at": panelstate.now_iso()}
             self.wfile.write(json.dumps(body).encode("utf-8"))
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -298,10 +335,10 @@ class HookHandler(BaseHTTPRequestHandler):
             if rec is None:
                 return self.reply(HTTPStatus.NOT_FOUND, {"error": "no such receipt in memory (the audit file is not consulted)"})
             return self.reply(HTTPStatus.OK, rec)
-        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the hook listener takes POST /api/hook and, for the desk, GET /api/poll and GET /api/receipts/<id>")
+        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, DESK_ALLOW)
 
     def not_allowed(self):
-        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the hook listener takes POST /api/hook and, for the desk, GET /api/poll and GET /api/receipts/<id>")
+        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, DESK_ALLOW)
 
     do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = not_allowed
 

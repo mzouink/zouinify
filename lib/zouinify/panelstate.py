@@ -238,14 +238,12 @@ def hook_snippet() -> str:
     return json.dumps({"hooks": {ev: entry(ev) for ev in HOOK_EVENTS}}, indent=1)
 
 
-# -- the receipts audit (T-0162): .ops/state/audit.jsonl, one JSON line per accepted receipt, per delivery to the desk's
-# poll and per refused write. 0600, O_NOFOLLOW, under the state lock. The panel package appends through append_audit()
-# and reads the tail through read_audit() at start (to replay receipts no poll fetched before a restart); it never
-# opens the file itself. A same-user process can write this file too: a replayed line is flagged as such and the desk
-# verifies every receipt as a claim anyway (the ticket's rule).
+# -- the receipts audit (T-0162): .ops/state/audit.jsonl, one JSON line per accepted receipt, per hand-out to the desk's
+# poll, per acknowledgement and per refused write. 0600, O_NOFOLLOW, under the state lock. WRITE-ONLY: the panel package
+# appends through append_audit() and nothing reads the file back into the channel (a same-user process can write it, so a
+# line there is never a receipt; review ruling 2026-10-13). It is a forensic trail for the human.
 
 AUDIT_MAX_BYTES = 50 * 1024 * 1024    # beyond it nothing more is appended (a flood must not fill the disk); receipts still work
-AUDIT_TAIL_BYTES = 2 * 1024 * 1024    # how much of the file's end read_audit() parses
 
 
 def audit_path(cfg) -> str:
@@ -275,37 +273,6 @@ def append_audit(cfg, record: dict) -> bool:
             return True
     except (OSError, TypeError, ValueError):
         return False
-
-
-def read_audit(cfg, max_bytes: int = AUDIT_TAIL_BYTES) -> list:
-    """The records (dicts) of the last `max_bytes` of audit.jsonl, oldest first; [] when the file is missing, a symlink
-    or unreadable. Lines that are not JSON objects are skipped. Never raises."""
-    try:
-        path = audit_path(cfg)
-        if os.path.islink(path):
-            return []
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as fh:
-            fh.seek(0, 2)
-            size = fh.tell()
-            fh.seek(max(0, size - max_bytes))
-            data = fh.read()
-    except (OSError, ValueError):
-        return []
-    out = []
-    lines = data.split(b"\n")
-    if size > max_bytes:
-        lines = lines[1:]                 # the first line of a tail is cut
-    for raw in lines:
-        if not raw.strip():
-            continue
-        try:
-            rec = json.loads(raw.decode("utf-8", "replace"))
-        except ValueError:
-            continue
-        if isinstance(rec, dict):
-            out.append(rec)
-    return out
 
 
 EVENTS_KEEP_DAYS = 14

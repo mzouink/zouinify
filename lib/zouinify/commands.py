@@ -77,7 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("poll", help="the desk's side of the panel receipts: block until a click arrives, print each receipt with the "
                                     "exact script to run, exit (run it again after each batch)")
     s.add_argument("--timeout-ms", type=int, default=0, metavar="MS", help="give up after MS milliseconds with no receipt (default: wait)")
-    s.add_argument("--since", default="", metavar="ID", help="replay every receipt after this id (a lost batch)")
+    s.add_argument("--since", default="", metavar="ID", help="replay every receipt after this id, acknowledged or not (a lost batch)")
+    s.add_argument("--no-ack", action="store_true", help="print without acknowledging: the receipts come back on the next poll")
+    s.add_argument("--ack", default="", metavar="ID[,ID]", help="acknowledge these receipt ids by hand and exit")
 
     s = sub.add_parser("briefs", help="render the brief templates with this project's config")
     s.add_argument("action", choices=["render", "list"])
@@ -161,7 +163,7 @@ def main(argv=None) -> int:
             return launch.cmd_down(cfg, args.names, dry_run=args.dry_run, receipt=args.receipt)
         if args.cmd == "poll":
             from zouinify import poll
-            return poll.cmd_poll(cfg, timeout_ms=args.timeout_ms, since=args.since)
+            return poll.cmd_poll(cfg, timeout_ms=args.timeout_ms, since=args.since, no_ack=args.no_ack, ack_ids=args.ack)
         if args.cmd == "status":
             from zouinify import status
             data = status.collect(cfg, use_cache=not args.no_cache)

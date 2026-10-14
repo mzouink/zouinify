@@ -37,7 +37,6 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 CONTENT_TYPES = MappingProxyType({".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                                   ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json"})
 ALLOW = "GET, HEAD"
-ALLOW_RECEIPTS = "GET, HEAD, POST"
 CSP = webauth.CSP
 REFUSED = MappingProxyType({"error": "method not allowed: the panel's one write is POST /api/receipts (a click the desk verifies, "
                                      "with the browser token); everything else is read-only", "allow": ALLOW})
@@ -217,22 +216,38 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200:
             return self.deny(status, reason, "")
         self.audit(405, "write-attempt")
-        self.send_bytes(HTTPStatus.METHOD_NOT_ALLOWED, json.dumps(dict(REFUSED)).encode("utf-8"), "application/json; charset=utf-8", {"Allow": ALLOW})
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        allow = "POST" if path == "/api/receipts" else ALLOW
+        self.send_bytes(HTTPStatus.METHOD_NOT_ALLOWED, json.dumps(dict(REFUSED, allow=allow)).encode("utf-8"), "application/json; charset=utf-8",
+                        {"Allow": allow})
 
     # -- the one write: POST /api/receipts (T-0162) ---------------------------------------------------
     def refuse_receipt(self, status: int, reason: str, message: str, kind: str = "", extra: dict | None = None) -> None:
         """A refused write: an AUDIT line in server.log, a `refused` record in audit.jsonl (counted for the page's banner),
-        the answer. `message` is for the human reading the page; `reason` is the short audit word."""
+        the answer. `message` is for the human reading the page; `reason` is the short audit word. The record says what
+        credential was presented (header, cookie, none), never which token."""
         store = self.server.receipts
         ua = CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:120]
         self.audit(status, reason)
-        store.note_refused(status, reason, self.client_address[0], ua, panelstate.token_id(self.server.cfg) or "", kind)
+        store.note_refused(status, reason, self.client_address[0], ua, self.presented_token()[1] or "none", kind)
         body = {"error": message, "reason": reason, "tier2": status == 403 and reason.startswith("tier-2")}
         if status == 429:
             body["banner"] = True
         return self.send_json(status, body, False, extra)
 
     def post_receipt(self) -> None:
+        try:
+            return self.post_receipt_inner()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as e:  # noqa: BLE001 - never take the server down for one request, and never leave it unanswered
+            self.log_message("error on POST /api/receipts: %r", e)
+            try:
+                return self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(e).__name__}: {e}"[:300]})
+            except OSError:
+                self.close_connection = True
+
+    def post_receipt_inner(self) -> None:
         srv = self.server
         store = srv.receipts
         if not self.host_allowed():
@@ -255,13 +270,17 @@ class Handler(BaseHTTPRequestHandler):
         if ctype != "application/json":
             self.drain()
             return self.refuse_receipt(415, "receipt-content-type", "a receipt is application/json")
+        if self.headers.get("Content-Length") is None:
+            return self.refuse_receipt(411, "receipt-length", "a receipt needs Content-Length")
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return self.refuse_receipt(400, "receipt-length", "bad Content-Length")
-        if length <= 0 or length > receipts.MAX_BODY:
+        if length <= 0:
+            return self.refuse_receipt(400, "receipt-length", "a receipt is at least one byte")
+        if length > receipts.MAX_BODY:
             self.drain()
-            return self.refuse_receipt(413, "receipt-size", f"a receipt is 1..{receipts.MAX_BODY} bytes")
+            return self.refuse_receipt(413, "receipt-size", f"a receipt is at most {receipts.MAX_BODY} bytes")
         try:
             body = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
         except (ValueError, RecursionError):
@@ -286,9 +305,9 @@ class Handler(BaseHTTPRequestHandler):
                                "panel_saw": rec.get("panel_saw", ""), "presence": store.presence()})
 
     def probe_for(self, fields: dict) -> str:
-        """What the panel itself saw for a receipt that asserts a state: nothing in T-0162 (T-0195 re-probes the
-        credentials on an `sso` click)."""
-        return ""
+        """What the panel itself saw for a receipt that asserts a state: "not probed (T-0195)" for an `sso` click until
+        T-0195 adds the credentials re-probe; "" for every other kind."""
+        return "not probed (T-0195)" if fields.get("kind") == "sso" else ""
 
     def do_POST(self):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
@@ -346,8 +365,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(HTTPStatus.OK, snap.build(fresh=fresh), head)
             if path == "/api/receipts" or path.startswith("/api/receipts/") or path == "/api/poll":
                 return self.send_json(HTTPStatus.NOT_FOUND, {"error": "receipts are read by the desk on the loopback-only listener "
-                                                                       "(the desk's poll command); this port takes POST /api/receipts only"}, head,
-                                      {"Allow": ALLOW_RECEIPTS} if path == "/api/receipts" else None)
+                                                                       "(the desk's poll command); this port takes POST /api/receipts only"}, head)
             if path.startswith("/api/tickets/"):
                 tid = path[len("/api/tickets/"):]
                 d = snap.ticket(tid) if readonly.is_ticket_id(tid) else None
@@ -489,7 +507,7 @@ def run(srv: PanelServer) -> int:
     panelstate.log(cfg, f"zouinify panel {panelstate.version()} serving {cfg.name} on {srv.server_address[0]}:{actual} "
                         f"({srv.bind}{', token required beyond loopback' if srv.token_required else ''}; the one write is POST /api/receipts, "
                         f"token required) pid {panelstate.pid()}; hook listener and the desk's poll on 127.0.0.1:{hook_port}; "
-                        f"{srv.receipts.meta()['pending']} receipt(s) replayed from audit.jsonl")
+                        f"receipts pending before this start are gone (audit.jsonl is write-only)")
     try:
         srv.serve_forever(poll_interval=0.5)
     finally:

@@ -60,7 +60,7 @@ update the manifest, run the tests.
 | `zouinify briefs render [--out DIR] [--force]`, `briefs list` | Render `templates/briefs/*.md.tmpl` (desk, manager, debug, chrome_debug, worker) with the config: `{{desk.name}}`, `{{trunk}}`, `{{prod}}`, `{{human_only}}`, `{{budget}}`, `{{ask_verbs}}`, ... Refuses to overwrite an edited brief without `--force`. |
 | `zouinify panel start\|stop\|status\|url` | This project's read-only panel on `http://127.0.0.1:<panel.port>/`, one detached process per project (pid file and log under `.ops/state/`, an entry in `~/.zouinify/projects.json`). `start` probes the port first: this project's panel is reused, another project's or a foreign process is refused, never taken over; `stop` stops only this project's and only a process whose command line is this project's panel. `up` starts it unless `panel.autostart: false` or `--no-panel`. `panel.bind: intranet` listens on 0.0.0.0 and requires the browser token on every LAN request (see LAN access). `panel start` runs `claude agents --json` for the cross-project waiting rows and the agents-says-waiting signal; the Claude CLI keeps its own state in `~/.claude.json` (it exists on every Claude Code machine; a fresh HOME gets it on that first call). zouinify itself writes nothing in HOME but `~/.zouinify/projects.json`, the list of running panels. |
 | `zouinify down [name...] [--dry-run] [--receipt ID]` | Kill launcher-registered worker sessions whose ticket is `done`/`dropped`; refuses a role session, an unregistered session, a ticket that is not terminal. `--dry-run` first, always. With `--receipt ID` (the desk acting on a panel click) it appends `ticket.sh log T-xxxx "killed <name> (panel receipt ID)"`, signed by the caller's `TICKET_AS`. |
-| `zouinify poll [--timeout-ms MS] [--since ID]` | The desk's side of the panel receipts (T-0162). Blocks until the panel hands out at least one receipt (a click on the page), prints each as `receipt <id> <kind> <ticket> "<text>" (<at>, token <id>, <ip>)` followed by the exact script to run (`zouinify launch worker T-xxxx --receipt <id>`, `zouinify down <name> --receipt <id>`, "verify, then `ticket.sh move ... \"...; panel receipt <id>\"`", ...), and exits; the desk runs it again after each batch. `--timeout-ms` gives up after that long with no receipt; `--since ID` replays every receipt after that id (a lost batch). It reads the loopback-only listener inside the panel process (`hook_port` and the per-start nonce from `.ops/state/panel.json`, the same handshake as the hook script), so the desk needs no browser token and the LAN-facing port serves no receipts. |
+| `zouinify poll [--timeout-ms MS] [--since ID] [--no-ack] [--ack ID,...]` | The desk's side of the panel receipts (T-0162). Blocks until the panel hands out at least one pending receipt (a click on the page), prints each as `receipt <id> <kind> <ticket> (<at>, token <id>, <ip>)`, a `data:` line (the human's text and the item's title, JSON-encoded, kept apart from any command) and the exact script to run (`zouinify launch worker T-xxxx --receipt <id>`, `zouinify down <name> --receipt <id>`, "verify, then `ticket.sh move ... \"...; panel receipt <id>\"`", ...), flushes, acknowledges the printed ids in one request and exits; the desk runs it again after each batch. Fetching marks nothing (at-least-once): a receipt whose print or ack was lost comes back on the next poll marked re-sent. `--timeout-ms` gives up after that long with no receipt; `--no-ack` peeks; `--ack ID,...` acknowledges by hand; `--since ID` replays every receipt after that id, acknowledged or not. It reads the loopback-only listener inside the panel process (`hook_port` and the per-start nonce from `.ops/state/panel.json`, the same handshake as the hook script) after checking that the panel pid itself listens on that port, so the desk needs no browser token and the LAN-facing port serves no receipts. |
 | `zouinify board`, `zouinify human [--count\|--json]` | `scripts/ticket.sh board` / `human`, verbatim. The lifecycle stays in `ticket.sh`; the skill never re-implements it. |
 
 Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (a relative path inside the project;
@@ -215,28 +215,39 @@ apply to the panel package; `tests/test_receipts.py` pins the write path).
   `text`); a `kind` without an item is one of `ok`, `decision`, `question`, `new`, `launch`, `kill`, `sso`. The answer is
   201 `{id, kind, ticket, at, presence}`; a repeat click of the same item or kind while its receipt is still open (not fetched
   by a poll yet, or fetched less than two minutes ago) answers 200 with the same id (a nervous thumb makes no flood).
-- Refused with 403, no endpoint behaviour: an APPROVE/APPLY/DEPLOY/PUSH item, a kind that names an approval, apply, deploy,
-  push, budget, permission, merge or grant, an `ok` or `decision` whose text names `CLAUDE.md` or settings. 401 without the
-  token (or before one is set), 404 for an item the inbox no longer prints, 409 for a void item, 413/415/400 for a body that is
-  not one small JSON object. Every refusal is an `AUDIT` line in `server.log` and a `refused` record in `audit.jsonl`
-  (at most 30 lines a minute; the rest are counted), and the usual per-address refusal budget applies (429 beyond).
+- Refused with 403, no endpoint behaviour: a tier-2 item (APPROVE, APPLY, DEPLOY, PUSH, or any item whose text names
+  `CLAUDE.md` or settings), an `ok`/`decision` for a ticket that has any tier-2 item in the inbox (the item's tier cannot be
+  dodged by naming the ticket), a kind that names an approval, apply, deploy, push, budget, permission, merge or grant, and a
+  text of ANY kind that names `CLAUDE.md` or settings (checked after NFKC normalisation with Unicode format characters removed:
+  a zero-width space inside the word, fullwidth letters or `setting.json` do not get past it). With `item_id` the ticket is
+  the item's own (another `ticket` in the body is 400). 401 without the token (or before one is set), 404 for an item the inbox
+  no longer prints, 409 for a void item, 411/413/415/400 for a body that is not one small JSON object. Every refusal is an
+  `AUDIT` line in `server.log` and a `refused` record in `audit.jsonl` (at most 30 lines a minute; the rest are counted,
+  and the record names the credential kind presented, never a token), and the usual per-address refusal budget applies (429
+  beyond).
 - Rate limit per token: 10 accepted receipts a minute and 60 an hour; beyond, 429 with a `banner` flag the page shows as a red
   banner ("something other than you is knocking"); the page also shows it when the server counted five or more refused writes
   in the last minute.
-- Kept in memory (the last 500) and appended to `.ops/state/audit.jsonl` (0600): `{event: receipt, id, at, kind, ticket, text,
-  item_id, verb, title, token_id, ip, user_agent}`, plus one `delivered` record per poll batch and the `refused` records. After a
-  panel restart the receipts no poll fetched (younger than an hour, at most 50) are replayed, flagged `replayed`: that file is
-  writable by any same-user process, so the desk verifies a replayed receipt exactly like a fresh one (it verifies every receipt
-  anyway). `GET /api/receipts/<id>` answers from memory only; a line appended to the file by hand is not served.
+- Kept in memory (the last 500). `.ops/state/audit.jsonl` (0600) is a **write-only** trail: `{event: receipt, id, at, kind,
+  ticket, text, item_id, verb, title, token_id, ip, user_agent}` per accepted receipt, one `fetched` record per poll batch, one
+  `acked` record per acknowledgement, the `refused` records. Nothing reads it back into the channel: a line any same-user
+  process appends there is never a receipt, and a panel restart drops the receipts that were pending (the page says so under
+  the control that was clicked: click again). `GET /api/receipts/<id>` answers from memory only.
 - The desk's side is served by the **loopback-only listener** of the hooks (127.0.0.1, same-uid peer, no `Origin`, the
   listener's own `Host`, the per-start nonce from `panel.json` as `X-Zouinify-Hook`), never by the LAN-facing port: a LAN device
   without the token cannot read receipts, and the desk needs no browser token. `GET /api/poll?since=<id>&timeout_ms=<n>` blocks
-  until a receipt is pending (a space every 15 s keeps the connection alive, like lavish; at most 120 s), answers
-  `{receipts: [...], since, presence, at}` and marks the batch delivered; a timeout answers an empty list and is safe to repeat;
-  without `since` it hands out what no poll fetched yet, with `since=<id>` everything after that id. `zouinify poll` wraps it.
+  until a receipt is pending (a space every 15 s keeps the connection alive, like lavish; at most 120 s) and answers
+  `{receipts: [...], since, since_known, at}`; a timeout answers an empty list and is safe to repeat. Fetching marks nothing
+  (the first hand-out stamps `delivered_at`, later ones count in `redelivered`): the desk acknowledges by id with
+  `POST /api/ack {ids}` after it printed them, and a receipt stays pending until then (re-sent on every poll, for an hour).
+  That is at-least-once delivery, not a defence against another same-uid process: one can read the nonce from `panel.json`
+  and fetch or acknowledge receipts too (delay or swallow a click), though it cannot create one without the token; this is
+  why the desk verifies every receipt and why a click that never arrived is simply clicked again. With `since=<id>` the poll
+  answers everything after that id, acknowledged or not. `zouinify poll` wraps all of it.
 - Presence: the page shows `desk polling` while a poll is open and `not polling since HH:MM` otherwise (from the active-poll
   count, read through the panel port like the rest of the page); the snapshot's `panel.receipts` block carries the counters and
-  the last 20 receipts, which the page uses for the "receipt <id> · waiting for the desk" badges and the Desk chat history.
+  the last 20 receipts without address, user agent or token id, which the page uses for the "receipt <id> · waiting for the
+  desk / fetched HH:MM / acked by the desk HH:MM" badges and the Desk chat history.
 - The desk's rule (its brief): keep one `zouinify poll` running; verify every receipt as a claim, exactly like a typed `ok`;
   name the receipt id in the reply and in the log line; never move a ticket on a receipt alone; tier 2 means "ask the human to
   type it".

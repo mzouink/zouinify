@@ -213,7 +213,7 @@ class TestApi(PanelWorld):
                              ("DELETE", "/api/sessions/x"), ("PATCH", "/health"), ("POST", "/api/hook")):
             st, hdr, _ = self.req(method, path, body=b"{}")
             self.assertEqual(st, 405, f"{method} {path} -> {st}")
-            self.assertIn("GET", hdr.get("Allow", ""))
+            self.assertEqual(hdr.get("Allow", ""), "POST" if path == "/api/receipts" else "GET, HEAD", f"{method} {path}")
         st, hdr, body = self.req("POST", "/api/receipts", body=b"{}")
         self.assertEqual(st, 401, "the one write exists (T-0162) and needs the browser token even on loopback")
         self.assertIn("token", json.loads(body)["error"])
