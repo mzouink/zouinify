@@ -294,6 +294,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.refuse_receipt(st, fields, receipts.MESSAGES.get(fields, fields), kind_hint)
         ua = CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:120]
         token_id = panelstate.token_id(srv.cfg) or "?"
+        if fields["kind"] == "sso" and store.over_budget(token_id):
+            return self.refuse_receipt(429, "receipt-rate", f"receipts rate-limited for this token ({receipts.RATE_MINUTE} a minute, "
+                                                            f"{receipts.RATE_HOUR} an hour): something other than you may be knocking",
+                                       "sso", {"Retry-After": str(int(receipts.WINDOW_S))})
         try:
             rec, repeat = store.add(fields, token_id, self.client_address[0], ua, panel_saw=self.probe_for(fields))
         except receipts.RateLimited as e:
@@ -307,9 +311,28 @@ class Handler(BaseHTTPRequestHandler):
                                "panel_saw": rec.get("panel_saw", ""), "presence": store.presence()})
 
     def probe_for(self, fields: dict) -> str:
-        """What the panel itself saw for a receipt that asserts a state: "not probed (T-0195)" for an `sso` click until
-        T-0195 adds the credentials re-probe; "" for every other kind."""
-        return "not probed (T-0195)" if fields.get("kind") == "sso" else ""
+        """What the panel itself saw for a receipt that asserts a state (T-0195): an `sso` click re-probes the credentials
+        (the existing read-only `aws sts get-caller-identity`, 2 s timeout, the only aws command the panel ever runs) and
+        records `ok` / `LOGIN` / `ERR` / `?` (`n/a` on a project without an aws block); the header's creds source takes
+        the answer at once, without a creds event (the click is the receipt). At most one probe per PROBE_MIN_S: a repeat
+        or a burst of clicks reuses the last answer, so a held-down button runs no second aws process. "" for other kinds."""
+        if fields.get("kind") != "sso":
+            return ""
+        srv = self.server
+        with srv.probe_lock:
+            at, saw = srv.last_probe
+            if saw is not None and time.monotonic() - at < receipts.PROBE_MIN_S:
+                return saw
+            try:
+                probe = readonly.creds(srv.cfg, use_cache=False)
+                saw = str(probe.get("left") or "?")
+            except Exception as e:  # noqa: BLE001 - a failing probe is information, never a failed click
+                panelstate.log(srv.cfg, f"sso re-probe failed: {type(e).__name__}: {e}"[:200])
+                probe, saw = None, "?"
+            srv.last_probe = (time.monotonic(), saw)
+        if probe is not None:
+            srv.snap.creds_seen(probe)
+        return saw
 
     def do_POST(self):
         path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
@@ -457,6 +480,8 @@ class PanelServer(ThreadingHTTPServer):
         self.limiter = webauth.RateLimiter()      # the panel's weights: wrong Bearer 1, missing token or wrong cookie 0.2
         self.fresh_at: dict = {}                  # client address -> monotonic time of its last served fresh snapshot (T-0197)
         self.fresh_lock = threading.Lock()
+        self.last_probe = (0.0, None)             # (monotonic time, what it saw) of the last sso click's credentials probe (T-0195)
+        self.probe_lock = threading.Lock()
         # the receipts (T-0162): written on this port with the token, read by the desk on the loopback listener
         self.receipts = receipts.ReceiptStore(cfg, self.started_at)
         self.snap.attach_receipts(self.receipts)

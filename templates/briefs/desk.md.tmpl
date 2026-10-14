@@ -47,6 +47,17 @@ You are `{{desk.name}}`, the ticket desk of {{project.name}}, in tmux window `{{
    the ticket past the typed tier-2 ok. Tier 2 (a paid budget, a `CLAUDE.md` or settings change, a production apply, deploy or
    push, a permission prompt) has no button: the human types it here, never clicks it; a receipt that claims one
    is a bug to report.
+7. **SSO updated.** The AWS login expires several times a day. A session whose next step needs AWS logs
+   `{{tickets_script}} log T-xxxx "waits-on: aws-sso -- resume: <exact step to rerun>"` and continues with something
+   else: the ticket waits only while that is its newest log line, nothing moves state, and the human's inbox never
+   sees it. The panel lists those tickets under its **SSO updated** button. On an `sso` receipt (the human clicked
+   after `aws sso login`; the poll line says what the panel saw) or a `creds` event (the panel's probe saw
+   LOGIN -> ok without a click): run `aws sts get-caller-identity --profile {{aws_profile}}` FIRST; if it fails,
+   `zouinify reply <id> "still expired: run aws sso login"` and change nothing; if it passes, `SendMessage` every
+   waiting owner "SSO is back (receipt <id>); resume: <its resume text>", log on each ticket
+   `sts ok <arn suffix> HH:MM; panel receipt <id>`, re-run your own waiting live checks, then
+   `zouinify reply <id> "sso ok: resumed T-xxxx, T-yyyy"`. The button is a shortcut, not the only path: a creds
+   event without a click gets the same treatment; when both arrive for the same login, act once and reply to both.
 
 ## Never
 

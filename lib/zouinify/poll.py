@@ -36,6 +36,7 @@ import urllib.request
 
 from zouinify import ZouinifyError
 from zouinify import panelstate
+from zouinify import tickets as tk
 
 RECEIPT_ID_RE = re.compile(r"^[0-9a-f]{6,12}$")
 MAX_REPLY = 300                          # == zouinify.panel.receipts.MAX_REPLY
@@ -150,7 +151,7 @@ def reply_examples(r: dict) -> list:
         return [f"{q} \"<your answer, one line>\"   (this IS the answer the human reads)"]
     if kind == "new":
         return [f"{q} \"filed T-xxxx\"   or   {q} \"not filed: <why>\""]
-    if kind == "sso":
+    if kind in ("sso", "creds"):
         return [f"{q} \"sso ok: resumed T-xxxx, T-yyyy\"   or   {q} \"still expired: run aws sso login\""]
     return [f"{q} \"<verdict, one line>\""]
 
@@ -182,18 +183,34 @@ def script_for(cfg, r: dict) -> list:
         return [f"zouinify launch worker {first} --receipt {rid}   (refuses unless {first} is ready, unclaimed and not frozen out)"]
     if kind == "kill":
         return [f"zouinify down --dry-run {text}   then   zouinify down {text} --receipt {rid}   (a done/dropped ticket's worker only)"]
-    if kind == "sso":
+    if kind in ("sso", "creds"):
         profile = str((cfg.aws or {}).get("profile") or "default")
         saw = r.get("panel_saw") or "not probed"
-        return [f"claim: the human ran `aws sso login` (panel saw: {saw}). verify FIRST: aws sts get-caller-identity --profile {profile};",
-                f"fails -> reply \"receipt {rid}: SSO still expired\" and change nothing; passes -> message every waiting owner",
-                f"\"SSO is back (receipt {rid}); resume: <its resume step>\" and log on each ticket \"sts ok <arn suffix> HH:MM; panel receipt {rid}\""]
+        head = (f"claim: the human ran `aws sso login` (panel saw: {saw})." if kind == "sso"
+                else "the panel's credentials probe saw LOGIN -> ok (the human logged in without clicking).")
+        lines = [f"{head} verify FIRST: aws sts get-caller-identity --profile {profile};",
+                 f"fails -> zouinify reply {rid} \"still expired: run aws sso login\" and change nothing; passes -> for each waiting ticket below:",
+                 f"SendMessage its owner \"SSO is back (receipt {rid}); resume: <its resume step>\" and log on it",
+                 f"\"sts ok <arn suffix> HH:MM; panel receipt {rid}\"; then re-run your own waiting live checks.",
+                 "A creds event and an sso click for the same login may both arrive: act once, reply to both."]
+        waiting = tk.waits_on(cfg, "aws-sso")
+        if waiting:
+            for w in waiting:
+                # the id is the glob-validated file name's; owner and status are front-matter text any session can set: JSON-encoded
+                lines.append(f"waiting: {w['id']} (status {json.dumps(w['status'])}, owner {json.dumps(w['owner'] or '-')}, since {w['since']}) "
+                             f"resume: {json.dumps(w['resume'], ensure_ascii=False)}")
+        else:
+            lines.append("waiting: none (no open ticket's newest log line is `waits-on: aws-sso`)")
+        return lines
     return [f"unknown kind {kind!r}: verify what the page claims before anything else; receipt {rid}"]
 
 
 def format_receipt(cfg, r: dict) -> str:
     rid, kind, ticket = r.get("id", ""), r.get("kind", ""), r.get("ticket", "") or "-"
-    head = f"receipt {rid} {kind} {ticket} ({r.get('at', '')}, token {r.get('token_id', '?')}, {r.get('ip', '?')})"
+    if r.get("source") == "panel":
+        head = f"event {rid} {kind} ({r.get('at', '')}, emitted by the panel, not a click)"
+    else:
+        head = f"receipt {rid} {kind} {ticket} ({r.get('at', '')}, token {r.get('token_id', '?')}, {r.get('ip', '?')})"
     n = int(r.get("redelivered") or 0)
     if n:
         head += f"  [re-sent: handed out {n} time(s) before and not acknowledged]"

@@ -119,7 +119,9 @@ signed with it, and there is no `$USER` fallback (a line signed with the shell u
 session wrote it). `board` is read-only and needs nothing.
 
 Other commands: `new <{{types_angle}}> <P0-P3> "<title>"` (files to backlog -- then tell
-the desk), `log T-xxxx "<line>"`, `set T-xxxx <field> "<value>"`, `ask T-xxxx "<VERB> <what> | <command> |
+the desk), `log T-xxxx "<line>"` (a log line of the form `waits-on: aws-sso -- resume: <exact step>` marks the
+ticket as waiting for the AWS login while it is the newest line: the panel lists it under its "SSO updated"
+button and the desk messages the owner when the login is back; it never reaches the human's inbox), `set T-xxxx <field> "<value>"`, `ask T-xxxx "<VERB> <what> | <command> |
 <expected> | <if you do nothing>"` (a one-line ask that appears in the human's `ticket.sh human`; `ask T-xxxx ""`
 or the next `move` clears it), and to write a ticket's Problem /
 Fix / areas: **copy it out, edit the copy in your own worktree or scratchpad, then

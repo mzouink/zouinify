@@ -716,6 +716,11 @@ def creds_source(cfg) -> dict:
     return readonly.creds(cfg)
 
 
+def sso_source(cfg) -> dict:
+    """Who waits on the AWS login (T-0195): the open tickets whose newest log line is `waits-on: aws-sso -- resume: <step>`."""
+    return {"waiting": readonly.waits_on(cfg, "aws-sso")}
+
+
 def logs_source(cfg) -> dict:
     out = {}
     for spec in cfg.panel.get("logs") or []:
@@ -807,13 +812,15 @@ class Snapshot:
             "inbox": {"fn": inbox_source, "ttl": r}, "board": {"fn": board_source, "ttl": r},
             "sessions": {"fn": lambda c: sessions_source(c, self.events), "ttl": r},
             "foreign_waiting": {"fn": lambda c: foreign_waiting_source(c, self.events), "ttl": r},
-            "creds": {"fn": creds_source, "ttl": 60}, "logs": {"fn": logs_source, "ttl": 20}, "releases": {"fn": releases_source, "ttl": 60},
+            "creds": {"fn": creds_source, "ttl": 60}, "sso": {"fn": sso_source, "ttl": r},
+            "logs": {"fn": logs_source, "ttl": 20}, "releases": {"fn": releases_source, "ttl": 60},
             "freeze": {"fn": freeze_source, "ttl": r}, "trunk": {"fn": trunk_sha, "ttl": 60},
         }
         for s in self.src.values():
             s.update({"data": None, "at": 0.0, "error": None, "loaded": False, "lock": threading.Lock()})
         self.stop_event = threading.Event()
         self.thread = None
+        self.creds_definite = None                 # the last definite credentials state seen (ok / LOGIN / ERR; never ? or n/a), T-0195
         # when each session was first seen waiting, per source (derived from the refreshes; forgotten when it stops waiting)
         self.waiting_since: dict = {"sessions": {}, "foreign_waiting": {}}
 
@@ -860,9 +867,12 @@ class Snapshot:
             return
         try:
             try:
+                before = s["data"]
                 s["data"] = s["fn"](self.cfg)
                 if name in self.waiting_since:
                     s["data"] = self.mark_waiting(s["data"], name)
+                if name == "creds":
+                    self.creds_transition(before, s["data"])
                 s["error"] = None
             except Exception as e:  # noqa: BLE001 - a failing source is shown as an error, never a crash
                 s["error"] = f"{type(e).__name__}: {e}"[:300]
@@ -870,6 +880,28 @@ class Snapshot:
             s["loaded"] = True
         finally:
             s["lock"].release()
+
+    def creds_transition(self, before, after, emit: bool = True) -> None:
+        """T-0195: the credentials probe (every CREDS_TTL_S, the refresher) saw the login come back (the last DEFINITE state
+        was LOGIN, the new one is ok; a `?` from a slow first probe after `aws sso login` in between does not hide it):
+        the human logged in without clicking. One synthetic `creds` event goes through the poll, pending like a receipt
+        until the desk acknowledges it (for at most an hour), so the desk resumes the waiting sessions the same way as
+        after a click. An sso click's own probe calls this with emit=False: the click is the receipt."""
+        now = (after or {}).get("left") if isinstance(after, dict) else None
+        if now not in ("ok", "LOGIN", "ERR"):
+            return
+        prev, self.creds_definite = self.creds_definite, now
+        if emit and prev == "LOGIN" and now == "ok" and self.receipts is not None:
+            self.receipts.emit_event("creds", "LOGIN -> ok: the login came back without a click", panel_saw="ok")
+
+    def creds_seen(self, probe: dict) -> None:
+        """An sso click re-probed the credentials: the header's source takes the fresh answer at once (under the source's
+        lock, so a refresher mid-probe cannot overwrite it with an older one afterwards) and the definite state follows,
+        without emitting a creds event -- the click itself is the receipt the desk acts on."""
+        s = self.src["creds"]
+        with s["lock"]:
+            s["data"], s["error"], s["at"], s["loaded"] = probe, None, time.time(), True
+            self.creds_transition(None, probe, emit=False)
 
     def refresher_alive(self) -> bool:
         return bool(self.thread is not None and self.thread.is_alive())
@@ -938,6 +970,9 @@ class Snapshot:
         releases, _, _ = self.get("releases", fresh)
         freeze, _, _ = self.get("freeze", fresh)
         trunk, _, _ = self.get("trunk", fresh)
+        sso, _, sso_err = self.get("sso", fresh)
+        sso_rows = (sso or {}).get("waiting", [])
+        creds_left = str((creds or {}).get("left") or "?")
         inbox = inbox or {"items": [], "count": None, "p0": 0}
         board = board or {"cards": [], "lanes": {n: [] for n, _ in LANES}, "chips": {k: 0 for k in CHIPS}, "counts": {}, "other": {},
                           "p0": [], "newest_plan": "", "void_plans": [], "source": "", "warnings": [], "total": 0}
@@ -974,6 +1009,12 @@ class Snapshot:
             "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
             "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},
             "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": live_checks(cfg, board),
+            # T-0195: the SSO updated button: shown when the login is LOGIN / ERR / ? (a probe that ran, on a project with an aws
+            # block) or anyone waits on it; hidden when ok and nobody waits, while the source warms up, and on a project without AWS
+            "sso": {"waiting": sso_rows, "creds": creds_left,
+                    "show_button": bool(sso_rows) or (cfg.aws is not None and creds is not None and creds_left in ("LOGIN", "ERR", "?")),
+                    "profile": str((cfg.aws or {}).get("profile") or "default") if cfg.aws else "", "error": sso_err,
+                    "marker": "waits-on: aws-sso -- resume: <exact step>"},
             "config": {k: v for k, v in cfg.to_dict().items() if k != "warnings"}, "hook": hook_status(self.events, self.hook_port),
             "terminal": panelstate.term_info(cfg),
             "sources": self.sources_meta(), "errors": {"inbox": inbox_err, "board": board_err, "sessions": sess_err, "foreign_waiting": foreign_err},

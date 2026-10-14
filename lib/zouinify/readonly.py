@@ -140,9 +140,17 @@ def now_local(cfg):
     return s.now_local(cfg)
 
 
-def creds(cfg, now=None) -> dict:
+def creds(cfg, now=None, use_cache: bool = True) -> dict:
+    """The credentials state, from the cached read-only `aws sts get-caller-identity` (use_cache=False re-probes now: the
+    SSO button's click, T-0195)."""
     from zouinify import status as s
-    return s.creds(cfg, now)
+    return s.creds(cfg, now, use_cache=use_cache)
+
+
+def waits_on(cfg, token: str = "aws-sso") -> list:
+    """The open tickets whose newest log line is `waits-on: <token> -- resume: <step>` (T-0195): who waits on SSO."""
+    from zouinify import tickets as t
+    return t.waits_on(cfg, token)
 
 
 # -- the launcher registry, reading only --------------------------------------------------------------------

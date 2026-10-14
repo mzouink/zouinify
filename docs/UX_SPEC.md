@@ -100,7 +100,9 @@ Inbox, Desk chat, Settings**. Collapses to icons under 1024 px; a top bar with a
 
 Header (every page): project short name and name, trunk sha, FREEZE badge (red, with the allowed ids on hover), credential
 tile ("~1h51 left (estimate)" from the key file's age until SSO lands, then "SSO 9h12"), desk presence ("polling" green,
-"not polling since HH:MM" amber, "desk gone" red, from the server's active-poll count and `claude agents`), the board source's
+"not polling since HH:MM" amber, "desk gone" red, from the server's active-poll count and `claude agents`), the **SSO updated**
+button (T-0195: shown when creds are not ok or a ticket waits on `waits-on: aws-sso`, hidden otherwise; the click is a receipt of
+kind `sso`, the panel re-probes and the toast and an amber notice say what it saw; "N waiting: T-xxxx owner, ..." under it), the board source's
 age ("board 0 s" right after the refresh button, which fetches `?fresh=1`: one fresh per 5 s per client, cached otherwise), data age per
 source on hover, a padlock showing `loopback` or `intranet`. No user menu: there is one human.
 

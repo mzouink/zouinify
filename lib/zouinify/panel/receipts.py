@@ -43,6 +43,9 @@ from zouinify import panelstate, readonly
 from zouinify.panel.sources import tier2_text
 
 KINDS = frozenset({"ok", "decision", "question", "new", "launch", "kill", "sso"})
+# records the PANEL itself emits through the poll (never postable from the page): `creds` when the credentials probe sees
+# LOGIN -> ok while the desk's poll is alive (T-0195: the human logged in but did not click)
+EVENT_KINDS = frozenset({"creds"})
 # names a click could carry for the things that are typed by the human, never clicked: refused with 403 by name
 TIER2_KINDS = frozenset({"approve", "apply", "deploy", "push", "budget", "permission", "merge", "grant", "settings", "yes", "allow"})
 TICKET_KINDS = frozenset({"ok", "decision", "launch"})       # without an inbox item these need `ticket: T-xxxx`
@@ -59,6 +62,7 @@ PENDING_MAX_AGE_S = 3600.0    # an unacknowledged receipt older than this is no 
 HEARTBEAT_S = 15.0
 POLL_DEFAULT_S = 25.0
 POLL_MAX_S = 120.0
+PROBE_MIN_S = 5.0             # an sso click re-probes the credentials at most this often: repeats and bursts reuse the last answer
 WINDOW_S = 60.0               # the "last minute" of the snapshot's counters and of the refusal audit cap
 REFUSED_AUDIT_PER_WINDOW = 30 # refusal lines written to audit.jsonl per minute; the rest are counted, not written
 RECENT = 20
@@ -271,9 +275,10 @@ class ReceiptStore:
         with self.cond:
             now = time.monotonic()
             self.prune(now)
-            key = (fields["kind"], fields.get("item_id", ""), fields.get("ticket", ""), fields.get("text", ""))
+            # a repeat click: the same kind, item, ticket, text AND what the panel saw (an sso click after a real login is new)
+            key = (fields["kind"], fields.get("item_id", ""), fields.get("ticket", ""), fields.get("text", ""), panel_saw)
             for rec in reversed(self.receipts):
-                if (rec["kind"], rec.get("item_id", ""), rec.get("ticket", ""), rec.get("text", "")) == key and self.is_open(rec):
+                if (rec["kind"], rec.get("item_id", ""), rec.get("ticket", ""), rec.get("text", ""), rec.get("panel_saw", "")) == key and self.is_open(rec):
                     return dict(rec), True
             mine = [t[0] for t in self.accepted if t[1] == token_id]
             minute = [t for t in mine if now - t < WINDOW_S]
@@ -294,6 +299,34 @@ class ReceiptStore:
             out = dict(rec)
         self.audit(dict(wire(out), event="receipt"), f"receipt {out['id']}")
         return out, False
+
+    def over_budget(self, token_id: str) -> bool:
+        """Whether a NEW receipt for this token would be rate-limited now (checked before an sso click's probe runs)."""
+        with self.lock:
+            now = time.monotonic()
+            mine = [t[0] for t in self.accepted if t[1] == token_id and now - t[0] < 3600.0]
+            return len([t for t in mine if now - t < WINDOW_S]) >= RATE_MINUTE or len(mine) >= RATE_HOUR
+
+    def emit_event(self, kind: str, text: str, panel_saw: str = ""):
+        """A record the panel emits itself (EVENT_KINDS), handed to the desk's poll like a receipt: pending until acknowledged,
+        audited as `event`, never postable from the page, never rate-limited (one per transition). None when an open `sso`
+        receipt already says the same thing (the human clicked: the desk acts on that one, not twice)."""
+        if kind not in EVENT_KINDS:
+            raise ValueError(f"not an event kind: {kind!r}")
+        with self.cond:
+            if kind == "creds" and any(r["kind"] == "sso" and r.get("panel_saw") == panel_saw and self.is_open(r) for r in self.receipts):
+                return None
+            self.seq += 1
+            at = panelstate.now_iso()
+            rec = {"seq": self.seq, "id": self.new_id(at, kind), "at": at, "kind": kind, "ticket": "", "text": clean_text(text)[:MAX_TEXT],
+                   "item_id": "", "verb": "", "title": "", "tier2_also": "", "token_id": "", "ip": "panel", "user_agent": "",
+                   "delivered_at": "", "acked_at": "", "redelivered": 0, "reply": "", "replied_at": "", "source": "panel", "panel_saw": panel_saw}
+            self.receipts.append(rec)
+            del self.receipts[:-MAX_RECEIPTS]
+            self.cond.notify_all()
+            out = dict(rec)
+        self.audit(dict(wire(out), event="event"), f"event {out['id']}")
+        return out
 
     def note_refused(self, status: int, reason: str, ip: str, user_agent: str, credential: str, kind: str = "") -> None:
         """Count a refused write (the page's banner) and audit it, at most REFUSED_AUDIT_PER_WINDOW lines a minute.

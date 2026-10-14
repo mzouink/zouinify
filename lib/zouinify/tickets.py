@@ -17,6 +17,11 @@ from zouinify import ZouinifyError
 ID_RE = re.compile(r"^T-\d{4}$")
 TERMINAL = ("done", "dropped")
 FREEZE_FILE_NAME = "FREEZE"
+# T-0195: a session whose next step needs AWS logs `waits-on: aws-sso -- resume: <exact step>`; the ticket waits only while
+# that is its NEWEST log line (the next log line or move clears it), nothing moves state, and `ticket.sh human` never sees
+# it (a blocked_on: marker would land in the human's inbox). The same scan serves the panel (through readonly) and the poll.
+WAITS_ON_RE = re.compile(r"^-\s*(?P<at>\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)\s+(?P<by>[^:]+):\s*waits-on:\s*(?P<token>[A-Za-z0-9._-]+)"
+                         r"(?:\s*--\s*resume:\s*(?P<resume>.*?))?\s*$")
 
 
 def check_id(tid: str) -> str:
@@ -75,6 +80,45 @@ def worker_names(cfg, path: str) -> tuple:
     w = cfg.sessions["worker"]
     return (w.name.replace("{num}", num).replace("{slug}", rest),
             w.tmux.replace("{num}", num).replace("{slug}", rest))
+
+
+def last_log_line(path: str) -> str:
+    """The newest non-empty line of a ticket's `## Log` section ("" when none)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    cur, last = None, ""
+    for line in text.splitlines():
+        m = re.match(r"^## (.+?)\s*$", line)
+        if m:
+            cur = m.group(1)
+            continue
+        if cur == "Log" and line.strip() and not line.strip().startswith("<!--"):
+            last = line.rstrip()
+    return last
+
+
+def waits_on_in(directory: str, token: str = "aws-sso") -> list:
+    """The open tickets under `directory` whose NEWEST log line is `waits-on: <token> -- resume: <step>`:
+    [{id, title, status, owner, since, by, resume}], by id. A later log line (or a move, which logs) clears it."""
+    rows = []
+    for f in sorted(glob.glob(os.path.join(directory, "T-[0-9][0-9][0-9][0-9]-*.md"))):
+        fm = front_matter(f)
+        if fm.get("status", "") in TERMINAL + ("skipped",):        # set aside on the human's word: nobody resumes it
+            continue
+        m = WAITS_ON_RE.match(last_log_line(f))
+        if not m or m.group("token") != token:
+            continue
+        # the id comes from the glob-validated file name, never from a front-matter field a session could mistype
+        rows.append({"id": os.path.basename(f)[:6], "title": fm.get("title", ""), "status": fm.get("status", ""),
+                     "owner": fm.get("owner", ""), "since": m.group("at"), "by": m.group("by").strip(), "resume": (m.group("resume") or "").strip()})
+    return rows
+
+
+def waits_on(cfg, token: str = "aws-sso") -> list:
+    return waits_on_in(tickets_dir(cfg), token)
 
 
 def freeze_path(cfg) -> str:

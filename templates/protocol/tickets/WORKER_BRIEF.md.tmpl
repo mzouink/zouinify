@@ -28,6 +28,10 @@ only voice to the human. The protocol is `{{tickets_dir}}/README.md`; this page 
 6. {{plugin.brief_paid_runs}}
 7. **New bugs or ideas:** `{{tickets_script}} new ...` (it stays `backlog`) and tell the desk; only the desk
    moves `backlog -> ready`. Never claim a `backlog` ticket.
+   **Waiting on the AWS login:** when your next step needs AWS and the login is expired, log
+   `{{tickets_script}} log T-xxxx "waits-on: aws-sso -- resume: <the exact step to rerun>"` and continue with
+   something else; the desk messages you when the login is back (the human's "SSO updated" click on the panel, or
+   the panel noticing the login returned). Your next log line or move clears the marker; nothing moves state.
 8. **Finish the loop.** Worktree clean at every state change; `{{tickets_script}} move T-xxxx in-review`
    with the evidence; after the merge the worktree and branch go (`{{tickets_script}} prune T-xxxx` at
    `done`).

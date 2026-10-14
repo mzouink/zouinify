@@ -39,7 +39,7 @@ PACKAGE = "zouinify.panel"
 READONLY_API = {
     "capture_pane", "list_panes", "has_session", "model_on_screen", "model_word", "alias_of", "trunk_sha", "proc_parent",
     "path_exists", "list_agents", "find_agent", "is_ticket_id", "ticket_files", "file_of", "front_matter", "freeze", "counts",
-    "tickets_dir", "now_local", "creds", "registry_entries", "registry_entry", "read_ticket_sh",
+    "tickets_dir", "now_local", "creds", "waits_on", "registry_entries", "registry_entry", "read_ticket_sh",   # waits_on: T-0195
     "read_human_json", "read_board_json", "fail", "version", "TERMINAL", "ROLE_SESSIONS", "READ_ONLY_TICKET_SH",
 }
 PANELSTATE_API = {"version", "pid", "now_iso", "url", "state_dir", "panel_json_path", "server_log_path", "same_root", "log",

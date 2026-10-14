@@ -40,6 +40,7 @@ def context(cfg) -> dict:
         "repos": "\n".join(f"  - {r['name']}: {r['path']} (trunk {r['trunk']}" + (f", prod {r['prod']})" if r.get("prod") else ")")
                            for r in cfg.repos),
         "human": str((cfg.contact or {}).get("human") or "the human"),
+        "aws_profile": str((cfg.aws or {}).get("profile") or "default"),
     }
     for role in ROLE_SESSIONS + ("worker",):
         s = cfg.sessions.get(role)

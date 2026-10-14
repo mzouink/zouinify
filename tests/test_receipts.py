@@ -324,7 +324,7 @@ class TestWrite(ReceiptWorld):
         st, _, c = self.post({"kind": "sso"})
         st, _, c2 = self.post({"kind": "sso"})
         self.assertEqual(c["id"], c2["id"], "the same kind without an item collapses too")
-        self.assertEqual(c["panel_saw"], "not probed (T-0195)")
+        self.assertEqual(c["panel_saw"], "ok", "T-0195: an sso click re-probes the credentials (the fake aws answers ok)")
         self.assertEqual(self.get_json("/api/snapshot")["panel"]["receipts"]["total"], 2)
         st, _, d = self.poll(timeout_ms=200)
         self.assertEqual([r["id"] for r in d["receipts"]], [a["id"], c["id"]])
@@ -660,7 +660,7 @@ class TestPollCli(ReceiptWorld):
         for line in out.splitlines():
             if not line.startswith("  data: "):
                 self.assertNotIn("rm -rf", line, line)
-        self.assertIn("panel saw: not probed (T-0195)", out)
+        self.assertIn("panel saw: ok", out)
         self.assertIn("aws sts get-caller-identity --profile default", out)
         self.assertIn(f"-- 4 receipt(s), NOT acknowledged (--no-ack): they come back on the next poll; zouinify poll --ack {','.join(ids[1:])}", out)
         self.assertNotIn("replayed", out)

@@ -259,6 +259,23 @@ apply to the panel package; `tests/test_receipts.py` pins the write path).
   count, read through the panel port like the rest of the page); the snapshot's `panel.receipts` block carries the counters and
   the last 20 receipts without address, user agent or token id, which the page uses for the "receipt <id> · waiting for the
   desk / fetched HH:MM / acked by the desk HH:MM" badges and the Desk chat history.
+- **SSO updated** (T-0195): the AWS login expires several times a day. A session whose next step needs AWS logs
+  `ticket.sh log T-xxxx "waits-on: aws-sso -- resume: <exact step>"`; the ticket waits only while that is its NEWEST log line
+  (the next log line or move clears it), nothing moves state, and `ticket.sh human` never sees it (a `blocked_on:` marker
+  would land in the human's inbox). The panel's header shows an **SSO updated** button when the credentials are not `ok`
+  or any ticket waits, hidden when `ok` and nobody waits, with the waiting tickets and their owners under it (the
+  snapshot's `sso` block). The click is a receipt of kind `sso`: the panel re-probes the credentials at once (the same
+  read-only `aws sts get-caller-identity`, the only aws command it ever runs; at most one probe per 5 s, a burst of clicks
+  reuses the last answer, and the per-token budget is checked before any probe), stores what it saw as `panel_saw`
+  (`ok` / `LOGIN` / `ERR` / `?`, `n/a` on a project without an aws block), and the page's toast and an amber notice say
+  "still expired" immediately when it saw `LOGIN`; a second click while the first is open and the panel sees the same state
+  returns the same id. The panel's own probe (every 60 s) also emits one synthetic `creds` event through the poll when the
+  login comes back without a click (the last definite state was `LOGIN`, the new one `ok`; a `?` from a slow probe in
+  between does not hide it); the event is pending like a receipt until the desk acknowledges it (for an hour at most) and
+  is not emitted when an open `sso` click already says the same. `zouinify poll` prints, for both, "verify FIRST: aws sts
+  get-caller-identity", then one `waiting:` line per waiting ticket (id from the file name; state, owner and resume step
+  JSON-encoded) and the reply examples `sso ok: resumed ...` / `still expired: run aws sso login`; when an event and a click
+  arrive for the same login the desk acts once and replies to both.
 - The desk's rule (its brief): keep one `zouinify poll` running; verify every receipt as a claim, exactly like a typed `ok`;
   name the receipt id in the reply and in the log line; never move a ticket on a receipt alone; tier 2 means "ask the human to
   type it"; after verifying, `zouinify reply <id> "<one line>"` so the human reads the verdict on the page (`reply` and
