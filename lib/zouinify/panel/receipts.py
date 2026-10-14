@@ -7,7 +7,7 @@ poll and verifies before acting; nothing here runs, launches, kills, types, move
   browser from a session. `build()` turns the body into a receipt or a refusal: tier 2 (an item the classifier puts
   there, a ticket with any tier-2 item in the inbox, a kind that names an approval, a text of ANY kind that names
   CLAUDE.md or settings, Unicode tricks normalised away first) has no endpoint behaviour (403).
-- `GET /api/poll`, `GET /api/receipts/<id>` and `POST /api/ack` are served by the loopback-only listener
+- `GET /api/poll`, `GET /api/receipts/<id>`, `POST /api/ack` and `POST /api/receipts/<id>/reply` are served by the loopback-only listener
   (zouinify.panel.hooks) to a same-uid peer that presents the per-start nonce: the desk needs no browser token and a
   LAN device cannot read receipts. A poll blocks until a receipt is PENDING (not acknowledged), heartbeat spaces every
   HEARTBEAT_S, and hands out every pending receipt (or everything after `since=<id>`); fetching marks nothing: the
@@ -17,7 +17,10 @@ poll and verifies before acting; nothing here runs, launches, kills, types, move
   or swallow a click), and it can run a listener of its own and point panel.json at it, feeding the desk receipts
   nobody clicked. A receipt is therefore a claim, full stop: the desk verifies every one before acting, and a click
   that never arrived is simply clicked again. A repeated click of the same item or kind while its receipt is open
-  (not acknowledged, or acknowledged less than IDEMPOTENT_S ago) returns the same id.
+  (not acknowledged, or acknowledged less than IDEMPOTENT_S ago) returns the same id. After verifying, the desk
+  REPLIES (T-0201): one line of at most MAX_REPLY characters, `zouinify reply <id> "<text>"`, stored on the receipt as
+  `reply` / `replied_at` (a later reply replaces it, each one audited) and shown by the page on the badge, under the
+  question in the chat and in the Settings table: the human reads the verdict there, not in the desk's window.
 - Everything lives in memory (a ring of MAX_RECEIPTS). .ops/state/audit.jsonl (through zouinify.panelstate) is a
   WRITE-ONLY trail of accepted receipts, hand-outs, acknowledgements and refusals: nothing reads it back into the
   channel, so a line any same-user process appends there is never a receipt; a restart drops what was pending and
@@ -48,6 +51,7 @@ MAX_TEXT = 2000
 MAX_BODY = 64 * 1024
 MAX_RECEIPTS = 500
 MAX_ACK = 200
+MAX_REPLY = 300               # the desk's verdict on a receipt: one line
 RATE_MINUTE = 10
 RATE_HOUR = 60
 IDEMPOTENT_S = 120.0          # a repeat click this long after the desk acknowledged still returns the same id
@@ -65,9 +69,10 @@ ID_RE = re.compile(r"^[0-9a-f]{6,12}$")
 TICKETS_SPLIT_RE = re.compile(r"[,\s]+")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")  # a text keeps its newlines and tabs
 WIRE_KEYS = ("id", "at", "kind", "ticket", "text", "item_id", "verb", "title", "tier2_also", "token_id", "ip", "user_agent",
-             "delivered_at", "acked_at", "redelivered", "source", "panel_saw")
+             "delivered_at", "acked_at", "redelivered", "reply", "replied_at", "source", "panel_saw")
 PUBLIC_KEYS = ("id", "at", "kind", "ticket", "text", "item_id", "verb", "title", "tier2_also", "delivered_at", "acked_at", "redelivered",
-               "source", "panel_saw")
+               "reply", "replied_at", "source", "panel_saw")
+REPLY_SPACE_RE = re.compile(r"[\r\n\t\x0b\x0c]+")
 MESSAGES = MappingProxyType({
     "bad-body": "a receipt is one JSON object: {item_id | kind, ticket, text}",
     "bad-item-id": "item_id: letters, digits, _ and -, at most 40",
@@ -103,6 +108,13 @@ def clean_text(value) -> str:
         return ""
     s = value if isinstance(value, str) else json.dumps(value, sort_keys=True) if isinstance(value, (int, float, bool)) else ""
     return CONTROL_RE.sub("", s).strip()
+
+
+def clean_reply(value) -> str:
+    """The desk's verdict as stored: one line (newlines and tabs become spaces), control characters removed, trimmed."""
+    if not isinstance(value, str):
+        return ""
+    return CONTROL_RE.sub("", REPLY_SPACE_RE.sub(" ", value)).strip()
 
 
 def ticket_ids(value: str) -> list:
@@ -274,7 +286,7 @@ class ReceiptStore:
             rec = {"seq": self.seq, "id": self.new_id(at, fields["kind"]), "at": at, "kind": fields["kind"], "ticket": fields.get("ticket", ""),
                    "text": fields.get("text", ""), "item_id": fields.get("item_id", ""), "verb": fields.get("verb", ""),
                    "title": fields.get("title", ""), "tier2_also": fields.get("tier2_also", ""), "token_id": token_id, "ip": ip, "user_agent": user_agent[:120],
-                   "delivered_at": "", "acked_at": "", "redelivered": 0, "source": source, "panel_saw": panel_saw}
+                   "delivered_at": "", "acked_at": "", "redelivered": 0, "reply": "", "replied_at": "", "source": source, "panel_saw": panel_saw}
             self.receipts.append(rec)
             del self.receipts[:-MAX_RECEIPTS]
             self.accepted.append((now, token_id))
@@ -369,6 +381,25 @@ class ReceiptStore:
         if done:
             self.audit({"event": "acked", "at": at, "ids": done}, "acked")
         return done
+
+    def reply(self, rid: str, text: str):
+        """The desk's verdict on one receipt (T-0201): stored as `reply` / `replied_at`, a later one replaces it, each
+        one audited. Returns the wire receipt, None when the id is not in memory, or the str "bad-text" when the text
+        is empty or longer than MAX_REPLY once made one line."""
+        if not isinstance(rid, str) or not ID_RE.match(rid):
+            return None
+        line = clean_reply(text)
+        if not line or len(line) > MAX_REPLY:
+            return "bad-text"
+        at = panelstate.now_iso()
+        with self.cond:
+            rec = next((r for r in self.receipts if r["id"] == rid), None)
+            if rec is None:
+                return None
+            rec["reply"], rec["replied_at"] = line, at
+            out = wire(rec)
+        self.audit({"event": "reply", "at": at, "id": rid, "text": line}, f"reply {rid}")
+        return out
 
     # -- what the page sees ------------------------------------------------------------------------------
     def presence(self) -> str:

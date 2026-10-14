@@ -1,7 +1,7 @@
 ---
 name: zouinify
 description: Project management pipeline for multi-session Claude Code work -- tickets (backlog -> done via scripts/ticket.sh), a tmux session set (desk, manager, debug, chrome_debug, workers) and a local control panel whose clicks are receipts the desk verifies. Use for `/zouinify config|up|launch|status|down|poll|briefs|panel|board|human` or when asked to launch a worker, start the standard sessions, start or find the panel, poll the panel's receipts, show the board or the human inbox, or set up ticket-based management in a repo.
-argument-hint: config [--check|--json] | up [role...] [--dry-run] [--no-panel] | launch <worker T-xxxx|desk|manager|debug|chrome_debug> [--receipt ID] [--dry-run] | status [--line|--json] | down [name...] [--dry-run] [--receipt ID] | poll [--timeout-ms MS] [--since ID] | briefs render [--out DIR] | panel start|stop|status|url|token rotate | term start|stop|status|url|secret rotate|audit [--since D] [--target NAME] | board | human [--count|--json]
+argument-hint: config [--check|--json] | up [role...] [--dry-run] [--no-panel] | launch <worker T-xxxx|desk|manager|debug|chrome_debug> [--receipt ID] [--dry-run] | status [--line|--json] | down [name...] [--dry-run] [--receipt ID] | poll [--timeout-ms MS] [--since ID] [--no-ack] [--ack ID,...] | reply <id> "<text>" | briefs render [--out DIR] | panel start|stop|status|url|token rotate | term start|stop|status|url|secret rotate|audit [--since D] [--target NAME] | board | human [--count|--json]
 allowed-tools: Bash(${CLAUDE_SKILL_DIR}/bin/zouinify *), Bash(scripts/ticket.sh board), Bash(scripts/ticket.sh human *), Bash(tmux list-*), Bash(tmux has-session *), Bash(claude agents *)
 disable-model-invocation: false
 ---
@@ -18,7 +18,8 @@ first; it never overwrites an `.ops/` file and never touches `~/.claude` or `CLA
 for the ticket.sh core; `--write` never into a repository's main worktree, and a ticket commits it), `protocol render --out DIR`
 (the README / _TEMPLATE / WORKER_BRIEF of the ticket protocol rendered from templates into DIR only), `poll` (the desk's side
 of the panel receipts: blocks until a click arrives, prints each receipt with the exact script to run, exits; the desk keeps one
-running in a background shell and verifies every receipt as a claim before any ticket moves). `term` is the terminal page (T-0181):
+running in a background shell and verifies every receipt as a claim before any ticket moves), `reply <id> "<text>"` (the desk's
+one-line verdict on a receipt after verifying, shown to the human on the page; never a ticket move). `term` is the terminal page (T-0181):
 typing into one of this project's WORKER panes from the browser, after a passphrase of its own; the desk, manager and debug
 windows are never reachable from it.
 

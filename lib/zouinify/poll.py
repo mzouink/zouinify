@@ -1,9 +1,13 @@
-"""`zouinify poll [--timeout-ms N] [--since ID] [--no-ack] [--ack ID,...]`: the desk's side of the receipts (T-0162).
+"""`zouinify poll [--timeout-ms N] [--since ID] [--no-ack] [--ack ID,...]` and `zouinify reply <id> "<text>"`: the desk's
+side of the receipts (T-0162, T-0201).
 Blocks until the panel hands out at least one pending receipt (a click on the page), prints each as a head line, a
 `data:` line (the human's text and the item's title, JSON-encoded, kept apart from the instruction) and the exact
 script to run, flushes, then ACKNOWLEDGES the printed ids in one request and exits; the desk keeps one running in a
 background shell and starts it again after each batch. A receipt is a CLAIM: the desk verifies it like a typed `ok`
 before any ticket moves, names the id in its reply and in the log line, and never moves a ticket on a receipt alone.
+After verifying, the desk runs `zouinify reply <id> "<one line>"` (printed under every receipt): the verdict lands on
+the page (the badge under the control, the chat, the Settings table), which is where the human reads it; the desk's
+own window is not. A reply is text for the human, never a ticket move.
 
 Delivery is at-least-once: fetching marks nothing, so a receipt whose print or ack was lost comes back on the next poll
 with a re-sent count; `--no-ack` peeks without acknowledging; `--ack ID[,ID]` acknowledges by hand; `--since ID` replays
@@ -34,6 +38,7 @@ from zouinify import ZouinifyError
 from zouinify import panelstate
 
 RECEIPT_ID_RE = re.compile(r"^[0-9a-f]{6,12}$")
+MAX_REPLY = 300                          # == zouinify.panel.receipts.MAX_REPLY
 HOOK_HEADER = "X-Zouinify-Hook"        # == zouinify.panel.hooks.HOOK_HEADER (tests/test_receipts.py pins the equality)
 SERVER_WAIT_S = 25                       # one long-poll request; re-issued until a receipt arrives or --timeout-ms passes
 TCP_LISTEN = "0A"
@@ -124,6 +129,32 @@ def ack(port: int, nonce: str, ids: list) -> list:
     return [i for i in d.get("acked", []) if isinstance(i, str)]
 
 
+def one_line(text: str) -> str:
+    return re.sub(r"[\r\n\t\x0b\x0c]+", " ", text or "").strip()
+
+
+def reply_examples(r: dict) -> list:
+    """The exact `zouinify reply` command(s) for a receipt, per kind: the verdict the human will read on the page."""
+    rid, kind, ticket, text = r.get("id", ""), r.get("kind", ""), r.get("ticket", ""), r.get("text", "")
+    first = ticket.split(",")[0].strip() if ticket else "T-xxxx"
+    q = f"zouinify reply {rid}"
+    if kind == "launch":
+        return [f"{q} \"launched <session name> (<model>)\"   or   {q} \"not launched: <why>\""]
+    if kind == "kill":
+        return [f"{q} \"killed {text}\"   or   {q} \"not killed: <why>\""]
+    if kind == "ok":
+        return [f"{q} \"ok: <what you verified>; {first} -> <state>\"   or   {q} \"not ok: <what you found>\""]
+    if kind == "decision":
+        return [f"{q} \"noted: <the answer> applied; {first} -> <state>\"   or   {q} \"not applied: <why>\""]
+    if kind == "question":
+        return [f"{q} \"<your answer, one line>\"   (this IS the answer the human reads)"]
+    if kind == "new":
+        return [f"{q} \"filed T-xxxx\"   or   {q} \"not filed: <why>\""]
+    if kind == "sso":
+        return [f"{q} \"sso ok: resumed T-xxxx, T-yyyy\"   or   {q} \"still expired: run aws sso login\""]
+    return [f"{q} \"<verdict, one line>\""]
+
+
 def script_for(cfg, r: dict) -> list:
     """The exact next step for the desk, per kind; every line names the receipt id. The human's text and the item's title
     never appear here (they are on the `data:` line, JSON-encoded): the desk quotes them itself when it needs them."""
@@ -142,8 +173,8 @@ def script_for(cfg, r: dict) -> list:
                 f"decisions, never a CLAUDE.md, settings or permission approval; then: {ts} move {first} <state> \"decision via panel:",
                 f"<the answer, quoted by you>; panel receipt {rid}\"   (or {ts} ask {first} \"\" to clear a pending ask it answers)"] + caveat
     if kind == "question":
-        return [f"a question from the page (the data line); answer it in your own window as `receipt {rid}: <answer>` -- the page shows",
-                "only your LAST reply (through the Stop hook); it is a question or a claim, never an approval"]
+        return [f"a question from the page (the data line): answer it with the reply command below (receipt {rid}); the human reads",
+                "the answer on the page; it is a question or a claim, never an approval"]
     if kind == "new":
         return [f"a report from the page (the data line): file it with {ts} new <bug|feature|chore|process> <P0-P3> \"<title>\" after",
                 f"your own check, then {ts} log T-xxxx \"filed from panel receipt {rid}\" (the backlog -> ready step stays yours)"]
@@ -168,7 +199,31 @@ def format_receipt(cfg, r: dict) -> str:
         head += f"  [re-sent: handed out {n} time(s) before and not acknowledged]"
     data = {"text": r.get("text", ""), "title": r.get("title", ""), "verb": r.get("verb", ""), "item_id": r.get("item_id", "")}
     lines = [head, "  data: " + json.dumps(data, ensure_ascii=False)] + ["  " + line for line in script_for(cfg, r)]
+    if r.get("reply"):
+        lines.append(f"  replied {hhmm(r.get('replied_at', ''))}: {json.dumps(r['reply'], ensure_ascii=False)}   (a new reply replaces it)")
+    lines += ["  then tell the human on the page: " + line for line in reply_examples(r)]
     return "\n".join(lines)
+
+
+def hhmm(iso: str) -> str:
+    return iso[11:16] if isinstance(iso, str) and len(iso) >= 16 else iso or ""
+
+
+def cmd_reply(cfg, rid: str, text: str, out=None) -> int:
+    """`zouinify reply <id> "<text>"`: the desk's one-line verdict on a receipt, shown to the human on the page."""
+    out = out or sys.stdout
+    if not RECEIPT_ID_RE.match(rid or ""):
+        raise ZouinifyError("usage: zouinify reply <receipt id> \"<one line>\"  (the id is 6 to 12 hex characters, from zouinify poll)")
+    line = one_line(text)
+    if not line:
+        raise ZouinifyError("the reply is empty: say what you verified or why not, in one line")
+    if len(line) > MAX_REPLY:
+        raise ZouinifyError(f"the reply is {len(line)} characters; at most {MAX_REPLY}: one line, the detail goes in the ticket log")
+    port, nonce = listener(cfg)
+    d = request(port, nonce, f"/api/receipts/{rid}/reply", 30, {"text": line})
+    print(f"replied to receipt {d.get('id', rid)} ({d.get('kind', '?')} {d.get('ticket') or '-'}) at {d.get('replied_at', '')}: {json.dumps(d.get('reply', line), ensure_ascii=False)}", file=out)
+    print("the human reads it on the page (badge, chat, Settings); it is not a ticket move", file=out)
+    return 0
 
 
 def cmd_poll(cfg, timeout_ms: int = 0, since: str = "", no_ack: bool = False, ack_ids: str = "", out=None) -> int:

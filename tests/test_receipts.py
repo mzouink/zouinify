@@ -121,10 +121,10 @@ class ReceiptWorld(PanelWorld):
     def poll(self, since="", timeout_ms=300, **kw):
         return self.desk_get(f"/api/poll?since={since}&timeout_ms={timeout_ms}", **kw)
 
-    def ack(self, ids, nonce=True, ctype="application/json", raw=None):
+    def ack(self, ids, nonce=True, ctype="application/json", raw=None, path="/api/ack"):
         conn = http.client.HTTPConnection("127.0.0.1", self.hook_port, timeout=30)
         data = raw if raw is not None else json.dumps({"ids": ids}).encode("utf-8")
-        conn.putrequest("POST", "/api/ack", skip_host=True, skip_accept_encoding=True)
+        conn.putrequest("POST", path, skip_host=True, skip_accept_encoding=True)
         conn.putheader("Host", f"127.0.0.1:{self.hook_port}")
         if ctype:
             conn.putheader("Content-Type", ctype)
@@ -534,6 +534,99 @@ class TestDeskSide(ReceiptWorld):
         self.assertEqual((st, hdr.get("Allow")), (405, "POST"))
 
 
+class TestReply(ReceiptWorld):
+    """T-0201: the desk's verdict comes back to the page. `POST /api/receipts/<id>/reply {text}` on the loopback listener behind
+    the poll's four checks; `reply` / `replied_at` on the receipt (GET, snapshot recent); a later reply replaces; the page shows
+    it on the badge, in the chat and in the Settings table; `zouinify poll` prints the exact reply command; `zouinify reply`."""
+
+    def post_reply(self, rid, text, **kw):
+        return self.ack(None, raw=json.dumps({"text": text}).encode("utf-8"), path=f"/api/receipts/{rid}/reply", **kw)
+
+    def test_reply_is_stored_returned_and_replaces(self):
+        st, _, a = self.post({"kind": "launch", "ticket": "T-0001"})
+        st, d = self.post_reply(a["id"], "not launched: T-0001 is yours to do, not a worker's")
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["reply"], "not launched: T-0001 is yours to do, not a worker's")
+        self.assertRegex(d["replied_at"], r"^\d{4}-\d\d-\d\dT")
+        got = self.desk_get(f"/api/receipts/{a['id']}")[2]
+        self.assertEqual((got["reply"], got["replied_at"]), (d["reply"], d["replied_at"]))
+        recent = self.get_json("/api/snapshot")["panel"]["receipts"]["recent"]
+        self.assertEqual(recent[0]["reply"], d["reply"], "the page reads it from the snapshot")
+        self.assertIn("replied_at", recent[0])
+        st, d2 = self.post_reply(a["id"], "launched t0001-first-ready-ticket (Fable)\nsecond line\tbecomes spaces")
+        self.assertEqual(st, 200)
+        self.assertEqual(d2["reply"], "launched t0001-first-ready-ticket (Fable) second line becomes spaces", "one line; a later reply replaces")
+        self.assertEqual(self.desk_get(f"/api/receipts/{a['id']}")[2]["reply"], d2["reply"])
+        replies = [x for x in self.audit() if x["event"] == "reply"]
+        self.assertEqual([x["text"] for x in replies], [d["reply"], d2["reply"]])
+        self.assertEqual(replies[0]["id"], a["id"])
+        st, _, d3 = self.poll(timeout_ms=200)
+        self.assertEqual(d3["receipts"][0]["reply"], d2["reply"], "a reply does not acknowledge: the receipt is still pending and carries it")
+
+    def test_reply_refusals(self):
+        st, _, a = self.post({"kind": "question", "text": "is the plan the newest?"})
+        self.assertEqual(self.post_reply("feedfa", "x")[0], 404, "not in memory")
+        self.assertEqual(self.post_reply("nope", "x")[0], 404, "not an id")
+        self.assertEqual(self.post_reply(a["id"], "")[0], 400, "empty")
+        self.assertEqual(self.post_reply(a["id"], "x" * 301)[0], 400, "over 300")
+        self.assertEqual(self.post_reply(a["id"], "fine")[0], 200)
+        self.assertEqual(self.post_reply(a["id"], "fine", nonce=False)[0], 403, "no nonce")
+        self.assertEqual(self.post_reply(a["id"], "fine", ctype="text/plain")[0], 415)
+        self.fake_remote = True
+        self.assertEqual(self.post_reply(a["id"], "fine")[0], 403, "a non-loopback address")
+        self.fake_remote = False
+        with mock.patch.object(panel_hooks.HookHandler, "peer_is_same_user", lambda h: False):
+            self.assertEqual(self.post_reply(a["id"], "fine")[0], 403, "another uid")
+        st, _, body = self.req("POST", f"/api/receipts/{a['id']}/reply", body=b'{"text": "x"}')
+        self.assertEqual(st, 405, "the LAN-facing port has no reply route: every write but the receipt is 405 there")
+        conn = http.client.HTTPConnection("127.0.0.1", self.hook_port, timeout=10)
+        conn.putrequest("GET", f"/api/receipts/{a['id']}/reply", skip_host=True)
+        conn.putheader("Host", f"127.0.0.1:{self.hook_port}")
+        conn.putheader(HOOK_HEADER, self.nonce)
+        conn.endheaders()
+        r = conn.getresponse()
+        self.assertEqual((r.status, r.getheader("Allow")), (405, "POST"))
+        conn.close()
+        self.assertEqual(self.desk_get(f"/api/receipts/{a['id']}")[2]["reply"], "fine", "the refusals changed nothing")
+
+    def test_poll_prints_the_reply_command_and_the_cli_replies(self):
+        st, _, a = self.post({"kind": "launch", "ticket": "T-0001"})
+        st, _, b = self.post({"kind": "question", "text": "safe to apply?"})
+        r = self.ok("poll", "--timeout-ms", "3000")
+        self.assertIn(f'then tell the human on the page: zouinify reply {a["id"]} "launched <session name> (<model>)"   or   zouinify reply {a["id"]} "not launched: <why>"', r.stdout)
+        self.assertIn(f'then tell the human on the page: zouinify reply {b["id"]} "<your answer, one line>"   (this IS the answer the human reads)', r.stdout)
+        r = self.ok("reply", a["id"], "not launched: T-0001 is the human's own step")
+        self.assertIn(f"replied to receipt {a['id']} (launch T-0001)", r.stdout)
+        self.assertIn('"not launched: T-0001 is the human\'s own step"', r.stdout)
+        self.assertIn("it is not a ticket move", r.stdout)
+        got = self.desk_get(f"/api/receipts/{a['id']}")[2]
+        self.assertEqual(got["reply"], "not launched: T-0001 is the human's own step")
+        r = self.ok("reply", b["id"], "yes: the plan is the newest (plan 10-12-1, serial 3)")
+        self.assertIn("replied to receipt", r.stdout)
+        r = self.ok("poll", "--since", a["id"], "--timeout-ms", "300")          # everything after a: b, with its reply shown
+        self.assertIn('replied ', r.stdout)
+        self.assertIn('"yes: the plan is the newest (plan 10-12-1, serial 3)"   (a new reply replaces it)', r.stdout)
+        self.assertNotIn("receipt " + a["id"] + " launch", r.stdout)
+        for args, msg in ((("reply", "zz", "x"), "receipt id"), (("reply", a["id"], "   "), "empty"), (("reply", a["id"], "y" * 301), "at most 300"),
+                          (("reply", "feedfa", "x"), "HTTP 404")):
+            rr = self.nz(*args)
+            self.assertIn(msg, rr.stderr, args)
+        self.assertEqual(self.ticket_calls(), [c for c in self.ticket_calls() if c.startswith("human") or c.startswith("board")],
+                         "reply runs no ticket.sh command")
+
+    def test_the_page_shows_the_verdict(self):
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertIn("desk ${esc(String(rec.replied_at).slice(11, 16))}: ${esc(rec.reply)}", js, "the badge shows the reply")
+        self.assertIn("function verdictClass", js)
+        self.assertIn("<th>reply</th>", js, "the Settings table has a reply column")
+        self.assertIn('class="msg desk ${verdictClass(r.reply)}"', js, "the chat shows the reply under the question")
+        css = self.req("GET", "/static/app.css")[2].decode()
+        self.assertIn(".badge.sent.ok", css)
+        self.assertIn(".badge.sent.warn", css)
+        from zouinify import poll as poll_mod
+        self.assertEqual(poll_mod.MAX_REPLY, panel_receipts.MAX_REPLY)
+
+
 class TestPollCli(ReceiptWorld):
     def test_poll_prints_each_receipt_with_the_script_and_exits(self):
         run = self.item("RUN")
@@ -561,7 +654,7 @@ class TestPollCli(ReceiptWorld):
         self.assertEqual(len(ids), 5, out)
         self.assertIn(f"zouinify launch worker T-0001 --receipt {ids[1]}", out)
         self.assertIn(f"zouinify down t0003-finished-ticket --receipt {ids[2]}", out)
-        self.assertIn(f"receipt {ids[3]}: <answer>", out)
+        self.assertIn(f"answer it with the reply command below (receipt {ids[3]})", out)
         self.assertIn("  data: " + json.dumps({"text": evil, "title": "", "verb": "", "item_id": ""}, ensure_ascii=False), out,
                       "the human's text is JSON on its own line, never inside a command")
         for line in out.splitlines():

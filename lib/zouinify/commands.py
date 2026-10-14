@@ -8,7 +8,7 @@ import sys
 from zouinify import ZouinifyError, __version__
 from zouinify import config as cfgmod
 
-NOTE = ("`up`, `launch`, `down` and `poll` are run by the human from a shell or by the desk session, never by the "
+NOTE = ("`up`, `launch`, `down`, `poll` and `reply` are run by the human from a shell or by the desk session, never by the "
         "panel process; the panel's one write is a receipt (a click the desk verifies). Everything project-specific comes from "
         "<project>/.ops/config.yaml.")
 
@@ -80,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--since", default="", metavar="ID", help="replay every receipt after this id, acknowledged or not (a lost batch)")
     s.add_argument("--no-ack", action="store_true", help="print without acknowledging: the receipts come back on the next poll")
     s.add_argument("--ack", default="", metavar="ID[,ID]", help="acknowledge these receipt ids by hand and exit")
+
+    s = sub.add_parser("reply", help="the desk's one-line verdict on a panel receipt, shown to the human on the page (never a ticket move)")
+    s.add_argument("id", metavar="ID", help="the receipt id from zouinify poll")
+    s.add_argument("text", metavar="TEXT", help="one line, at most 300 characters: what you verified, or why not")
 
     s = sub.add_parser("briefs", help="render the brief templates with this project's config")
     s.add_argument("action", choices=["render", "list"])
@@ -164,6 +168,9 @@ def main(argv=None) -> int:
         if args.cmd == "poll":
             from zouinify import poll
             return poll.cmd_poll(cfg, timeout_ms=args.timeout_ms, since=args.since, no_ack=args.no_ack, ack_ids=args.ack)
+        if args.cmd == "reply":
+            from zouinify import poll
+            return poll.cmd_reply(cfg, args.id, args.text)
         if args.cmd == "status":
             from zouinify import status
             data = status.collect(cfg, use_cache=not args.no_cache)

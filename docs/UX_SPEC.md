@@ -362,7 +362,8 @@ sessions, waiting, creds, logs, releases; each with `age_s`), `GET /api/tickets/
 (detail with the redacted screen), `GET /api/logs?label=<a panel.logs label>` (404 for an unknown label; the dashboard shows one tail per configured entry, none when the list is empty). Any `POST` -> 405.
 v2 (T-0162/T-0163): `POST /api/receipts` on the panel port (the cookie or the bearer, on every bind; 201 `{id}`, 200 with the same
 id for a repeat click while the receipt is open, 401/403/429 otherwise), `GET /api/events` (SSE); on the loopback-only listener,
-for the desk: `GET /api/poll?since=<id>&timeout_ms=<n>`, `POST /api/ack {ids}`, `GET /api/receipts/<id>`, `POST /api/hook`.
+for the desk: `GET /api/poll?since=<id>&timeout_ms=<n>`, `POST /api/ack {ids}`, `POST /api/receipts/<id>/reply {text}` (T-0201: the
+desk's one-line verdict, shown on the badge, in the chat and in Settings), `GET /api/receipts/<id>`, `POST /api/hook`.
 Terminal page (separate service, `zouinify term`, Z-11): `GET /term/health`, `GET /term/?target=<name>[&text=...]` (the page;
 the unlock screen when no valid cookie), `POST /term/unlock {passphrase}` -> `Set-Cookie zouinify_term` (401 wrong, 429 over
 budget or locked out), `GET /term/targets` (cookie required), `POST /term/open {target}` -> `{tid}` (404 target not offered),
