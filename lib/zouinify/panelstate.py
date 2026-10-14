@@ -238,6 +238,76 @@ def hook_snippet() -> str:
     return json.dumps({"hooks": {ev: entry(ev) for ev in HOOK_EVENTS}}, indent=1)
 
 
+# -- the receipts audit (T-0162): .ops/state/audit.jsonl, one JSON line per accepted receipt, per delivery to the desk's
+# poll and per refused write. 0600, O_NOFOLLOW, under the state lock. The panel package appends through append_audit()
+# and reads the tail through read_audit() at start (to replay receipts no poll fetched before a restart); it never
+# opens the file itself. A same-user process can write this file too: a replayed line is flagged as such and the desk
+# verifies every receipt as a claim anyway (the ticket's rule).
+
+AUDIT_MAX_BYTES = 50 * 1024 * 1024    # beyond it nothing more is appended (a flood must not fill the disk); receipts still work
+AUDIT_TAIL_BYTES = 2 * 1024 * 1024    # how much of the file's end read_audit() parses
+
+
+def audit_path(cfg) -> str:
+    return os.path.join(state_dir(cfg), "audit.jsonl")
+
+
+def append_audit(cfg, record: dict) -> bool:
+    """Append one JSON line to audit.jsonl (strings with control characters escaped). Returns False, never raises, when
+    the line could not be written (the caller reports it: a receipt whose audit line failed is still answered)."""
+    try:
+        with _locked(cfg):
+            path = audit_path(cfg)
+            if os.path.islink(path):
+                os.remove(path)        # never write through a planted symlink
+            rec = {}
+            for k, v in record.items():
+                rec[str(k)] = CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), v) if isinstance(v, str) else v
+            line = json.dumps(rec, sort_keys=True, default=str) + "\n"
+            try:
+                if os.lstat(path).st_size + len(line) > AUDIT_MAX_BYTES:
+                    return False
+            except FileNotFoundError:
+                pass
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(line)
+            return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def read_audit(cfg, max_bytes: int = AUDIT_TAIL_BYTES) -> list:
+    """The records (dicts) of the last `max_bytes` of audit.jsonl, oldest first; [] when the file is missing, a symlink
+    or unreadable. Lines that are not JSON objects are skipped. Never raises."""
+    try:
+        path = audit_path(cfg)
+        if os.path.islink(path):
+            return []
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            data = fh.read()
+    except (OSError, ValueError):
+        return []
+    out = []
+    lines = data.split(b"\n")
+    if size > max_bytes:
+        lines = lines[1:]                 # the first line of a tail is cut
+    for raw in lines:
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
 EVENTS_KEEP_DAYS = 14
 EVENTS_MAX_BYTES = 20 * 1024 * 1024    # per day; beyond it events are still shown live but no longer appended
 

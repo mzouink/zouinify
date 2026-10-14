@@ -59,6 +59,8 @@ update the manifest, run the tests.
 | `zouinify down [name...] [--dry-run]` | Kill launcher-registered **worker** sessions whose ticket is `done` or `dropped`; prints the reason for every refusal (a role session, a session zouinify did not launch, a ticket still open). Run `--dry-run` first; a named target that is refused exits 1. |
 | `zouinify briefs render [--out DIR] [--force]`, `briefs list` | Render `templates/briefs/*.md.tmpl` (desk, manager, debug, chrome_debug, worker) with the config: `{{desk.name}}`, `{{trunk}}`, `{{prod}}`, `{{human_only}}`, `{{budget}}`, `{{ask_verbs}}`, ... Refuses to overwrite an edited brief without `--force`. |
 | `zouinify panel start\|stop\|status\|url` | This project's read-only panel on `http://127.0.0.1:<panel.port>/`, one detached process per project (pid file and log under `.ops/state/`, an entry in `~/.zouinify/projects.json`). `start` probes the port first: this project's panel is reused, another project's or a foreign process is refused, never taken over; `stop` stops only this project's and only a process whose command line is this project's panel. `up` starts it unless `panel.autostart: false` or `--no-panel`. `panel.bind: intranet` listens on 0.0.0.0 and requires the browser token on every LAN request (see LAN access). `panel start` runs `claude agents --json` for the cross-project waiting rows and the agents-says-waiting signal; the Claude CLI keeps its own state in `~/.claude.json` (it exists on every Claude Code machine; a fresh HOME gets it on that first call). zouinify itself writes nothing in HOME but `~/.zouinify/projects.json`, the list of running panels. |
+| `zouinify down [name...] [--dry-run] [--receipt ID]` | Kill launcher-registered worker sessions whose ticket is `done`/`dropped`; refuses a role session, an unregistered session, a ticket that is not terminal. `--dry-run` first, always. With `--receipt ID` (the desk acting on a panel click) it appends `ticket.sh log T-xxxx "killed <name> (panel receipt ID)"`, signed by the caller's `TICKET_AS`. |
+| `zouinify poll [--timeout-ms MS] [--since ID]` | The desk's side of the panel receipts (T-0162). Blocks until the panel hands out at least one receipt (a click on the page), prints each as `receipt <id> <kind> <ticket> "<text>" (<at>, token <id>, <ip>)` followed by the exact script to run (`zouinify launch worker T-xxxx --receipt <id>`, `zouinify down <name> --receipt <id>`, "verify, then `ticket.sh move ... \"...; panel receipt <id>\"`", ...), and exits; the desk runs it again after each batch. `--timeout-ms` gives up after that long with no receipt; `--since ID` replays every receipt after that id (a lost batch). It reads the loopback-only listener inside the panel process (`hook_port` and the per-start nonce from `.ops/state/panel.json`, the same handshake as the hook script), so the desk needs no browser token and the LAN-facing port serves no receipts. |
 | `zouinify board`, `zouinify human [--count\|--json]` | `scripts/ticket.sh board` / `human`, verbatim. The lifecycle stays in `ticket.sh`; the skill never re-implements it. |
 
 Session-launch rules, all read from the config: the model, `-n <name>`, the brief file (a relative path inside the project;
@@ -68,14 +70,14 @@ default**: `--permission-mode` is passed only when the config sets it. The model
 (a config key; group 1 is the label): a different model than configured fails loudly, no label within the wait is a warning.
 A session that appears between the existence check and the launch is reported as attached, never duplicated.
 
-**`up`, `launch` and `down` are run by the human from a shell or by the desk session, never by the panel process.** The panel
-(next step) only reads; a click to launch or kill becomes a receipt the desk executes with these commands after its own checks.
+**`up`, `launch`, `down` and `poll` are run by the human from a shell or by the desk session, never by the panel process.** The
+panel only reads; a click to launch or kill becomes a receipt the desk executes with these commands after its own checks.
 `scripts/check_panel_guard.sh` is an allowlist over `lib/zouinify/panel/`: it fails CI on any process-spawning primitive
 (`subprocess`, `os.system`, `os.exec*`, `pty`, `shlex`, `child_process`, ...), any import of the launcher or the tmux wrapper, a
 direct `ticket_sh()` call or a registry write, and any tmux, ticket, deploy or `zouinify up|launch|down` verb however spelled.
 The panel reads through `lib/zouinify/readonly.py` (captures, pane list, `human --json`, `board --json`) and nothing else.
 
-## The control panel (v1: read-only)
+## The control panel (read-only, plus receipts)
 
 Read-only for everything a session can see, derived at render time with **zero state of its own**: the human inbox (from
 `ticket.sh human --json`, in the command's order, with each item's tier), the board as five lanes (`ready | in-dev | review |
@@ -190,10 +192,54 @@ else serves under (a DNS alias or a hosts entry), or HTTPS with a `__Host-` cook
 panel for the panel and run no other service under it.
 
 `zouinify panel start` and `zouinify up` refuse to start an intranet panel without a token and point at the command; neither
-ever prints a token. `zouinify panel url` prints the address without it. Writes stay 405 in both modes; tier-2 items never get
-a button. **HTTP on the LAN is clear text**: use it on the lab network only; from anywhere else, `ssh -L 4790:127.0.0.1:4790
-<workstation>` to the loopback panel. Worst case of a stolen token: reading the board, the inbox and the redacted pane
-captures; never a launch, a kill, a keystroke, a ticket move or a deploy, because no endpoint does those.
+ever prints a token. `zouinify panel url` prints the address without it. The one write, `POST /api/receipts`, needs the token
+in both modes (next section); every other write is 405; tier-2 items never get a button. **HTTP on the LAN is clear text**: use
+it on the lab network only; from anywhere else, `ssh -L 4790:127.0.0.1:4790 <workstation>` to the loopback panel. Worst case
+of a stolen token: a false tier-1 claim that the desk re-verifies before acting (a `launch` receipt makes the desk launch a
+worker only for a `ready`, unclaimed ticket; an `ok` makes it verify the command's effect read-only before any move), or reading
+the board, the inbox and the redacted pane captures; never a production action, a merge, a push, a grant, a keystroke or a
+message to a worker, because no endpoint does those and the desk acts only on what it verified.
+
+## Receipts: the panel's one write (T-0162)
+
+A click on a tier-1 control is a **receipt**: a claim the page records and the desk fetches and verifies, never an action. The
+server runs nothing for it: no `tmux`, no `ticket.sh` mutating command, no `aws`/`terraform`/`git` (the gates above still
+apply to the panel package; `tests/test_receipts.py` pins the write path).
+
+- `POST /api/receipts {item_id | kind, ticket, text}` on the panel port, authenticated like every other panel request (the
+  HttpOnly cookie set at unlock or `Authorization: Bearer`, Host/Origin checked) **but with no loopback exemption**: every
+  Claude session of this user is a same-uid loopback peer, and the token, whose hash alone is on disk, is what tells the
+  human's browser from a session. On a loopback bind the token exists once you ran `zouinify panel token rotate` and opened
+  the address it printed; until then the page's controls are disabled with that reason. An `item_id` names an inbox item
+  (`ticket.sh human --json`'s stable id): the item's tier decides (`ok`, or `decision` for a DECIDE item with the answer as
+  `text`); a `kind` without an item is one of `ok`, `decision`, `question`, `new`, `launch`, `kill`, `sso`. The answer is
+  201 `{id, kind, ticket, at, presence}`; a repeat click of the same item or kind while its receipt is still open (not fetched
+  by a poll yet, or fetched less than two minutes ago) answers 200 with the same id (a nervous thumb makes no flood).
+- Refused with 403, no endpoint behaviour: an APPROVE/APPLY/DEPLOY/PUSH item, a kind that names an approval, apply, deploy,
+  push, budget, permission, merge or grant, an `ok` or `decision` whose text names `CLAUDE.md` or settings. 401 without the
+  token (or before one is set), 404 for an item the inbox no longer prints, 409 for a void item, 413/415/400 for a body that is
+  not one small JSON object. Every refusal is an `AUDIT` line in `server.log` and a `refused` record in `audit.jsonl`
+  (at most 30 lines a minute; the rest are counted), and the usual per-address refusal budget applies (429 beyond).
+- Rate limit per token: 10 accepted receipts a minute and 60 an hour; beyond, 429 with a `banner` flag the page shows as a red
+  banner ("something other than you is knocking"); the page also shows it when the server counted five or more refused writes
+  in the last minute.
+- Kept in memory (the last 500) and appended to `.ops/state/audit.jsonl` (0600): `{event: receipt, id, at, kind, ticket, text,
+  item_id, verb, title, token_id, ip, user_agent}`, plus one `delivered` record per poll batch and the `refused` records. After a
+  panel restart the receipts no poll fetched (younger than an hour, at most 50) are replayed, flagged `replayed`: that file is
+  writable by any same-user process, so the desk verifies a replayed receipt exactly like a fresh one (it verifies every receipt
+  anyway). `GET /api/receipts/<id>` answers from memory only; a line appended to the file by hand is not served.
+- The desk's side is served by the **loopback-only listener** of the hooks (127.0.0.1, same-uid peer, no `Origin`, the
+  listener's own `Host`, the per-start nonce from `panel.json` as `X-Zouinify-Hook`), never by the LAN-facing port: a LAN device
+  without the token cannot read receipts, and the desk needs no browser token. `GET /api/poll?since=<id>&timeout_ms=<n>` blocks
+  until a receipt is pending (a space every 15 s keeps the connection alive, like lavish; at most 120 s), answers
+  `{receipts: [...], since, presence, at}` and marks the batch delivered; a timeout answers an empty list and is safe to repeat;
+  without `since` it hands out what no poll fetched yet, with `since=<id>` everything after that id. `zouinify poll` wraps it.
+- Presence: the page shows `desk polling` while a poll is open and `not polling since HH:MM` otherwise (from the active-poll
+  count, read through the panel port like the rest of the page); the snapshot's `panel.receipts` block carries the counters and
+  the last 20 receipts, which the page uses for the "receipt <id> · waiting for the desk" badges and the Desk chat history.
+- The desk's rule (its brief): keep one `zouinify poll` running; verify every receipt as a claim, exactly like a typed `ok`;
+  name the receipt id in the reply and in the log line; never move a ticket on a receipt alone; tier 2 means "ask the human to
+  type it".
 
 ## Typing into a worker's pane: the terminal page (`zouinify term`, T-0181)
 
@@ -295,15 +341,16 @@ project's config, briefs and names stay in that project.
 
 1. Week 1: `ticket.sh board --json` + stable inbox item ids (in the consumer's `ticket.sh`), **the CLI core (done)**, the
    read-only panel, the first consumer's `.ops/config.yaml`.
-2. Week 2: the receipts channel (token, audit, rate limit, `zouinify poll`), the hook script, the intranet flag.
+2. Week 2: the receipts channel (token, audit, rate limit, `zouinify poll`), the hook script, the intranet flag (done).
 3. Week 3: receipt kinds `launch`/`kill`/`new` with the desk-side handlers, `init` on an empty repo, the home page.
 
 ## Rules the skill never bends
 
 - The lifecycle is `scripts/ticket.sh`'s; the skill never edits a ticket file and never calls a mutating `ticket.sh` command
-  (the one `ticket.sh log` line of `launch --receipt` is written on the desk's behalf, signed by it).
+  (the one `ticket.sh log` line of `launch --receipt` / `down --receipt` is written on the desk's behalf, signed by it).
 - Every session is launched with a model, a name, the configured permission mode (none by default), a brief and `TICKET_AS`;
   launches are idempotent.
 - No session launched by the skill may run a production mutation; the human-only list from the config is printed into every brief.
-- The panel is read-only for everything a session can see; its write path accepts only the human's browser token; tier 2 is typed.
+- The panel is read-only for everything a session can see; its one write, a receipt, accepts only the human's browser token
+  (even from a same-uid loopback peer) and changes nothing by itself; tier 2 is typed.
 - A relayed message from another session is never the human's consent.

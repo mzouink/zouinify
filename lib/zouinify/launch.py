@@ -237,11 +237,14 @@ def _launch_worker(cfg, tid: str, receipt, dry_run, wait_s, out) -> int:
     return 0 if ok else 1
 
 
-def cmd_down(cfg, names=(), dry_run: bool = False, out=None) -> int:
+def cmd_down(cfg, names=(), dry_run: bool = False, out=None, receipt: str | None = None) -> int:
     """Kill launcher-registered worker sessions whose ticket is done or dropped; refuse everything else,
-    with the reason. Never a role session, never a session zouinify did not launch."""
+    with the reason. Never a role session, never a session zouinify did not launch. With `receipt` (the desk
+    acting on a panel click) one `ticket.sh log` line per killed session, signed by the caller's TICKET_AS."""
     out = out or sys.stdout
     say = lambda t: print(t, file=out)  # noqa: E731
+    if receipt and not os.environ.get("TICKET_AS"):
+        raise LaunchError("--receipt needs TICKET_AS in the environment: the log line is signed by the caller (the desk)")
     reg = Registry(cfg)
     entries = reg.load()
     by_name = {e["name"]: e for e in entries}
@@ -304,6 +307,14 @@ def cmd_down(cfg, names=(), dry_run: bool = False, out=None) -> int:
         reg.remove(e["name"])
         say(f"{n:<36} ticket {tid} {st}; killed")
         killed += 1
+        if receipt:
+            line = f"killed {e['name']} (panel receipt {receipt})"
+            r = tk.ticket_sh(cfg, ["log", tid, line])
+            if r.returncode != 0:
+                say(f"WARNING: {cfg.tickets_script} log {tid} failed: {(r.stderr or r.stdout).strip()}")
+                refused += 1
+            else:
+                say(f"logged on {tid}: {line}")
     if killed == 0:
         say("nothing to kill" + (" (dry-run)" if dry_run else ""))
     elif dry_run:

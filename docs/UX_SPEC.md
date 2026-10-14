@@ -346,9 +346,10 @@ vendored `ticket.sh` core. Nothing editable from the page.
 
 - Per-panel skeletons; inline error with **Retry** per source; a source's age shown on hover; a stale source (> 3 × its
   refresh interval) gets an amber "stale" chip, never silent.
-- `401` on a write: toast "token missing or wrong: open the URL printed by `zouinify up` or `zouinify panel url`" (never show
-  the token). `429`: a persistent red banner "receipts rate-limited: something other than you is knocking" until the next
-  successful receipt. Every accepted write shows its receipt id and the desk's acknowledgement when it arrives.
+- `401` on a write: toast "token missing or wrong: open the address printed by `zouinify panel token rotate` in your own
+  terminal" (never show the token). `429`: a persistent red banner "receipts rate-limited: something other than you is knocking"
+  until the next successful receipt (also shown when the server counts five or more refused writes in the last minute). Every
+  accepted write shows its receipt id and whether the desk's poll fetched it yet.
 - Writes are disabled (not hidden) when the panel is bound to the intranet and no token is stored, with the reason.
 - Keyboard: every control reachable, logical order, visible focus, `aria-label` on icon buttons, headings per panel, a polite
   live region for "waiting for you" count changes only. 200 % zoom and reduced motion tested.
@@ -358,8 +359,9 @@ vendored `ticket.sh` core. Nothing editable from the page.
 v1 (T-0160, read-only): `GET /health` (project root, version, bind), `GET /api/snapshot` (header, kpis, inbox, board,
 sessions, waiting, creds, logs, releases; each with `age_s`), `GET /api/tickets/<id>` (drawer), `GET /api/sessions/<name>`
 (detail with the redacted screen), `GET /api/logs?label=<a panel.logs label>` (404 for an unknown label; the dashboard shows one tail per configured entry, none when the list is empty). Any `POST` -> 405.
-v2 (T-0162/T-0163): `POST /api/receipts`, `GET /api/receipts/<id>`, `GET /api/poll` (desk only), `GET /api/events` (SSE),
-`POST /api/hook` (loopback listener only).
+v2 (T-0162/T-0163): `POST /api/receipts` on the panel port (the cookie or the bearer, on every bind; 201 `{id}`, 200 with the same
+id for a repeat click while the receipt is open, 401/403/429 otherwise), `GET /api/events` (SSE); on the loopback-only listener,
+for the desk: `GET /api/poll?since=<id>&timeout_ms=<n>`, `GET /api/receipts/<id>`, `POST /api/hook`.
 Terminal page (separate service, `zouinify term`, Z-11): `GET /term/health`, `GET /term/?target=<name>[&text=...]` (the page;
 the unlock screen when no valid cookie), `POST /term/unlock {passphrase}` -> `Set-Cookie zouinify_term` (401 wrong, 429 over
 budget or locked out), `GET /term/targets` (cookie required), `POST /term/open {target}` -> `{tid}` (404 target not offered),

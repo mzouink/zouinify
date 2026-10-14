@@ -1,6 +1,10 @@
-"""The HTTP server of the panel: stdlib only, GET/HEAD only -- any other method is 405. Routes: `/` and
-`/static/*` (the page), `/health`, `/api/snapshot`, `/api/tickets/<id>`, `/api/waiting/<name>`, `/api/sessions/<name>`,
-`/api/logs?label=<a panel.logs label>`. Everything else is 404.
+"""The HTTP server of the panel: stdlib only. GET/HEAD routes: `/` and `/static/*` (the page), `/health`,
+`/api/snapshot`, `/api/tickets/<id>`, `/api/waiting/<name>`, `/api/sessions/<name>`, `/api/logs?label=<a panel.logs
+label>`, `/api/events` (SSE), `/api/unlock`. Everything else is 404. The ONE write is `POST /api/receipts` (T-0162):
+a click becomes a receipt the desk fetches and verifies (zouinify.panel.receipts); it needs the browser token on
+every bind, even from a same-uid loopback peer (every Claude session of this user is one), on top of the Host/Origin
+check. Every other method on every other path is 405. The desk's side (`GET /api/poll`, `GET /api/receipts/<id>`)
+is served by the loopback-only listener (zouinify.panel.hooks), never by this port.
 
 Binding (T-0165): `panel.bind: loopback` (the default) listens on 127.0.0.1 and needs no token. `panel.bind:
 intranet` listens on 0.0.0.0 and requires the browser token on EVERY request from a non-loopback peer, the page
@@ -26,15 +30,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import MappingProxyType
 
 from zouinify import panelstate, readonly, webauth
-from zouinify.panel import hooks
+from zouinify.panel import hooks, receipts
 from zouinify.panel.sources import Snapshot
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 CONTENT_TYPES = MappingProxyType({".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                                   ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json"})
 ALLOW = "GET, HEAD"
+ALLOW_RECEIPTS = "GET, HEAD, POST"
 CSP = webauth.CSP
-REFUSED = MappingProxyType({"error": "method not allowed: the panel is read-only (v1, T-0160); receipts arrive with T-0162", "allow": ALLOW})
+REFUSED = MappingProxyType({"error": "method not allowed: the panel's one write is POST /api/receipts (a click the desk verifies, "
+                                     "with the browser token); everything else is read-only", "allow": ALLOW})
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 QUERY_RE = re.compile(r"[?#][^ \"]*")   # a mistyped /?t=<token>, or a hand-built /#t=<token>, must never reach the log
 COOKIE = webauth.PANEL_COOKIE
@@ -126,6 +132,24 @@ class Handler(BaseHTTPRequestHandler):
             self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
         return status, reason
 
+    def authorize_write(self) -> tuple:
+        """(status, reason) for the one write, POST /api/receipts: the browser token is REQUIRED on every bind, with no
+        loopback exemption -- a same-uid loopback peer is exactly what a Claude session is, and the token (never
+        readable by a session: only its hash is on disk) is what tells the human's browser from one. The per-address
+        refusal budget applies as on the LAN. Another local uid on a loopback bind is refused as for a GET."""
+        srv = self.server
+        self.auth_label = ""
+        same = self.peer_is_same_user()
+        if self.peer_is_loopback() and not same and not srv.token_required:
+            return 403, "other-local-user"
+        if not panelstate.token_configured(srv.cfg):
+            return 401, "no-token-configured"
+        status, reason, _source = webauth.authorize(self.client_address[0], self.headers, True, srv.token_matches, srv.limiter, COOKIE,
+                                                    loopback_exempt=False, is_loopback=same)
+        if reason == "token":
+            self.auth_label = f" token={panelstate.token_id(srv.cfg) or '?'}"
+        return status, reason
+
     def send_bytes(self, status: int, body: bytes, ctype: str, extra: dict | None = None, head: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -177,13 +201,16 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(HTTPStatus.OK, {"ok": True, "cookie": COOKIE, "token_id": panelstate.token_id(self.server.cfg)}, head,
                               {"Set-Cookie": cookie})
 
-    def refuse(self) -> None:
+    def drain(self, limit: int = 1 << 20) -> None:
         try:
             length = int(self.headers.get("Content-Length") or 0)
             if length:
-                self.rfile.read(min(length, 1 << 20))
+                self.rfile.read(min(length, limit))
         except ValueError:
             pass
+
+    def refuse(self) -> None:
+        self.drain()
         if not self.host_allowed():
             return self.forbid()
         status, reason = self.authorize()
@@ -192,7 +219,81 @@ class Handler(BaseHTTPRequestHandler):
         self.audit(405, "write-attempt")
         self.send_bytes(HTTPStatus.METHOD_NOT_ALLOWED, json.dumps(dict(REFUSED)).encode("utf-8"), "application/json; charset=utf-8", {"Allow": ALLOW})
 
+    # -- the one write: POST /api/receipts (T-0162) ---------------------------------------------------
+    def refuse_receipt(self, status: int, reason: str, message: str, kind: str = "", extra: dict | None = None) -> None:
+        """A refused write: an AUDIT line in server.log, a `refused` record in audit.jsonl (counted for the page's banner),
+        the answer. `message` is for the human reading the page; `reason` is the short audit word."""
+        store = self.server.receipts
+        ua = CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:120]
+        self.audit(status, reason)
+        store.note_refused(status, reason, self.client_address[0], ua, panelstate.token_id(self.server.cfg) or "", kind)
+        body = {"error": message, "reason": reason, "tier2": status == 403 and reason.startswith("tier-2")}
+        if status == 429:
+            body["banner"] = True
+        return self.send_json(status, body, False, extra)
+
+    def post_receipt(self) -> None:
+        srv = self.server
+        store = srv.receipts
+        if not self.host_allowed():
+            self.drain()
+            return self.forbid()
+        status, reason = self.authorize_write()
+        if status != 200:
+            self.drain()
+            if status == 403:
+                return self.refuse_receipt(403, reason, "another local user: receipts are taken from the panel's own user only")
+            if status == 429:
+                return self.refuse_receipt(429, reason, "too many refused requests from this address: wait a minute (something other than "
+                                                        "you may be knocking)", extra={"Retry-After": str(int(RATE_WINDOW_S))})
+            if reason == "no-token-configured":
+                return self.refuse_receipt(401, reason, "no browser token is set yet: run `zouinify panel token rotate` in your own terminal "
+                                                        "and open the address it prints in this browser", extra={"WWW-Authenticate": "Bearer realm=\"zouinify\""})
+            return self.refuse_receipt(401, reason, "a receipt needs the browser token: open the address printed by `zouinify panel token "
+                                                    "rotate` in your own terminal (the page then carries it)", extra={"WWW-Authenticate": "Bearer realm=\"zouinify\""})
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            self.drain()
+            return self.refuse_receipt(415, "receipt-content-type", "a receipt is application/json")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.refuse_receipt(400, "receipt-length", "bad Content-Length")
+        if length <= 0 or length > receipts.MAX_BODY:
+            self.drain()
+            return self.refuse_receipt(413, "receipt-size", f"a receipt is 1..{receipts.MAX_BODY} bytes")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+        except (ValueError, RecursionError):
+            return self.refuse_receipt(400, "receipt-json", "a receipt is one JSON object")
+        inbox = (srv.snap.get("inbox")[0] or {}).get("items", [])
+        kind_hint = str(body.get("kind") or "")[:16] if isinstance(body, dict) else ""
+        st, fields = receipts.build(body, inbox)
+        if st:
+            return self.refuse_receipt(st, fields, receipts.MESSAGES.get(fields, fields), kind_hint)
+        ua = CONTROL_RE.sub("", self.headers.get("User-Agent") or "")[:120]
+        token_id = panelstate.token_id(srv.cfg) or "?"
+        try:
+            rec, repeat = store.add(fields, token_id, self.client_address[0], ua, panel_saw=self.probe_for(fields))
+        except receipts.RateLimited as e:
+            return self.refuse_receipt(429, "receipt-rate", f"receipts rate-limited for this token ({receipts.RATE_MINUTE} a minute, "
+                                                            f"{receipts.RATE_HOUR} an hour): something other than you may be knocking",
+                                       fields["kind"], {"Retry-After": str(e.retry_after_s)})
+        panelstate.log(srv.cfg, f"RECEIPT {rec['id']} {rec['kind']} {rec['ticket'] or '-'} {'repeat' if repeat else 'new'} "
+                                f"ip={self.client_address[0]} token={token_id}")
+        return self.send_json(HTTPStatus.OK if repeat else HTTPStatus.CREATED,
+                              {"id": rec["id"], "kind": rec["kind"], "ticket": rec["ticket"], "at": rec["at"], "repeat": repeat,
+                               "panel_saw": rec.get("panel_saw", ""), "presence": store.presence()})
+
+    def probe_for(self, fields: dict) -> str:
+        """What the panel itself saw for a receipt that asserts a state: nothing in T-0162 (T-0195 re-probes the
+        credentials on an `sso` click)."""
+        return ""
+
     def do_POST(self):
+        path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+        if path == "/api/receipts":
+            return self.post_receipt()
         self.refuse()
 
     def do_PUT(self):
@@ -237,10 +338,16 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/health":
                 return self.send_json(HTTPStatus.OK, {"ok": True, "service": "zouinify-panel", "version": panelstate.version(),
                                                       "root": snap.cfg.root, "project": snap.cfg.name, "bind": snap.bind, "port": snap.port,
-                                                      "pid": panelstate.pid(), "started_at": snap.started_at, "write_path": False,
-                                                      "token_required": self.server.token_required}, head)
+                                                      "pid": panelstate.pid(), "started_at": snap.started_at, "write_path": True,
+                                                      "writes": ["POST /api/receipts"], "token_required": self.server.token_required,
+                                                      "token_configured": panelstate.token_configured(snap.cfg),
+                                                      "receipts": {"pollers": self.server.receipts.meta()["pollers"]}}, head)
             if path == "/api/snapshot":
                 return self.send_json(HTTPStatus.OK, snap.build(fresh=fresh), head)
+            if path == "/api/receipts" or path.startswith("/api/receipts/") or path == "/api/poll":
+                return self.send_json(HTTPStatus.NOT_FOUND, {"error": "receipts are read by the desk on the loopback-only listener "
+                                                                       "(the desk's poll command); this port takes POST /api/receipts only"}, head,
+                                      {"Allow": ALLOW_RECEIPTS} if path == "/api/receipts" else None)
             if path.startswith("/api/tickets/"):
                 tid = path[len("/api/tickets/"):]
                 d = snap.ticket(tid) if readonly.is_ticket_id(tid) else None
@@ -318,9 +425,12 @@ class PanelServer(ThreadingHTTPServer):
         self.started_at = panelstate.now_iso()
         self.snap = Snapshot(cfg, self.server_address[1], bind, self.started_at)
         self.limiter = webauth.RateLimiter()      # the panel's weights: wrong Bearer 1, missing token or wrong cookie 0.2
+        # the receipts (T-0162): written on this port with the token, read by the desk on the loopback listener
+        self.receipts = receipts.ReceiptStore(cfg, self.started_at)
+        self.snap.attach_receipts(self.receipts)
         # the hook listener (T-0163): 127.0.0.1 only, whatever `bind` is; events are data the sessions rows show
         self.events = hooks.EventStore(cfg)
-        self.hooks = hooks.make_hook_server(cfg, self.events, hook_port)
+        self.hooks = hooks.make_hook_server(cfg, self.events, hook_port, self.receipts)
         self.snap.attach_events(self.events, self.hooks.server_address[1])
         self.hook_thread = None
 
@@ -377,8 +487,9 @@ def run(srv: PanelServer) -> int:
     srv.snap.start_refresher()
     srv.serve_hooks()
     panelstate.log(cfg, f"zouinify panel {panelstate.version()} serving {cfg.name} on {srv.server_address[0]}:{actual} "
-                        f"(read-only, {srv.bind}{', token required beyond loopback' if srv.token_required else ''}) pid {panelstate.pid()}; "
-                        f"hook listener on 127.0.0.1:{hook_port}")
+                        f"({srv.bind}{', token required beyond loopback' if srv.token_required else ''}; the one write is POST /api/receipts, "
+                        f"token required) pid {panelstate.pid()}; hook listener and the desk's poll on 127.0.0.1:{hook_port}; "
+                        f"{srv.receipts.meta()['pending']} receipt(s) replayed from audit.jsonl")
     try:
         srv.serve_forever(poll_interval=0.5)
     finally:

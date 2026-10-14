@@ -23,7 +23,8 @@ waiting, and what the tickets are doing. It is a Claude Code skill (`/zouinify .
 - **Answer a worker from your phone.** A separate, passphrase-locked terminal page types into a worker's pane for you; the
   desk and the other role windows are never reachable from it.
 - **Safe by construction.** The panel never types into a Claude session and never deploys anything. A click is a receipt the
-  desk session verifies; approvals and production actions stay typed by you.
+  desk session fetches with `zouinify poll` and verifies before anything moves; approvals and production actions stay typed by
+  you. The worst a stolen browser token can do is a false tier-1 claim the desk re-verifies, or read the board.
 
 ## Quick start
 
@@ -89,7 +90,7 @@ typing in the desk's window.
 ## Roadmap
 
 1. **Week 1:** CLI core (done), read-only panel, the first project's config.
-2. **Week 2:** receipts channel (browser token, audit, rate limit, `zouinify poll`), hooks, optional intranet access.
+2. **Week 2:** receipts channel (browser token, audit, rate limit, `zouinify poll`), hooks, optional intranet access (done).
 3. **Week 3:** launch and kill from the panel via the desk, `zouinify init` for a fresh repo (done: config + briefs, then `--protocol` for the vendored ticket core), a home page listing your projects.
 
 Inspired by [lavish-axi](https://github.com/kunchenguid/lavish-axi): a local page, a long-polling agent, nothing in the cloud.

@@ -14,6 +14,11 @@ Who may post: a loopback peer whose socket belongs to this process's uid (T-0169
 lookup fails the listener fails closed. A browser cannot post either (T-0182): any Origin header is refused, the
 body must be application/json (so a page would have to preflight, and OPTIONS is 405), Host must be the listener's
 own loopback name, and the per-start nonce from panel.json (0600) must come back as X-Zouinify-Hook.
+
+The desk's side of the receipts (T-0162) lives here too, under the same checks (same-uid loopback peer, no Origin, the
+listener's own Host, the nonce): `GET /api/poll?since=<id>&timeout_ms=<n>` blocks until a receipt is pending and
+`GET /api/receipts/<id>` answers from memory. Never on the LAN-facing port: a LAN device without the token cannot read
+receipts, and the desk needs no browser token (it reads the nonce from panel.json, its own user's 0600 file).
 """
 from __future__ import annotations
 
@@ -22,10 +27,12 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from zouinify import panelstate, webauth
+from zouinify.panel import receipts as receipts_mod
 from zouinify.panel.redact import redact
 from zouinify.panel.sources import project_roots, under
 
@@ -44,6 +51,7 @@ UNDERSCORE_RE = re.compile(r"_")
 QUERY_RE = re.compile(r"\?[^ \"]*")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 HOOK_HEADER = "X-Zouinify-Hook"
+DESK_PATHS = ("/api/poll", "/api/receipts/")
 
 
 def clip(value, n: int) -> str:
@@ -230,10 +238,72 @@ class HookHandler(BaseHTTPRequestHandler):
                                         f"session={ev['session_id'][:8]} project={'yes' if ev['project'] else 'no'} seq={ev['seq']}")
         self.reply(HTTPStatus.OK, {"ok": True, "seq": ev["seq"], "kept_text": bool(ev["text"])})
 
-    def do_GET(self):
-        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the hook listener takes POST /api/hook only")
+    def desk_refusal(self):
+        """The reason a request for the desk's side is refused, or None: the same four checks as a hook post."""
+        if not self.peer_is_same_user():
+            return "the desk's side is served to this user's processes on this machine only"
+        if self.headers.get("Origin") is not None:
+            return "a browser page may not read receipts here (Origin present)"
+        if not self.host_ok():
+            return "Host is not the listener's own loopback name"
+        if not panelstate.hook_nonce_matches(self.server.cfg, self.headers.get(HOOK_HEADER)):
+            return "missing or wrong X-Zouinify-Hook (the per-start nonce from panel.json)"
+        return None
 
-    do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_GET
+    def serve_poll(self, query: str) -> None:
+        """GET /api/poll?since=<id>&timeout_ms=<n>: block until a receipt is pending (a space every HEARTBEAT_S keeps the
+        connection alive, like lavish), answer `{receipts: [...], since, presence, at}` and close. A timeout answers an
+        empty list; what was handed out is marked delivered."""
+        q = urllib.parse.parse_qs(query)
+        since = q.get("since", [""])[0]
+        since = since if receipts_mod.ID_RE.match(since) else ""
+        try:
+            timeout_s = int(q.get("timeout_ms", [str(int(receipts_mod.POLL_DEFAULT_S * 1000))])[0]) / 1000.0
+        except ValueError:
+            timeout_s = receipts_mod.POLL_DEFAULT_S
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def beat():
+            self.wfile.write(b" ")
+            self.wfile.flush()
+        batch: list = []
+        try:
+            batch = self.server.receipts.poll(since, timeout_s, beat)
+            body = {"receipts": [receipts_mod.wire(r) for r in batch], "since": batch[-1]["id"] if batch else since,
+                    "presence": self.server.receipts.presence(), "at": panelstate.now_iso()}
+            self.wfile.write(json.dumps(body).encode("utf-8"))
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        panelstate.log(self.server.cfg, f"POLL {self.address_string()} since={since or '-'} -> {len(batch)} receipt(s)")
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        path = urllib.parse.unquote(path)
+        if path == DESK_PATHS[0] or path.startswith(DESK_PATHS[1]):
+            if self.server.receipts is None:
+                return self.refuse(HTTPStatus.NOT_FOUND, "no receipts on this listener")
+            why = self.desk_refusal()
+            if why:
+                return self.refuse(HTTPStatus.FORBIDDEN, why)
+            if path == DESK_PATHS[0]:
+                return self.serve_poll(query)
+            rec = self.server.receipts.get(path[len(DESK_PATHS[1]):])
+            if rec is None:
+                return self.reply(HTTPStatus.NOT_FOUND, {"error": "no such receipt in memory (the audit file is not consulted)"})
+            return self.reply(HTTPStatus.OK, rec)
+        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the hook listener takes POST /api/hook and, for the desk, GET /api/poll and GET /api/receipts/<id>")
+
+    def not_allowed(self):
+        self.refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the hook listener takes POST /api/hook and, for the desk, GET /api/poll and GET /api/receipts/<id>")
+
+    do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = not_allowed
 
 
 class HookServer(ThreadingHTTPServer):
@@ -241,23 +311,24 @@ class HookServer(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 64              # closing several sessions at once fires many hooks together: no dropped bursts
 
-    def __init__(self, cfg, store: EventStore, port: int):
+    def __init__(self, cfg, store: EventStore, port: int, receipts=None):
         super().__init__(("127.0.0.1", port), HookHandler)      # loopback only, whatever panel.bind says
         self.cfg = cfg
         self.store = store
+        self.receipts = receipts                                 # the ReceiptStore the panel port writes (T-0162)
 
 
-def make_hook_server(cfg, store: EventStore, port: int) -> HookServer:
+def make_hook_server(cfg, store: EventStore, port: int, receipts=None) -> HookServer:
     """Bind the listener; when the configured port is taken, fall back to an ephemeral one and say so in the log:
     the hook script reads the ACTUAL port from panel.json, so the hooks still arrive."""
     try:
-        return HookServer(cfg, store, port)
+        return HookServer(cfg, store, port, receipts)
     except OSError as e:
         if not port:
             raise
         panelstate.log(cfg, f"hook listener: 127.0.0.1:{port} is taken ({e.strerror or e}); using an ephemeral port instead "
                             "(set panel.hook_port to a free one)")
-        return HookServer(cfg, store, 0)
+        return HookServer(cfg, store, 0, receipts)
 
 
 def stream(handler, store: EventStore, stop_event, write) -> None:

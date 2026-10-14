@@ -114,6 +114,23 @@ class IntranetServer(World):
         p = os.path.join(self.root, ".ops", "state", "server.log")
         return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
 
+    def post_receipt(self, body, token, via="lan"):
+        self.fake_remote = via == "lan"
+        data = json.dumps(body).encode("utf-8")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        conn.putrequest("POST", "/api/receipts", skip_host=True, skip_accept_encoding=True)
+        conn.putheader("Host", f"lanhost.test:{self.port}" if via == "lan" else f"127.0.0.1:{self.port}")
+        if token:
+            conn.putheader("Authorization", "Bearer " + token)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(len(data)))
+        conn.endheaders()
+        conn.send(data)
+        r = conn.getresponse()
+        out = (r.status, dict(r.getheaders()), r.read())
+        conn.close()
+        return out
+
 
 class TestIntranetToken(IntranetServer):
     def test_binding_and_health(self):
@@ -398,12 +415,20 @@ class TestIntranetToken(IntranetServer):
         self.assertEqual(self.req("/health", host=f"lanhost.test:{self.port}", headers=dict(tok, Origin=f"http://lanhost.test:{self.port}"))[0], 200)
         self.assertIn("AUDIT 403 host-or-origin", self.server_log())
 
-    def test_writes_stay_405_and_rotation_is_live(self):
-        st, hdr, _ = self.req("/api/receipts", method="POST", headers={"Authorization": "Bearer " + GOOD})
-        self.assertEqual(st, 405)
+    def test_the_one_write_needs_the_token_on_the_lan_and_rotation_is_live(self):
+        st, hdr, _ = self.req("/api/snapshot", method="POST", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 405, "every write but the receipt stays 405")
         st, _, _ = self.req("/api/receipts", method="POST")
-        self.assertEqual(st, 401, "a token-less write is refused before it is even a 405")
+        self.assertEqual(st, 401, "a token-less write is refused")
+        st, _, body = self.post_receipt({"kind": "question", "text": "from the phone"}, GOOD)
+        self.assertEqual(st, 201, body)
+        self.assertIn(b'"id"', body)
+        st, _, _ = self.req("/api/poll", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 404, "the LAN-facing port has no /api/poll, token or not")
+        st, _, _ = self.req("/api/receipts/" + json.loads(body)["id"], headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 404, "nor does it serve a receipt back")
         panelstate.set_token(self.cfg, OTHER)                  # rotation while the server runs
+        self.assertEqual(self.post_receipt({"kind": "sso"}, GOOD)[0], 401)
         self.assertEqual(self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD})[0], 401)
         self.assertEqual(self.req("/api/snapshot", headers={"Authorization": "Bearer " + OTHER})[0], 200)
         pj = json.load(open(os.path.join(self.root, ".ops", "state", "panel.json")))

@@ -103,13 +103,13 @@ def classify_item(it: dict) -> dict:
         # `ok` in the desk's window; never a button, in any version (T-0160 ticket text)
         tier, hint = 2, f"run it in your terminal, then type `{it.get('tickets') or 'T-xxxx'} ok` in the desk's tmux window"
     elif verb in ("RUN", "SSO"):
-        tier, hint = 1, "run it in your terminal, then OK (available after receipts, T-0162)"
+        tier, hint = 1, "run it in your terminal, then OK (a receipt the desk verifies)"
     elif verb == "CHECK":
-        tier, hint = 1, "do the check, then OK (available after receipts, T-0162)"
+        tier, hint = 1, "do the check, then OK (a receipt the desk verifies)"
     elif verb == "DECIDE":
-        tier, hint = 1, "answer (available after receipts, T-0162)"
+        tier, hint = 1, "answer (a receipt the desk verifies; a relayed answer is never an approval)"
     else:
-        tier, hint = 1, "available after receipts (T-0162)"
+        tier, hint = 1, "OK (a receipt the desk verifies)"
     return {"tier": tier, "hint": hint, "options": options}
 
 
@@ -784,6 +784,7 @@ class Snapshot:
         self.cfg, self.port, self.bind, self.started_at = cfg, port, bind, started_at
         r = int(cfg.panel.get("refresh_s") or 30)
         self.events = None                         # the hook EventStore, attached by the server (T-0163)
+        self.receipts = None                       # the ReceiptStore, attached by the server (T-0162)
         self.hook_port = 0
         self.src = {
             "inbox": {"fn": inbox_source, "ttl": r}, "board": {"fn": board_source, "ttl": r},
@@ -803,6 +804,15 @@ class Snapshot:
         """The hook listener's store: an event invalidates the session sources so the next tick re-reads them."""
         self.events, self.hook_port = store, hook_port
         store.listeners.append(self.invalidate_sessions)
+
+    def attach_receipts(self, store) -> None:
+        self.receipts = store
+
+    def receipts_meta(self) -> dict:
+        if self.receipts is None:
+            return {"write_path": False, "token_configured": False, "pollers": 0, "polling": False, "presence": "n/a", "accepted_1m": 0,
+                    "refused_1m": 0, "pending": 0, "total": 0, "recent": [], "rate": {}}
+        return self.receipts.meta()
 
     def invalidate_sessions(self) -> None:
         for name in ("sessions", "foreign_waiting"):
@@ -925,17 +935,18 @@ class Snapshot:
         desk_sess = cfg.sessions.get("desk")
         desk_row = next((r for r in rows if r["role"] == "desk"), None)
         counts = board["counts"]
+        receipts = self.receipts_meta()
         return {
             "generated": panelstate.now_iso(), "version": panelstate.version(), "loading": self.loading(),
             "project": {"name": cfg.name, "short": cfg.short, "root": cfg.root, "trunk": cfg.trunk, "prod": cfg.prod, "trunk_sha": trunk or ""},
             "panel": {"port": self.port, "bind": self.bind, "refresh_s": cfg.panel.get("refresh_s", 30), "started_at": self.started_at,
-                      "version": panelstate.version(), "write_path": False,
-                      "note": "read-only v1: every control is disabled until receipts (T-0162)"},
+                      "version": panelstate.version(), "write_path": receipts["write_path"], "receipts": receipts,
+                      "note": "a click is a receipt the desk fetches and verifies before acting; tier 2 is typed in the desk's window"},
             "header": {"trunk_sha": trunk or "", "freeze": freeze or {"on": False, "ids": []}, "creds": creds or {"left": "?", "source": ""},
                        "desk": {"name": desk_sess.name if desk_sess else "", "tmux": desk_sess.tmux if desk_sess else "",
                                 "state": desk_row["state"] if desk_row else "gone", "model": desk_row["model"] if desk_row else "?",
-                                "last_line": desk_row["last_line"] if desk_row else "",
-                                "presence": "n/a (the desk polls receipts from T-0162 on)"}},
+                                "last_line": desk_row["last_line"] if desk_row else "", "last_reply": desk_row.get("last_reply", "") if desk_row else "",
+                                "presence": receipts["presence"], "polling": receipts["polling"]}},
             "kpis": {"inbox": inbox.get("count"), "p0": inbox.get("p0", 0), "p0_open_tickets": len(board["p0"]),
                      "waiting": by_state.get("waiting", 0), "working": by_state.get("working", 0), "idle": by_state.get("idle", 0),
                      "gone": by_state.get("gone", 0), "shell": by_state.get("shell", 0), "waiting_elsewhere": len(foreign_rows),

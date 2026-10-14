@@ -99,6 +99,11 @@ button { font: inherit; color: inherit; }
 .badge.freeze-on { color: #fff; background: var(--accent-red); border-color: var(--accent-red); }
 .badge.freeze-off { color: var(--text-muted); }
 .badge.lock { color: var(--accent-green); border-color: var(--accent-green); }
+.badge.sent { color: var(--accent-teal); border-color: var(--accent-teal); font-weight: 500; }
+.banner.red { padding: 10px 14px; border-radius: var(--radius-card); background: color-mix(in srgb, var(--accent-red) 16%, var(--bg-surface)); border: 1px solid var(--accent-red); color: var(--text-primary); display: flex; align-items: center; gap: 10px; }
+.sendform { display: grid; grid-template-columns: 110px 80px minmax(0, 1fr); gap: 8px; padding: 12px 16px; margin: 10px 0; }
+.sendform textarea, .sendform .row { grid-column: 1 / -1; }
+.sendform .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; min-height: 30px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--bg-card); color: var(--text-primary); cursor: pointer; font-size: 12.5px; transition: background var(--t), border-color var(--t); }
 .btn:hover { background: var(--bg-card-hover); }
 .btn.primary { border-color: var(--accent-teal); color: var(--accent-teal); }
@@ -191,6 +196,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .presence::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
 .presence.working::before { background: var(--status-working); } .presence.idle::before { background: var(--status-idle); }
 .presence.waiting::before { background: var(--status-waiting); } .presence.gone::before { background: var(--accent-red); }
+.presence.polling { color: var(--accent-green); } .presence.nopoll { color: var(--accent-amber); }
+.chat .msg.you { border-color: var(--accent-teal); }
+.inbox-item .options label { opacity: 1; }
 .logtail pre { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; max-height: 260px; overflow: auto; font-size: 12px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .filters .input { max-width: 320px; }

@@ -208,12 +208,15 @@ class TestApi(PanelWorld):
         self.assertEqual(raw("evil.example", path="/")[0], 403)
         self.assertEqual(raw("evil.example", path="/health")[0], 403)
 
-    def test_no_write_path(self):
-        for method, path in (("POST", "/api/receipts"), ("POST", "/api/snapshot"), ("POST", "/"), ("PUT", "/api/tickets/T-0001"),
-                             ("DELETE", "/api/sessions/x"), ("PATCH", "/health")):
+    def test_the_one_write_is_the_receipt_and_everything_else_is_405(self):
+        for method, path in (("POST", "/api/snapshot"), ("POST", "/"), ("PUT", "/api/tickets/T-0001"), ("PUT", "/api/receipts"),
+                             ("DELETE", "/api/sessions/x"), ("PATCH", "/health"), ("POST", "/api/hook")):
             st, hdr, _ = self.req(method, path, body=b"{}")
             self.assertEqual(st, 405, f"{method} {path} -> {st}")
             self.assertIn("GET", hdr.get("Allow", ""))
+        st, hdr, body = self.req("POST", "/api/receipts", body=b"{}")
+        self.assertEqual(st, 401, "the one write exists (T-0162) and needs the browser token even on loopback")
+        self.assertIn("token", json.loads(body)["error"])
 
     def test_snapshot_inbox_is_human_json_in_order(self):
         s = self.get_json("/api/snapshot")
@@ -451,7 +454,8 @@ class TestApi(PanelWorld):
             self.assertEqual(st, 200, path)
             self.assertNotRegex(body.decode(), r"https?://(?!127\.0\.0\.1|localhost)", f"{path} references an external host")
         js = self.req("GET", "/static/app.js")[2].decode()
-        self.assertIn("available after receipts (T-0162)", js)
+        self.assertNotIn("available after receipts", js)
+        self.assertIn("/api/receipts", js)
         self.assertNotIn("fetch(", js.replace("fetch(api", "").replace("fetch(`/api", "").replace("fetch('/api", "").replace('fetch("/api', ""),
                          "the page only ever fetches its own /api")
         for bad in ("/static/../server.py", "/static/..%2F..%2Fcli.py", "/nope"):

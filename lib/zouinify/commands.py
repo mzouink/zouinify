@@ -8,8 +8,8 @@ import sys
 from zouinify import ZouinifyError, __version__
 from zouinify import config as cfgmod
 
-NOTE = ("`up`, `launch` and `down` are run by the human from a shell or by the desk session, never by the "
-        "panel process; the panel itself is read-only (loopback, GET only). Everything project-specific comes from "
+NOTE = ("`up`, `launch`, `down` and `poll` are run by the human from a shell or by the desk session, never by the "
+        "panel process; the panel's one write is a receipt (a click the desk verifies). Everything project-specific comes from "
         "<project>/.ops/config.yaml.")
 
 
@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("down", help="kill launcher-registered worker sessions whose ticket is done/dropped")
     s.add_argument("names", nargs="*", metavar="name")
     s.add_argument("--dry-run", action="store_true", help="list what would be killed (always run this first)")
+    s.add_argument("--receipt", metavar="ID", help="log `killed <name> (panel receipt ID)` on each killed session's ticket, signed by $TICKET_AS")
+
+    s = sub.add_parser("poll", help="the desk's side of the panel receipts: block until a click arrives, print each receipt with the "
+                                    "exact script to run, exit (run it again after each batch)")
+    s.add_argument("--timeout-ms", type=int, default=0, metavar="MS", help="give up after MS milliseconds with no receipt (default: wait)")
+    s.add_argument("--since", default="", metavar="ID", help="replay every receipt after this id (a lost batch)")
 
     s = sub.add_parser("briefs", help="render the brief templates with this project's config")
     s.add_argument("action", choices=["render", "list"])
@@ -152,7 +158,10 @@ def main(argv=None) -> int:
             return launch.cmd_launch(cfg, args.target, args.ticket, receipt=args.receipt, dry_run=args.dry_run, wait_s=args.wait)
         if args.cmd == "down":
             from zouinify import launch
-            return launch.cmd_down(cfg, args.names, dry_run=args.dry_run)
+            return launch.cmd_down(cfg, args.names, dry_run=args.dry_run, receipt=args.receipt)
+        if args.cmd == "poll":
+            from zouinify import poll
+            return poll.cmd_poll(cfg, timeout_ms=args.timeout_ms, since=args.since)
         if args.cmd == "status":
             from zouinify import status
             data = status.collect(cfg, use_cache=not args.no_cache)

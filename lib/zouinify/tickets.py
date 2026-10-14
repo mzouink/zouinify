@@ -2,7 +2,7 @@
 own scripts/ticket.sh for its read-only output modes (`human --count`, `human --json`, `board --json`).
 
 The lifecycle is ticket.sh's. Nothing here writes a ticket; the only mutating call anywhere in zouinify
-is `ticket.sh log` from `launch --receipt`, run on the desk's behalf and signed by its TICKET_AS.
+is `ticket.sh log` from `launch --receipt` / `down --receipt`, run on the desk's behalf and signed by its TICKET_AS.
 """
 from __future__ import annotations
 
