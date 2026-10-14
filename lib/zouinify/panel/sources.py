@@ -39,7 +39,10 @@ STATE_ORDER = MappingProxyType({"waiting": 0, "working": 1, "idle": 2, "shell": 
 # zero-width space inside CLAUDE.md, fullwidth letters, `setting.json`, `сlaude.md` all passed the old `CLAUDE\.md|settings`);
 # the word is `settings` or `setting` (optionally `.json`) as a whole word, so "resetting the cache" keeps its button. Other
 # look-alike alphabets still pass: the desk verifies every receipt anyway.
-TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|\bsettings\b|\bsettings?\.json\b", re.I)   # T-0202: the bare singular "setting" is a word
+# `\b` counts `_` as a word character, so `my_settings` / `settings_file` / `update_settings.json` slipped through (T-0205): the
+# boundaries are "not a letter" on both sides; `settings` as a word, or `setting(s)` + `json` with anything but letters between
+# (`setting.json`, `setting json`, `settings_json`); the bare singular "setting" is still a word (T-0202)
+TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|(?<![A-Za-z])settings(?![A-Za-z])|(?<![A-Za-z])settings?[^A-Za-z]{0,3}json(?![A-Za-z])", re.I)
 CONFUSABLES = str.maketrans({"с": "c", "а": "a", "е": "e", "о": "o", "ѕ": "s", "р": "p", "х": "x", "і": "i",
                              "С": "C", "А": "A", "Е": "E", "О": "O", "Ѕ": "S", "Р": "P", "Х": "X", "І": "I",
                              "т": "t", "у": "y", "һ": "h", "ԁ": "d", "ԛ": "q", "ј": "j", "ӏ": "l", "մ": "n"})
@@ -1025,8 +1028,11 @@ class Snapshot:
         receipts = self.receipts_meta()
         checks = live_checks(cfg, board)
         awaiting_ids = {r["id"] for r in checks if r["awaiting_live_check"]}
-        for c in board["cards"]:                        # the deployed card says "awaiting live check" or "plan void", from the same rule
-            if c.get("status") == "deployed":
+        # the cached board is shared across request threads: decorate COPIES of its cards, never the cache (T-0205)
+        board = dict(board, cards=[dict(c) for c in board["cards"]], lanes={k: [dict(c) for c in v] for k, v in board["lanes"].items()},
+                     p0=[dict(c) for c in board["p0"]])
+        for c in board["cards"] + [c for lane in board["lanes"].values() for c in lane]:
+            if c.get("status") == "deployed":           # the deployed card says "awaiting live check" or "plan void", from the same rule
                 c["awaiting_live_check"] = c.get("id") in awaiting_ids
         return {
             "generated": panelstate.now_iso(), "version": panelstate.version(), "loading": self.loading(),

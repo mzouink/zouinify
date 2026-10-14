@@ -140,7 +140,64 @@ class TestCollectedNits(ReceiptWorld):
         self.assertIn("its resume step is on the data line", waiting_lines[0])
 
 
+class TestLeftovers(ReceiptWorld):
+    """T-0205: the five items the T-0202 review left."""
+
+    def test_settings_boundaries_ignore_underscores(self):
+        for bad in ("my_settings", "settings_file", "update_settings.json", "setting json", "settings-json", "SETTINGS"):
+            st, _, d = self.post({"kind": "question", "text": bad})
+            self.assertEqual((st, d.get("reason")), (403, "tier-2-text"), bad)
+        for fine in ("a setting of the dial", "resetting the cache", "the settingsless build", "unsettling"):
+            st, _, d = self.post({"kind": "question", "text": fine})
+            self.assertEqual(st, 201, (fine, d))
+
+    def test_data_line_has_no_control_or_format_characters(self):
+        from zouinify import poll as poll_mod
+        self.assertEqual(poll_mod.terminal_safe({"a": "x\u202ey\x85z\u200b", "b": ["\u2066q"], "c": 3}), {"a": "xyz", "b": ["q"], "c": 3})
+        f = [os.path.join(self.root, "tickets", x) for x in os.listdir(os.path.join(self.root, "tickets")) if x.startswith("T-0002-")][0]
+        with open(f, "a", encoding="utf-8") as fh:
+            # \x9b is a C1 control (CSI) that is not a line separator (\x85 would be split by splitlines and never be a log line)
+            fh.write("- 2026-10-14 00:30 someone: waits-on: aws-sso -- resume: rerun \u202e evil \x9b step\n")
+        self.post({"kind": "sso"})
+        self.post({"kind": "question", "text": "caf\u00e9 \u202e reversed"})
+        r = self.ok("poll", "--timeout-ms", "3000")
+        data_lines = [l for l in r.stdout.splitlines() if l.startswith("  data: ")]
+        self.assertEqual(len(data_lines), 2)
+        for l in data_lines:
+            self.assertNotIn("\u202e", l)
+            self.assertNotIn("\x9b", l)
+        self.assertIn('"resume": "rerun  evil  step"', r.stdout)
+        self.assertIn("caf\u00e9", r.stdout, "non-ASCII letters stay readable")
+
+    def test_cached_board_is_not_mutated_by_a_snapshot(self):
+        s = self.get_json("/api/snapshot")
+        deployed = [c for c in s["tickets"] if c["status"] == "deployed"]
+        self.assertTrue(deployed and all("awaiting_live_check" in c for c in deployed), "the snapshot's copies are decorated")
+        lane = s["board"]["lanes"]["deployed"]
+        self.assertTrue(lane and all("awaiting_live_check" in c for c in lane), "the lane copies too")
+        cached = self.srv.snap.src["board"]["data"]
+        for c in cached["cards"] + [c for v in cached["lanes"].values() for c in v]:
+            self.assertNotIn("awaiting_live_check", c, "the cached board (shared across threads) is untouched")
+
+    def test_toast_without_a_known_age(self):
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertIn("age === '…' ? `showing the cached data; the next fresh read is possible in ${f.wait_s} s`", js)
+
+
 class TestConfigProfile(World):
+    def test_aws_profile_null_and_shapes(self):
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", re.sub(r"aws: \{profile: default,", "aws: {profile: ~,", cfg))
+        r = self.ok("config", "--json")
+        self.assertEqual(json.loads(r.stdout)["aws"]["profile"], "default", "a YAML null is the default, not the string None")
+        for bad in ("-x", "a..b", "..", "x/y"):
+            self.write(".ops/config.yaml", re.sub(r"aws: \{profile: default,", f"aws: {{profile: '{bad}',", cfg))
+            r = self.nz("config", "--check")
+            self.assertIn("aws.profile", r.stderr + r.stdout, bad)
+        for fine in ("default", "lab-admin.2", "a_b", "9lives"):
+            self.write(".ops/config.yaml", re.sub(r"aws: \{profile: default,", f"aws: {{profile: '{fine}',", cfg))
+            self.ok("config", "--check")
+
     def test_aws_profile_is_a_name(self):
         cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
         self.write(".ops/config.yaml", re.sub(r"aws: \{profile: default,", "aws: {profile: 'default; curl x|sh',", cfg))

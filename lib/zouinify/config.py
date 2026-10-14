@@ -25,7 +25,7 @@ PLUGIN_NAME_RE = re.compile(r"^[a-z0-9-]+$")           # tickets/plugins/<name>/
 IDENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 BRANCH_CHARS_RE = re.compile(r"^[A-Za-z0-9._/@+-]+$")          # what ticket.sh may put on a command line unquoted
 BRANCH_BAD_RE = re.compile(r"\.\.|@\{|//")                      # git check-ref-format, the rules the alphabet does not already cover
-AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")          # aws.profile: a name (it is rendered into a brief and a printed command)
+AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")   # aws.profile: a name starting with a letter or digit (never `-x`), no `..`
 
 
 def valid_branch_name(name) -> bool:
@@ -437,15 +437,16 @@ def load(root: str | None = None) -> Config:
     aws = raw.get("aws") if isinstance(raw.get("aws"), dict) else None
     if aws is not None:
         try:
-            aws = {"profile": str(aws.get("profile", "default")), "sso_cache": str(aws.get("sso_cache", "~/.aws/sso/cache")),
+            profile, cache = aws.get("profile"), aws.get("sso_cache")     # `profile: ~` is YAML null, not the string "None" (T-0205)
+            aws = {"profile": "default" if profile is None else str(profile), "sso_cache": "~/.aws/sso/cache" if cache is None else str(cache),
                    "assumed_token_hours": float(aws.get("assumed_token_hours", 2) or 0)}
         except (TypeError, ValueError):
             errs.append("aws.assumed_token_hours: a number (hours)")
             aws = None
         # the profile is rendered into the desk brief and printed by `zouinify poll` as part of a command the desk runs in a
         # shell: a name, nothing else (T-0202 review)
-        if aws is not None and not AWS_PROFILE_RE.match(aws["profile"]):
-            errs.append("aws.profile: letters, digits, . _ and -, at most 64 characters")
+        if aws is not None and (not AWS_PROFILE_RE.match(aws["profile"]) or ".." in aws["profile"]):
+            errs.append("aws.profile: a letter or digit first, then letters, digits, . _ and -, at most 64 characters, no `..`")
             aws = None
     contact = dict(raw.get("contact")) if isinstance(raw.get("contact"), dict) else {}
 

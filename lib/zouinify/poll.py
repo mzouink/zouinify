@@ -31,6 +31,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -134,6 +135,19 @@ def one_line(text: str) -> str:
     return re.sub(r"[\r\n\t\x0b\x0c]+", " ", text or "").strip()
 
 
+def terminal_safe(value):
+    """The `data:` line goes to the desk's terminal: every string loses its control (Cc) and format (Cf) characters -- a
+    bidi override or a C1 control in a session's resume text or a human's text must not rewrite what the desk reads
+    (T-0205). Lists and dicts are walked; other values pass."""
+    if isinstance(value, str):
+        return "".join(ch for ch in value if unicodedata.category(ch) not in ("Cc", "Cf"))
+    if isinstance(value, list):
+        return [terminal_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): terminal_safe(v) for k, v in value.items()}
+    return value
+
+
 def reply_examples(r: dict) -> list:
     """The exact `zouinify reply` command(s) for a receipt, per kind: the verdict the human will read on the page."""
     rid, kind, ticket, text = r.get("id", ""), r.get("kind", ""), r.get("ticket", ""), r.get("text", "")
@@ -219,7 +233,7 @@ def format_receipt(cfg, r: dict) -> str:
     if kind in ("sso", "creds"):
         data["waiting"] = [{"id": w["id"], "status": w["status"], "owner": w["owner"], "since": w["since"], "resume": w["resume"]}
                            for w in tk.waits_on(cfg, "aws-sso")]
-    lines = [head, "  data: " + json.dumps(data, ensure_ascii=False)] + ["  " + line for line in script_for(cfg, r)]
+    lines = [head, "  data: " + json.dumps(terminal_safe(data), ensure_ascii=False)] + ["  " + line for line in script_for(cfg, r)]
     if r.get("reply"):
         lines.append(f"  replied {hhmm(r.get('replied_at', ''))}: {json.dumps(r['reply'], ensure_ascii=False)}   (a new reply replaces it)")
     lines += ["  then tell the human on the page: " + line for line in reply_examples(r)]
