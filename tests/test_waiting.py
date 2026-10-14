@@ -158,6 +158,7 @@ class TestWaitingState(PanelWorld):
             fh.write(screen(name))
 
     def row(self, name: str) -> dict:
+        self.srv.fresh_at.clear()          # T-0197: one fresh per 5 s per client; these rows re-read planted screens back to back
         s = self.get_json("/api/snapshot?fresh=1")
         return {r["name"]: r for r in s["sessions"]["rows"]}[name], s
 

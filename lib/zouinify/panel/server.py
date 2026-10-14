@@ -24,6 +24,7 @@ import json
 import os
 import re
 import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +53,7 @@ NO_TOKEN_WEIGHT = webauth.NO_TOKEN_WEIGHT
 RATE_WINDOW_S = webauth.RATE_WINDOW_S
 LOOPBACK_PEERS = webauth.LOOPBACK_PEERS
 SOCKET_TIMEOUT_S = 30    # a half-open LAN connection must not pin a thread forever
+FRESH_MIN_S = 5.0        # /api/snapshot?fresh=1 runs ticket.sh and the captures: at most one such run per client address per 5 s (T-0197)
 
 # The unlock page: the 401 answer to a token-less navigation. Its only script reads the #t= fragment (which the
 # server never sees), sends it once as a Bearer header to /api/unlock (the server sets the HttpOnly cookie) and
@@ -346,6 +348,18 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200:
             return self.deny(status, reason, path, head)
         try:
+            if path == "/api/snapshot":
+                # the refresh button (T-0197): a fresh snapshot re-runs ticket.sh board/human and the pane captures, so a
+                # held-down button gets the cached answer, with its age, after the first one within FRESH_MIN_S
+                info = None
+                if fresh:
+                    served, wait_s = self.server.fresh_allowed(self.client_address[0])
+                    info = {"requested": True, "served": served, "wait_s": wait_s, "min_interval_s": FRESH_MIN_S}
+                    fresh = served
+                d = snap.build(fresh=fresh)
+                if info is not None:
+                    d["fresh"] = info
+                return self.send_json(HTTPStatus.OK, d, head)
             if path in ("/", "/index.html"):
                 return self.serve_static("index.html", head)
             if path.startswith("/static/"):
@@ -361,8 +375,6 @@ class Handler(BaseHTTPRequestHandler):
                                                       "writes": ["POST /api/receipts"], "token_required": self.server.token_required,
                                                       "token_configured": panelstate.token_configured(snap.cfg),
                                                       "receipts": {"pollers": self.server.receipts.meta()["pollers"]}}, head)
-            if path == "/api/snapshot":
-                return self.send_json(HTTPStatus.OK, snap.build(fresh=fresh), head)
             if path == "/api/receipts" or path.startswith("/api/receipts/") or path == "/api/poll":
                 return self.send_json(HTTPStatus.NOT_FOUND, {"error": "receipts are read by the desk on the loopback-only listener "
                                                                        "(the desk's poll command); this port takes POST /api/receipts only"}, head)
@@ -443,6 +455,8 @@ class PanelServer(ThreadingHTTPServer):
         self.started_at = panelstate.now_iso()
         self.snap = Snapshot(cfg, self.server_address[1], bind, self.started_at)
         self.limiter = webauth.RateLimiter()      # the panel's weights: wrong Bearer 1, missing token or wrong cookie 0.2
+        self.fresh_at: dict = {}                  # client address -> monotonic time of its last served fresh snapshot (T-0197)
+        self.fresh_lock = threading.Lock()
         # the receipts (T-0162): written on this port with the token, read by the desk on the loopback listener
         self.receipts = receipts.ReceiptStore(cfg, self.started_at)
         self.snap.attach_receipts(self.receipts)
@@ -467,6 +481,19 @@ class PanelServer(ThreadingHTTPServer):
         """The matcher authorize() is given: constant time, against the hash in panel.json (re-read per request, so a
         rotation takes effect at once)."""
         return panelstate.token_matches(self.cfg, presented)
+
+    def fresh_allowed(self, ip: str) -> tuple:
+        """(served, wait_s): whether this address may have a fresh snapshot now (one per FRESH_MIN_S), else how long until
+        it may. The table never grows past a few hundred addresses."""
+        now = time.monotonic()
+        with self.fresh_lock:
+            last = self.fresh_at.get(ip)
+            if last is not None and now - last < FRESH_MIN_S:
+                return False, round(FRESH_MIN_S - (now - last), 1)
+            self.fresh_at[ip] = now
+            if len(self.fresh_at) > 500:
+                self.fresh_at = {k: v for k, v in self.fresh_at.items() if now - v < FRESH_MIN_S}
+            return True, 0.0
 
 
 def bind_address(bind: str) -> str:

@@ -172,6 +172,13 @@ class TestIntranetToken(IntranetServer):
         st, _, _ = self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD[:-1]})
         self.assertEqual(st, 401)
 
+    def test_a_fresh_snapshot_needs_the_token_too(self):
+        st, _, _ = self.req("/api/snapshot?fresh=1")
+        self.assertEqual(st, 401, "T-0197: fresh=1 is not a way around the token")
+        st, _, body = self.req("/api/snapshot?fresh=1", headers={"Authorization": "Bearer " + GOOD})
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(body)["fresh"]["served"])
+
     def test_token_in_header_or_cookie_works_and_query_is_ignored(self):
         st, _, body = self.req("/api/snapshot", headers={"Authorization": "Bearer " + GOOD})
         self.assertEqual(st, 200)

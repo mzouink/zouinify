@@ -88,7 +88,10 @@ the log tails and the newest-plan rule from `panel.logs` / `panel.plans_glob`, c
 deployed tickets with their latest evidence line ("Live checks"), the parsed config and the hook status ("Settings"). Sources:
 `ticket.sh` (read-only modes), `claude agents --json`, `tmux list-panes` / `capture-pane` (redacted server-side), the launcher
 registry, the ticket front matter and release records. The page is static HTML/CSS/JS served by a stdlib server: no build step,
-no framework, no request to any host but the panel's own. Its API: `GET /health`, `GET /api/snapshot`, `GET /api/tickets/<id>`,
+no framework, no request to any host but the panel's own. Its API: `GET /health`, `GET /api/snapshot` (`?fresh=1` re-reads every
+source now -- the refresh button sends it; a fresh snapshot runs `ticket.sh board`/`human` and the pane captures, so the server
+serves at most one per 5 s per client address and answers the cached snapshot otherwise, saying so in its `fresh` block with the
+wait; the periodic refresh of the page takes the cached path), `GET /api/tickets/<id>`,
 `GET /api/sessions/<name>`, `GET /api/logs?label=<a panel.logs label>`; every other method is 405; a request whose `Host` is not
 `127.0.0.1:<port>` / `localhost:<port>`, or whose `Origin` is foreign, is 403 (DNS rebinding). Inbox tiers: `APPROVE`, `APPLY`,
 `DEPLOY`, `PUSH` and a `DECIDE` that names `CLAUDE.md`/settings are tier 2 and never get a button, in any version. The look, tiers

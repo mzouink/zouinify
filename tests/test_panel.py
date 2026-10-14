@@ -462,6 +462,32 @@ class TestApi(PanelWorld):
             st, _, _ = self.req("GET", bad)
             self.assertEqual(st, 404, bad)
 
+    def test_refresh_button_fetches_fresh_at_most_once_per_5s_per_client(self):
+        """T-0197: the button sends ?fresh=1 (a plain load does not); a fresh snapshot re-runs ticket.sh, so a second fresh
+        within 5 s from the same client gets the cached answer with its age and runs nothing."""
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertRegex(js, r"data-refresh\]'\)\) \{[^\n]*load\(\{ fresh: true \}\)", "the ↻ click asks for fresh data")
+        self.assertIn("fetch('/api/snapshot?fresh=1'", js)
+        self.assertNotIn("setInterval(load,", js, "the periodic timer stays on the cached path")
+        self.assertIn("board ${esc(boardAge())}", js, "the header shows the board source's age")
+        self.get_json("/api/snapshot")                                   # warm the sources
+        before = len([c for c in self.ticket_calls() if c.startswith("human --json") or c.startswith("board")])
+        a = self.get_json("/api/snapshot?fresh=1")
+        self.assertEqual(a["fresh"], {"requested": True, "served": True, "wait_s": 0.0, "min_interval_s": 5.0})
+        after_first = len([c for c in self.ticket_calls() if c.startswith("human --json") or c.startswith("board")])
+        self.assertGreater(after_first, before, "a served fresh re-ran ticket.sh")
+        b = self.get_json("/api/snapshot?fresh=1")
+        self.assertFalse(b["fresh"]["served"])
+        self.assertGreater(b["fresh"]["wait_s"], 0)
+        self.assertLessEqual(b["fresh"]["wait_s"], 5.0)
+        self.assertEqual(len([c for c in self.ticket_calls() if c.startswith("human --json") or c.startswith("board")]), after_first,
+                         "the second fresh within 5 s ran nothing")
+        self.assertGreaterEqual(b["sources"]["board"]["age_s"], 0)
+        self.assertNotIn("fresh", self.get_json("/api/snapshot"), "a plain load carries no fresh block")
+        self.srv.fresh_at.clear()
+        c = self.get_json("/api/snapshot?fresh=1")
+        self.assertTrue(c["fresh"]["served"], "after the interval a fresh is served again")
+
     def test_sources_carry_ages_and_settings(self):
         s = self.get_json("/api/snapshot")
         for name in ("inbox", "board", "sessions", "creds", "logs", "releases"):
