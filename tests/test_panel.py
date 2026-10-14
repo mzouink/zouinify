@@ -9,6 +9,7 @@ a base checkout without lib/zouinify/panel/ gives the RED evidence (ImportError 
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -487,6 +488,42 @@ class TestApi(PanelWorld):
         self.srv.fresh_at.clear()
         c = self.get_json("/api/snapshot?fresh=1")
         self.assertTrue(c["fresh"]["served"], "after the interval a fresh is served again")
+
+    def test_route_change_scrolls_to_top_and_a_drawer_keeps_the_scroll(self):
+        """T-0199: the page's own routing decision, run in node from the function's source (no DOM needed): a new page starts
+        at the top; a drawer open/close or a filter change on the same page keeps the list where it was."""
+        import shutil
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here (CI has it)")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        m = re.search(r"function routeChanged\(prevHash, nextHash\) \{.*?\n  \}\n", js, re.S)
+        self.assertTrue(m, "routeChanged() is the page's decision")
+        self.assertRegex(js, r"if \(routeChanged\(prev, location\.hash\)\) window\.scrollTo\(0, 0\);", "the hashchange handler scrolls on a page change only")
+        cases = [("#/dashboard", "#/sessions", True), ("", "#/tickets", True), ("#/tickets", "#/dashboard", True),
+                 ("#/tickets", "#/tickets/T-0001", False), ("#/tickets/T-0001", "#/tickets", False),
+                 ("#/tickets?state=ready", "#/tickets?state=done", False), ("#/sessions/x", "#/sessions", False),
+                 ("#/waiting/x", "#/sessions/x", True)]
+        script = m.group(0) + "const cases = " + json.dumps([[a, b] for a, b, _ in cases]) + ";\nconsole.log(JSON.stringify(cases.map(([a, b]) => routeChanged(a, b))));"
+        r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), [c for _, _, c in cases])
+
+    def test_lanes_scroll_inside_and_content_stays_in_its_box(self):
+        """T-0199: the board is no longer as tall as its longest lane; a sha list, a receipt badge and the sessions table stay
+        inside their boxes."""
+        css = self.req("GET", "/static/app.css")[2].decode()
+        lane = re.search(r"^\.lane \.cards \{([^}]*)\}", css, re.M).group(1)
+        self.assertIn("max-height:", lane)
+        self.assertIn("overflow-y: auto", lane)
+        self.assertRegex(css, r"\.tcard \.actions \{[^}]*flex-wrap: wrap")
+        self.assertRegex(css, r"\.badge\.sent \{[^}]*overflow-wrap: anywhere")
+        self.assertRegex(css, r"\.scroll-x \{ overflow-x: auto; \}")
+        self.assertRegex(css, r"\.sessions-table\.has-actions \.tbl th\.actions, \.sessions-table\.has-actions \.tbl td\.actions \{[^}]*position: sticky; right: 0")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertIn('class="mono closed-by truncate" title="${esc(shas)}"', js, "the full sha list is the title; one line on the card")
+        self.assertIn('<div class="body scroll-x"><table class="tbl">', js)
+        self.assertIn("<th class=\"actions\">actions</th>", js)
 
     def test_sources_carry_ages_and_settings(self):
         s = self.get_json("/api/snapshot")

@@ -143,7 +143,12 @@ made by the owning session with `ticket.sh move`. "**Send to desk**" (top right 
 small form (type bug/feature/chore/process, severity, title, two lines of text) and shows "sent to the desk, receipt a1b2c3";
 the card appears when the desk files it. In v1 the button is disabled with the T-0162 tooltip.
 
-Under 1440 px the board scrolls horizontally with `min-width` per lane 180 px; never five crushed lanes.
+Under 1440 px the board scrolls horizontally with `min-width` per lane 180 px; never five crushed lanes. The five lanes
+share one height (T-0199): a lane's card list scrolls inside (`max-height` around the viewport height, 60 vh on a phone), so
+nineteen deployed cards no longer make the page three thousand pixels tall. A route change to another page lands at the
+top; opening or closing a drawer, or changing a filter, keeps the list's scroll. A card's `closed_by` sha list is one line
+with an ellipsis (the full list in its title); a receipt badge wraps inside its card; the sessions table scrolls inside its
+panel with the actions column sticky on the right.
 
 ### 2.4 Inbox panel and Inbox page (this is `ticket.sh human --json`, not a notification feed)
 

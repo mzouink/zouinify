@@ -99,7 +99,7 @@ button { font: inherit; color: inherit; }
 .badge.freeze-on { color: #fff; background: var(--accent-red); border-color: var(--accent-red); }
 .badge.freeze-off { color: var(--text-muted); }
 .badge.lock { color: var(--accent-green); border-color: var(--accent-green); }
-.badge.sent { color: var(--accent-teal); border-color: var(--accent-teal); font-weight: 500; white-space: normal; max-width: 100%; }
+.badge.sent { color: var(--accent-teal); border-color: var(--accent-teal); font-weight: 500; white-space: normal; max-width: 100%; overflow-wrap: anywhere; line-height: 1.4; }
 .badge.sent.ok { color: var(--accent-green); border-color: var(--accent-green); }
 .badge.sent.warn { color: var(--accent-amber); border-color: var(--accent-amber); }
 .chat .msg.desk { border-color: var(--border-strong); }
@@ -163,13 +163,15 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .lane > header .n { margin-left: auto; font-family: var(--font-mono); color: var(--text-muted); font-weight: 500; }
 .lane.ready { --lane-color: var(--lane-ready); } .lane.in-dev { --lane-color: var(--lane-in-dev); } .lane.review { --lane-color: var(--lane-review); }
 .lane.to-deploy { --lane-color: var(--lane-to-deploy); } .lane.deployed { --lane-color: var(--lane-deployed); }
-.lane .cards { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+/* T-0199: the lanes share one height and the long one scrolls inside; the page is no longer as tall as 19 deployed cards */
+.lane .cards { display: flex; flex-direction: column; gap: 8px; padding: 10px; max-height: calc(100vh - 300px); min-height: 120px; overflow-y: auto; overscroll-behavior: contain; }
 .tcard .top { display: flex; align-items: center; gap: 6px; }
 .tcard .id { font-family: var(--font-mono); font-weight: 600; font-size: 12.5px; }
 .tcard .title { margin-top: 4px; font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.tcard .extra { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.tcard .extra { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; min-width: 0; }
+.tcard .extra .closed-by { display: inline-block; max-width: 100%; vertical-align: bottom; }   /* one line, ellipsis; the full sha list is the title */
 .tcard .bell { margin-left: auto; color: var(--accent-amber); }
-.tcard .actions { margin-top: 8px; }
+.tcard .actions { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }   /* the receipt badge wraps inside the card */
 .row2 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
 .row3 { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
 .inbox-item { padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); display: grid; gap: 6px; }
@@ -216,6 +218,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .tlist .trow:hover { background: var(--bg-card-hover); }
 .tlist .trow .id { font-family: var(--font-mono); font-weight: 600; }
 .sessions-table .last { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); max-width: 420px; }
+.scroll-x { overflow-x: auto; }                                                                 /* a wide table scrolls inside its panel, never past the viewport */
+.sessions-table.has-actions .tbl th.actions, .sessions-table.has-actions .tbl td.actions { position: sticky; right: 0; background: var(--bg-surface); box-shadow: -8px 0 8px -8px rgb(0 0 0 / .4); }
 .evidence { font-family: var(--font-mono); font-size: 12px; }
 .evidence.none { color: var(--accent-amber); }
 .settings pre { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12px; overflow: auto; }
@@ -261,4 +265,5 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .dash .row2, .dash .row3 { display: contents; }
   .tlist .trow { grid-template-columns: 80px 40px minmax(0, 1fr); }
   .tlist .trow .c4, .tlist .trow .c5 { display: none; }
+  .lane .cards { max-height: 60vh; }
 }
