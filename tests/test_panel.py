@@ -516,7 +516,17 @@ class TestApi(PanelWorld):
     STATUSES = ("backlog", "ready", "in-dev", "in-review", "ready-to-merge", "merged", "ready-to-deploy", "deployed", "done",
                 "dropped", "blocked", "skipped")
 
-    def _ticket_chat_in_node(self, statuses, recent=(), typed=None, can_write=True):
+    @staticmethod
+    def _js_def(js, name):
+        """The source of one top-level definition of the page: `const NAME = ...;` on one line, `function NAME(...) { ... }` on
+        one line, or a multi-line function closed by `\n  }\n`."""
+        for pat in (r"\n  const " + name + r" = [^\n]*;\n", r"\n  function " + name + r"\([^\n]*\}\n", r"\n  function " + name + r"\(.*?\n  \}\n"):
+            m = re.search(pat, js, re.S)
+            if m:
+                return m.group(0)
+        raise AssertionError(f"{name} is not a definition of the page")
+
+    def _ticket_chat_in_node(self, statuses, recent=(), typed=None, can_write=True, plain=""):
         """Run the page's own ticketChat(id, status) in node from its source, with the page's esc() and the drafts kept in
         state.typed, the rest of the helpers stubbed: no DOM, the receipt button rendered as its data-rc JSON (no token
         logic). Returns {status: html}."""
@@ -526,10 +536,8 @@ class TestApi(PanelWorld):
             self.skipTest("node is not installed here (CI has it)")
         js = self.req("GET", "/static/app.js")[2].decode()
         fns = []
-        for name in ("composer", "questionMsgs", "ticketChat"):
-            m = re.search(r"\n  function " + name + r"\(.*?\n  \}\n", js, re.S)
-            self.assertTrue(m, f"{name}() is a function of the page")
-            fns.append(m.group(0))
+        for name in ("NO_PLAIN", "PLAIN_CHIP", "firstSentence", "plainLine", "subtitle", "composer", "questionMsgs", "ticketChat"):
+            fns.append(self._js_def(js, name))
         chips = re.search(r"\n  const BACKLOG_CHIPS = \[.*?\];\n", js)
         self.assertTrue(chips, "the backlog chips are one list in the page")
         esc = re.search(r"\n  const esc = .*?;\n", js)
@@ -544,7 +552,7 @@ function rc(label, data, cls = '') { return `<button type="button" class="btn" d
 function sentBadge(key, pred) { return `<span class="badge sent">badge:${key}</span>`; }
 function verdictClass(r) { return ''; }
 """
-        script = stubs + chips.group(0) + "".join(fns) + "\nconst out = {};\nfor (const st of " + json.dumps(list(statuses)) + ") out[st] = ticketChat('T-0001', st);\nconsole.log(JSON.stringify(out));"
+        script = stubs + chips.group(0) + "".join(fns) + "\nconst out = {};\nfor (const st of " + json.dumps(list(statuses)) + ") out[st] = ticketChat('T-0001', st, " + json.dumps(plain) + ");\nconsole.log(JSON.stringify(out));"
         r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
@@ -565,7 +573,7 @@ function verdictClass(r) { return ''; }
             self.assertNotIn("decision", html, st)
 
     def test_backlog_chips_fill_the_box_and_post_nothing(self):
-        out = self._ticket_chat_in_node(self.STATUSES)
+        out = self._ticket_chat_in_node(self.STATUSES, plain="The plain words are written.")     # so only the backlog presets show (T-0215)
         for st, html in out.items():
             chips = re.findall(r'<button type="button" class="chip" data-fill="ticket:T-0001" data-text="([^"]*)">', html)
             if st == "backlog":
@@ -632,7 +640,7 @@ function verdictClass(r) { return ''; }
         note = re.search(r"Nothing here is editable:[^<]*", js)
         self.assertTrue(note)
         self.assertIn("the composer below is the way to reach the desk about this ticket", note.group(0))
-        self.assertIn("${ticketChat(id, fm.status)}", js, "the drawer ends with the composer block")
+        self.assertIn("${ticketChat(id, fm.status, t.plain || '')}", js, "the drawer ends with the composer block (with the plain words for its chip, T-0215)")
         self.assertIn("${composer('chat', 'ask the desk… (Enter sends)', { kind: 'question' })}", js, "the chat uses the same composer")
         css = self.req("GET", "/static/app.css")[2].decode()
         self.assertIn(".chat .composer, .ticket-chat .composer {", css, "one composer style for both")
@@ -651,12 +659,15 @@ function verdictClass(r) { return ''; }
             fh.write("- 2026-10-13 00:30 tp-desk: ready-to-deploy -> deployed. first attempt, serial 2 -> 3\n"
                      "- 2026-10-13 01:00 tp-desk: deployed -> ready-to-deploy. rolled back (TICKET_FORCE)\n"
                      "- 2026-10-13 01:30 tp-desk: ready-to-deploy -> deployed. CodeSha256 == plan, serial 3 -> 4\n"
-                     "- 2026-10-13 02:00 tp-debug: live check: HTTP 200 from /status, deployed-ish wording that is no state change\n")
+                     "- 2026-10-13 02:00 tp-debug: live check: HTTP 200 from /status, deployed-ish wording that is no state change\n"
+                     "- 2026-10-13 02:30 tp-debug: evidence prose: the fix -> deployed everywhere we looked (not a state change)\n"
+                     "- soon tp-desk: ready-to-deploy -> deployed. a line whose stamp does not parse\n")
         s = self.get_json("/api/snapshot")
         self.assertEqual([t["id"] for t in s["p0"]], ["T-0005"])
         ver = s["p0_verifying"]
         self.assertEqual([(t["id"], t["since"], t["owner"]) for t in ver], [("T-0011", "2026-10-13 01:30", "")],
-                         "since = the newest state change TO deployed: not the first deploy (00:30), not the rollback, not the later line")
+                         "since = the newest state change TO deployed: not the first deploy (00:30), not the rollback, not the later line, "
+                         "not prose that says '-> deployed' mid-sentence, not a transition line whose stamp does not parse (T-0212 review)")
         self.assertEqual((s["kpis"]["p0_open_tickets"], s["kpis"]["p0_verifying"]), (1, 1))
         self.assertEqual(s["kpis"]["p0"], 0, "the inbox count, which the title uses, is untouched")
         dep = [t for t in s["board"]["lanes"]["deployed"] if t["id"] == "T-0011"]
@@ -700,6 +711,97 @@ function verdictClass(r) { return ''; }
         r = self.ok("status", "--json", "--no-cache")
         d = json.loads(r.stdout)
         self.assertEqual((d["p0_open_tickets"], d["p0_verifying"]), (1, 1))
+
+    # ---- T-0215: the In plain words section, from the core's JSON ---------------------------------------------
+    def test_plain_words_are_empty_on_a_core_that_predates_them(self):
+        """The world's fake ticket.sh has no board --json and its human --json items carry no `plain`: everything says "" and
+        nothing errors (the page then shows "no plain-words summary yet")."""
+        s = self.get_json("/api/snapshot")
+        self.assertEqual(s["board"]["source"], "front matter")
+        self.assertTrue(s["tickets"])
+        self.assertEqual({t["plain"] for t in s["tickets"]}, {""})
+        self.assertEqual({t["plain"] for lane in s["board"]["lanes"].values() for t in lane}, {""})
+        self.assertEqual({it["plain"] for it in s["inbox"]["items"]}, {""})
+        d = self.get_json("/api/tickets/T-0010")
+        self.assertEqual(d["plain"], "")
+        self.assertIn("problem", d, "the Problem section is still returned as before")
+
+    def test_plain_words_come_from_board_json_and_human_json_and_reach_the_detail(self):
+        """Core 1.2.0: `plain` rides board --json per ticket and human --json per item; the panel never parses the markdown.
+        The detail endpoint takes it from the board data."""
+        board = {"tickets": [{"id": tid, "severity": sev, "title": slug.replace("-", " "), "status": status, "owner": owner,
+                              "plain": {"T-0010": "The page shows a wrong total. You will see the right one after the fix. Nothing is needed from you.",
+                                        "T-0001": ""}.get(tid, f"{tid} in plain words.")}
+                             for tid, slug, status, sev, owner in TICKETS], "warnings": []}
+        board_path = os.path.join(self.tmp, "board.json")
+        with open(board_path, "w") as fh:
+            json.dump(board, fh)
+        with open(self.human_json) as fh:
+            items = json.load(fh)
+        items[0]["plain"] = "A fix is ready and waits for your command."
+        with open(self.human_json, "w") as fh:
+            json.dump(items, fh)
+        os.environ["FAKE_BOARD_JSON"] = board_path                      # before the server's first board read (the env is the test's)
+        self.addCleanup(os.environ.pop, "FAKE_BOARD_JSON", None)
+        s = self.get_json("/api/snapshot")
+        self.assertEqual(s["board"]["source"], "ticket.sh board --json")
+        by = {t["id"]: t["plain"] for t in s["tickets"]}
+        self.assertEqual(by["T-0010"], "The page shows a wrong total. You will see the right one after the fix. Nothing is needed from you.")
+        self.assertEqual(by["T-0001"], "", "an unwritten section is an empty string, not an error")
+        self.assertEqual(by["T-0005"], "T-0005 in plain words.")
+        lane = {t["id"]: t["plain"] for t in s["board"]["lanes"]["deployed"]}
+        self.assertEqual(lane["T-0010"], by["T-0010"], "the lane cards carry it too")
+        self.assertEqual([it["plain"] for it in s["inbox"]["items"]][:2], ["A fix is ready and waits for your command.", ""])
+        d = self.get_json("/api/tickets/T-0010")
+        self.assertEqual(d["plain"], by["T-0010"], "the detail takes `plain` from the board data")
+        self.assertNotIn("In plain words", d["problem"], "the Problem section is returned as today, unparsed for plain")
+        # the page: the first sentence is the subtitle; the drawer leads with the plain words
+        import shutil
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here (CI has it)")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        src = "".join(self._js_def(js, n) for n in ("esc", "NO_PLAIN", "PLAIN_CHIP", "firstSentence", "plainLine", "subtitle"))
+        script = src + """
+const out = { first: ["The total is wrong on the page. You will see it fixed.", "Dr. Smith cannot log in. It matters to everyone.", "e.g. the page breaks. Then nothing loads.",
+  "Version 1.2.0 is live since 3.5 seconds ago. Really.", "No period here", "One. Two.", "  spaced out.  ", ""].map(firstSentence),
+  sub_present: subtitle("Alpha beta gamma delta. Epsilon zeta."), sub_missing: subtitle(""), lead: plainLine("Lead <words>", "lead"), lead_missing: plainLine("", "lead"), plain: plainLine("x") };
+console.log(JSON.stringify(out));"""
+        r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["first"], ["The total is wrong on the page.", "Dr. Smith cannot log in.", "e.g. the page breaks.",
+                                        "Version 1.2.0 is live since 3.5 seconds ago.", "No period here", "One. Two.", "spaced out.", ""],
+                         "an abbreviation or a decimal does not end the sentence; a short fragment stays whole")
+        self.assertEqual(out["sub_present"], '<span class="subtitle ">Alpha beta gamma delta.</span>')
+        self.assertEqual(out["sub_missing"], '<span class="subtitle missing">no plain-words summary yet</span>')
+        self.assertEqual(out["lead"], '<div class="plain lead">Lead &lt;words&gt;</div>')
+        self.assertEqual(out["lead_missing"], '<div class="plain missing lead">no plain-words summary yet</div>')
+        self.assertEqual(out["plain"], '<div class="plain ">x</div>')
+        # where they sit: the drawer leads with them, above the title, then the Problem collapsed, then the front matter
+        self.assertIn("${plainLine(t.plain, 'lead')}<div class=\"ttitle\">${esc(fm.title)}</div>${problem}<dl class=\"kv\">", js)
+        self.assertIn("<details class=\"problem\"><summary>Problem", js)
+        self.assertNotIn("<details class=\"problem\" open", js, "collapsed by default")
+        self.assertIn("${ticketChat(id, fm.status, t.plain || '')}", js)
+        self.assertIn('<div class="title">${esc(t.title)}</div>${subtitle(t.plain)}', js, "cards: the first sentence under the title")
+        self.assertIn('<span class="truncate">${esc(t.title)}${subtitle(t.plain)}</span>', js, "the tickets list too")
+        self.assertRegex(js, r"id=\"inbox-\$\{esc\(it\.id\)\}\">\n\s*\$\{plainLine\(it\.plain\)\}\n\s*<div class=\"head\">", "an inbox item: the plain words above its title row")
+
+    def test_the_drawer_offers_a_fill_only_chip_when_the_plain_words_are_missing(self):
+        """On every status: one more data-fill chip, "please write the In plain words section"; with the section written, none
+        (backlog keeps its three)."""
+        out = self._ticket_chat_in_node(["backlog", "ready", "deployed", "done"])
+        for st, html in out.items():
+            chips = re.findall(r'data-text="([^"]*)"', html)
+            self.assertIn("please write the In plain words section", chips, st)
+            self.assertEqual(len(chips), 4 if st == "backlog" else 1, st)
+            self.assertEqual(html.count("data-rc='"), 1, f"{st}: the chip is not a receipt button")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertIn("const presets = (status === 'backlog' ? BACKLOG_CHIPS : []).concat(plain ? [] : [PLAIN_CHIP]);", js)
+        self.assertIn("function ticketChat(id, status, plain = '') {", js)
+        written = self._ticket_chat_in_node(["backlog", "ready"], plain="The words are written.")
+        self.assertEqual(re.findall(r'data-text="([^"]*)"', written["backlog"]), ["triage now", "drop it (not needed)", "raise to P1"])
+        self.assertEqual(re.findall(r'data-text="([^"]*)"', written["ready"]), [], "written words: no chip at all outside backlog")
 
     def test_lanes_scroll_inside_and_content_stays_in_its_box(self):
         """T-0199: the board is no longer as tall as its longest lane; a sha list, a receipt badge and the sessions table stay

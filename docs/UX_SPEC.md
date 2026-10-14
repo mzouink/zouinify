@@ -137,13 +137,18 @@ Above the lanes, chips with counts: `backlog n` (grey), **`blocked n`** (amber; 
 shows all 12 states as filters plus text search, sorted by severity then age.
 
 Card: `T-0145` in mono, severity badge `P0`..`P3` (P0 red), 2-line title, extras per lane, a bell when the ticket has a pending
-`human:` ask. The whole card opens the **ticket drawer**: front matter as a key/value table, the last 10 `## Log` lines
-(newest first, mono), the newest `## Deploy handoff` block with copy buttons on command lines, links to the owner session and
-to the inbox item. Nothing in the drawer is editable; at its bottom sits the one way to reach the desk about that ticket
+`human:` ask, and under the title the first sentence of the ticket's `## In plain words` section as a subtitle (T-0215; the
+tickets list shows it too; "no plain-words summary yet", muted, when unwritten). The whole card opens the **ticket drawer**:
+first and large, the plain words themselves (as `board --json` carries them in `plain`, never parsed from the markdown), then
+the title, the `## Problem` section in a collapsed disclosure, then the front matter as a key/value table, the last 10
+`## Log` lines (newest first, mono), the newest `## Deploy handoff` block with copy buttons on command lines, links to the
+owner session and to the inbox item. Nothing in the drawer is editable; at its bottom sits the one way to reach the desk
+about that ticket
 (T-0214): the Desk chat's composer, "message the desk about T-xxxx (Enter sends)", which queues a receipt `{kind: question,
 ticket, text}`; the receipt badge and the desk's reply show under it as in the chat, with this ticket's earlier questions
 above. On a backlog ticket three chips, "triage now", "drop it (not needed)", "raise to P1", only fill the box (never a post,
-never a decision kind): the desk acts on the question through the ticket script.
+never a decision kind): the desk acts on the question through the ticket script. When the plain words are missing, one more
+fill-only chip on every status, "please write the In plain words section".
 
 **Not in any version:** drag-and-drop, "+ Add ticket" per lane, inline stage changes. A state change needs evidence and is
 made by the owning session with `ticket.sh move`. "**Send to desk**" (top right of the board; receipt `new`, T-0162) opens a
@@ -159,7 +164,9 @@ panel with the actions column sticky on the right.
 
 ### 2.4 Inbox panel and Inbox page (this is `ticket.sh human --json`, not a notification feed)
 
-Each item, in the command's own order (never re-sorted client-side; P0 items print first already):
+Each item, in the command's own order (never re-sorted client-side; P0 items print first already), opens with its tickets'
+plain words above the title row (the item's `plain` from `human --json`, core 1.2.0, T-0215; "no plain-words summary yet",
+muted, when unwritten or on an older core):
 
 ```
 1  DEPLOY  T-0146  P0  live regression after the last deploy: opening a finished job fails …   since 19:50 (10h)

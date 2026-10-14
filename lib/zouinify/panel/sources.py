@@ -107,7 +107,8 @@ def aws_mutating(command: str) -> bool:
         return True
     return False
 TICKET_IN_NAME_RE = re.compile(r"^t(\d{4})-")
-CARD_KEYS = ("id", "severity", "title", "status", "owner", "claimed", "created", "plan", "deploy", "blocked_on", "closed_by", "repos", "type")
+CARD_KEYS = ("id", "severity", "title", "status", "owner", "claimed", "created", "plan", "deploy", "blocked_on", "closed_by", "repos", "type",
+             "plain")      # plain: the `## In plain words` section as one line, from board --json (core 1.2.0, T-0215); "" on an older core
 
 
 def item_id(it: dict) -> str:
@@ -152,7 +153,8 @@ def inbox_source(cfg) -> dict:
         raise RuntimeError("ticket.sh human --json failed or printed no JSON list")
     items = []
     for it in data:
-        row = {k: it.get(k, "") for k in ("verb", "tickets", "priority", "title", "since", "command", "expect", "if_nothing", "note")}
+        row = {k: it.get(k, "") for k in ("verb", "tickets", "priority", "title", "since", "command", "expect", "if_nothing", "note", "plain")}
+        row["plain"] = str(row["plain"] or "")      # core 1.2.0 (T-0215): the tickets' In plain words on one line; "" on an older core
         row["id"] = str(it.get("id") or item_id(it))
         row["void"] = bool(it.get("void")) or "do NOT run" in str(it.get("note", ""))
         row.update(classify_item(it))
@@ -166,6 +168,7 @@ def trunk_sha(cfg) -> str:
 
 def card_of(fm: dict, path: str, root: str) -> dict:
     c = {k: fm.get(k, "") for k in CARD_KEYS}
+    c["plain"] = ""                                   # the front-matter fallback has no `plain`: it comes from the core's JSON only
     c["human"] = bool(fm.get("human"))
     c["file"] = os.path.relpath(path, root) if path else ""
     return c
@@ -178,6 +181,7 @@ def board_source(cfg) -> dict:
         for t in bj["tickets"]:
             if isinstance(t, dict) and t.get("id"):
                 c = {k: t.get(k, "") for k in CARD_KEYS}
+                c["plain"] = str(c["plain"] or "")
                 c["human"] = bool(t.get("human"))
                 c["file"] = ""
                 cards.append(c)
@@ -220,13 +224,16 @@ def board_source(cfg) -> dict:
             "newest_plan": newest, "void_plans": sorted(void), "source": source, "warnings": warnings, "total": len(cards)}
 
 
-DEPLOYED_LINE_RE = re.compile(r"(^|\s)->\s*deployed(?=[\s.,;:!)]|$)")      # the state word itself, not `deployed-...`
+# the transition form ticket.sh writes, at the start of the line's body (ticket_sections strips the stamp and the author):
+# `<old> -> deployed. <evidence>`; prose that merely says "-> deployed" later in a sentence is not a state change (T-0212 review)
+DEPLOYED_LINE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*\s*->\s*deployed(?=[\s.,;:!)]|$)")
 
 
 def deployed_since(path: str) -> str:
-    """The stamp of the ticket's newest state-change log line to `deployed` (`... <old> -> deployed. <evidence>`), or ''."""
+    """The stamp of the ticket's newest state-change log line to `deployed`, or ''. A matching line whose stamp did not
+    parse is skipped for the next older one (T-0212 review)."""
     for row in ticket_sections(path)["log"]:          # newest first
-        if DEPLOYED_LINE_RE.search(row["text"]):
+        if row["at"] and DEPLOYED_LINE_RE.search(row["text"]):
             return row["at"]
     return ""
 
@@ -1094,8 +1101,11 @@ class Snapshot:
             return None
         fm = readonly.front_matter(path)
         sec = ticket_sections(path)
+        board = self.src["board"]["data"] if self.src["board"]["loaded"] else None     # the cache only: a drawer open never runs ticket.sh
+        card = next((c for c in (board or {}).get("cards", []) if c.get("id") == tid), None)
         return {"id": tid, "file": os.path.relpath(path, self.cfg.root), "front_matter": fm, "log": sec["log"][:10], "log_total": len(sec["log"]),
-                "handoff": sec["handoff"], "problem": sec["problem"]}
+                "handoff": sec["handoff"], "problem": sec["problem"],
+                "plain": str((card or {}).get("plain") or "")}      # from board --json (core 1.2.0, T-0215), "" when the core predates it
 
     def waiting_detail(self, name: str, fresh: bool = False):
         """One row of the "Waiting for me" list with its redacted screen; None when that session is not waiting now."""
