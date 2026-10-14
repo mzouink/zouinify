@@ -2,7 +2,8 @@
 the design's Z-9).
 
 It writes, under the repository root only: `.ops/config.yaml` (its fields asked for on a real terminal, with proposals
-taken from the repository), `.ops/briefs/*.md` rendered from templates/briefs, and the `.ops/state/` line in `.gitignore`.
+taken from the repository), `.ops/briefs/*.md` rendered from templates/briefs for the sessions whose `brief:` the config
+names (the four roles; the worker reads the protocol's WORKER_BRIEF.md), and the `.ops/state/` line in `.gitignore`.
 Nothing else: `tickets/`, `scripts/ticket.sh` and the CLAUDE.md section are the second half (T-0185), written only after a
 plan is shown and the human types yes in their own window. Rules: never overwrite an existing `.ops/` file (a second run
 reports what exists and changes nothing), never write outside the realpath'd root, never touch `~/.claude` or `CLAUDE.md`.
@@ -163,7 +164,8 @@ def render_config(v: dict) -> str:
     return f"""# .ops/config.yaml -- {v['name']}: the zouinify configuration of this repository (schema v1), written by `zouinify init`.
 # It holds no secret: names, paths, branch names, window names, a budget number. Edit it to taste, then
 # `zouinify config --check` and `zouinify briefs render --force`. Optional companions a project may add next to it,
-# owned by the project: .ops/README.project.md (its own protocol block) and .ops/INVENTORY.md.
+# owned by the project: .ops/README.project.md (its own protocol block), .ops/briefs.project/<role>.md (what only this
+# project knows, spliced into its rendered brief; the rendered .ops/briefs/*.md are generated, never edited) and .ops/INVENTORY.md.
 version: 1
 project: {{name: {q(v['name'])}, short: {q(sh)}}}
 repos:
@@ -325,31 +327,48 @@ def resolve_root(target: str | None) -> str:
     return root
 
 
-def check_rendered(config_text: str) -> None:
+def check_rendered(config_text: str) -> dict:
     """The rendered file must parse and have exactly the top-level keys init writes: a value that still managed to
-    open a new key is refused before anything is written."""
+    open a new key is refused before anything is written. Returns the parsed document."""
     try:
         doc = yaml.safe_load(config_text)
     except yaml.YAMLError as e:
         raise ZouinifyError(f"the rendered config is not valid YAML ({e}); check the values given") from None
     if not isinstance(doc, dict) or tuple(doc) != TOP_KEYS:
         raise ZouinifyError("the rendered config does not have exactly the expected top-level keys; check the values given")
+    return doc
 
 
-def check_targets(root: str, briefs: list) -> None:
+def planned_briefs(doc: dict) -> tuple:
+    """([(template name, the brief path the rendered config names)], [(template name, why it is not written)]): init
+    writes the brief file of every session whose `brief:` the config sets, nothing for the others (the worker's prompt
+    points it at the protocol's WORKER_BRIEF.md, so no .ops/briefs/worker.md)."""
+    sessions = doc.get("sessions") if isinstance(doc.get("sessions"), dict) else {}
+    tickets = doc.get("tickets") if isinstance(doc.get("tickets"), dict) else {}
+    briefs = {role: (s.get("brief") if isinstance(s, dict) else None) for role, s in sessions.items()}
+    todo, skipped = briefsmod.plan(briefs, str(tickets.get("dir") or "tickets"))
+    return [(name, str(briefs[name])) for name in todo], skipped
+
+
+def check_targets(root: str, briefs: list) -> dict:
     """Before the first write: every path init will create or leave alone must be a plain path inside root, so no
-    failure can come after .ops/config.yaml exists (a second run would only report it)."""
+    failure can come after .ops/config.yaml exists (a second run would only report it). The project's notes, if any,
+    are read here for the same reason (a symlink, a path resolving elsewhere, an unreadable or non-UTF-8 file are all
+    refused now) and returned per template name for the write phase, which reads nothing again."""
     bd = os.path.join(root, ".ops", "briefs")
     if os.path.islink(bd):
         raise ZouinifyError(".ops/briefs is a symlink; init writes under the repository root only")
     if os.path.lexists(bd) and not os.path.isdir(bd):
         raise ZouinifyError(".ops/briefs exists and is not a directory")
-    for _name, rel in briefs:
+    notes = {}
+    for name, rel in briefs:
         p = os.path.join(root, rel)
         if os.path.islink(p):
             raise ZouinifyError(f"{rel} is a symlink; the config would point at a brief outside the project")
         if os.path.lexists(p) and not os.path.isfile(p):
             raise ZouinifyError(f"{rel} exists and is not a regular file")
+        notes[name] = briefsmod.project_notes(root, name)
+    return notes
 
 
 def cmd_init(target: str | None, flags: dict, dry_run: bool = False, non_interactive: bool = False, out=None) -> int:
@@ -369,16 +388,18 @@ def _cmd_init(target, flags, dry_run, non_interactive, out) -> int:
                             "and --human (--trunk --prod --model --port override the proposals)")
     values = collect(root, flags, interactive, out)
     config_text = render_config(values)
-    check_rendered(config_text)
-    briefs = [(name, os.path.join(".ops", "briefs", name + ".md")) for name in briefsmod.list_templates()]
-    check_targets(root, briefs)
+    briefs, skipped = planned_briefs(check_rendered(config_text))
+    notes = check_targets(root, briefs)
     gi = gitignore_state(root)
 
     print(f"init plan for {root}:", file=out)
     print(f"  write    {cfgmod.CONFIG_REL}  ({len(config_text)} bytes)", file=out)
     for name, rel in briefs:
         state = "exists" if os.path.lexists(os.path.join(root, rel)) else "write"
-        print(f"  {state:<8} {rel}  (from templates/briefs/{name}{briefsmod.SUFFIX})", file=out)
+        src = briefsmod.notes_rel(name) + ("" if briefsmod.notes_file(root, name) else " (absent: a stub)")
+        print(f"  {state:<8} {rel}  (from templates/briefs/{name}{briefsmod.SUFFIX} + {src})", file=out)
+    for name, why in skipped:
+        print(f"  {'skip':<8} templates/briefs/{name}{briefsmod.SUFFIX}  ({why})", file=out)
     print(f"  {gi:<8} .gitignore  (line `{GITIGNORE_LINE}`)", file=out)
     print(f"  nothing else: {SECOND_HALF}", file=out)
     if dry_run:
@@ -396,14 +417,15 @@ def _cmd_init(target, flags, dry_run, non_interactive, out) -> int:
             if os.path.lexists(os.path.join(root, rel)):
                 print(f"exists     {rel}  (left as is)", file=out)
                 continue
-            with open(os.path.join(briefsmod.TEMPLATES, name + briefsmod.SUFFIX), encoding="utf-8") as fh:
-                text, missing = briefsmod.render(fh.read(), ctx)
+            text, missing = briefsmod.render_template(name, {**ctx, "project.notes": notes[name]})   # read before the first write
             if missing:                                        # a template defect: keep going, the config is already right
                 print(f"skipped    {rel}: unknown placeholder(s) {', '.join(missing)} in the template; `zouinify briefs render` later",
                       file=out)
                 continue
             write_new(root, rel, text, out)
             created.append(rel)
+        for name, why in skipped:
+            print(f"skipped    {name} brief ({why})", file=out)
         add_gitignore_line(root, gi, out)
     except Exception:
         undo(root, created, out)                               # a rerun must not find a half-written .ops/

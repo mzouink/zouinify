@@ -51,7 +51,10 @@ zouinify up                    # starts the desk, manager and debug sessions
 answers the questions from flags (for a session, which has no terminal). `init --protocol` never runs from a session or without
 a terminal (`--dry-run` shows its plan anywhere); the ticket core it installs is a byte-identical, pinned copy of the upstream
 script (`templates/protocol/MANIFEST`). Without `init`: copy `templates/ops/config.yaml.example` to `.ops/config.yaml` and run
-`zouinify briefs render`. Needs Python 3.9+ with PyYAML, tmux 3.2+, git 2.31+, bash 4+ and the `claude` CLI on PATH.
+`zouinify briefs render`. The rendered briefs are generated artefacts: edit `templates/briefs/*.md.tmpl` for what every project
+needs or `.ops/briefs.project/<role>.md` for what only your project knows, then render; render refuses a hand-edited brief, and
+`--force` is for after the edit is folded back into one of those two. Needs Python 3.9+ with PyYAML, tmux 3.2+, git 2.31+,
+bash 4+ and the `claude` CLI on PATH.
 
 ## How it fits together
 
