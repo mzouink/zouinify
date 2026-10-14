@@ -424,7 +424,7 @@ class TestApi(PanelWorld):
     def test_ticket_detail_and_live_checks(self):
         d = self.get_json("/api/tickets/T-0010")
         self.assertEqual(d["front_matter"]["status"], "deployed")
-        self.assertEqual(d["log"][0]["text"].split(": ", 1)[1][:9], "deployed:")
+        self.assertEqual(d["log"][0]["text"][:9], "deployed:", "the stamp and the author are parsed out of the text (T-0202)")
         self.assertEqual(d["handoff"], "", "the fixture ticket has no handoff section")
         with open(os.path.join(self.root, "tickets", "T-0010-deployed-one.md"), "a", encoding="utf-8") as fh:
             fh.write("\n## Deploy handoff\nDeploy: none (no infrastructure change). Verify: the page renders.\n")

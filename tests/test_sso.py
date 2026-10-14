@@ -202,7 +202,8 @@ class TestPollAndEvent(SsoWorld):
         r = self.ok("poll", "--timeout-ms", "3000")
         out = r.stdout
         self.assertIn("claim: the human ran `aws sso login` (panel saw: LOGIN). verify FIRST: aws sts get-caller-identity --profile default;", out)
-        self.assertIn('waiting: T-0002 (status "in-dev", owner "someone", since 2026-10-14 00:30) resume: "rerun scripts/sync.sh --shard 3"', out)
+        self.assertIn('waiting: T-0002 (status "in-dev", owner "someone", since 2026-10-14 00:30) -- its resume step is on the data line', out)
+        self.assertIn('"resume": "rerun scripts/sync.sh --shard 3"', out, "the resume step is JSON on the data line (T-0202)")
         self.assertNotIn("T-0008", out, "a later log line cleared it")
         self.assertIn('zouinify reply ', out)
         self.assertIn('"sso ok: resumed T-xxxx, T-yyyy"', out)
@@ -285,7 +286,7 @@ class TestBriefs(World):
         desk = open(os.path.join(out, "desk.md")).read()
         self.assertIn("7. **SSO updated.**", desk)
         self.assertIn("aws sts get-caller-identity --profile default", desk)
-        self.assertIn('waits-on: aws-sso -- resume: <exact step to rerun>', desk)
+        self.assertIn('waits-on: aws-sso -- resume: <exact step>', desk)
         self.assertIn('zouinify reply <id> "still expired: run aws sso login"', desk)
         rendered = os.path.join(self.tmp, "protocol")
         self.ok("protocol", "render", "--out", rendered)

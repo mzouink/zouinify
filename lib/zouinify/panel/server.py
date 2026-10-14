@@ -73,8 +73,9 @@ UNLOCK_HTML = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><
                "<link rel=\"icon\" href=\"data:,\"><title>zouinify</title><style>body{background:#081321;color:#eef6ff;font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px}"
                "main{max-width:36rem;margin:10vh auto}code{color:#26e0d0}</style></head><body><main><h1>zouin<span style=\"color:#26e0d0\">ify</span></h1>"
                "<p id=\"msg\">Unlocking this browser with the token from the address…</p>"
-               "<p>Read-only panel on the lab network: a browser token is required on every request. Nothing here can launch, "
-               "kill, type or deploy.</p></main><script>" + UNLOCK_SCRIPT + "</script></body></html>")
+               "<p>The project panel on the lab network: a browser token is required on every request. A click here is a receipt "
+               "the desk session verifies before anything moves; approvals and production actions are typed in the desk's own "
+               "window, never here.</p></main><script>" + UNLOCK_SCRIPT + "</script></body></html>")
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -220,6 +220,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .sessions-table .last { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); max-width: 420px; }
 .scroll-x { overflow-x: auto; }                                                                 /* a wide table scrolls inside its panel, never past the viewport */
 .sessions-table.has-actions .tbl th.actions, .sessions-table.has-actions .tbl td.actions { position: sticky; right: 0; background: var(--bg-surface); box-shadow: -8px 0 8px -8px rgb(0 0 0 / .4); }
+.sessions-table.has-actions .tbl tr.row-waiting td.actions { background: color-mix(in srgb, var(--accent-amber) 9%, var(--bg-surface)); }   /* the sticky cell follows the row's tint (T-0202) */
 .evidence { font-family: var(--font-mono); font-size: 12px; }
 .evidence.none { color: var(--accent-amber); }
 .settings pre { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12px; overflow: auto; }

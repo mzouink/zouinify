@@ -37,6 +37,7 @@ import json
 import re
 import threading
 import time
+import unicodedata
 from types import MappingProxyType
 
 from zouinify import panelstate, readonly
@@ -115,10 +116,12 @@ def clean_text(value) -> str:
 
 
 def clean_reply(value) -> str:
-    """The desk's verdict as stored: one line (newlines and tabs become spaces), control characters removed, trimmed."""
+    """The desk's verdict as stored: one line (newlines and tabs become spaces), control and Unicode format characters
+    (a U+202E would reverse the badge's text, T-0202) removed, trimmed."""
     if not isinstance(value, str):
         return ""
-    return CONTROL_RE.sub("", REPLY_SPACE_RE.sub(" ", value)).strip()
+    line = CONTROL_RE.sub("", REPLY_SPACE_RE.sub(" ", value))
+    return "".join(ch for ch in line if unicodedata.category(ch) != "Cf").strip()
 
 
 def ticket_ids(value: str) -> list:

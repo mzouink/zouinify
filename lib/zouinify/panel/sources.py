@@ -39,7 +39,7 @@ STATE_ORDER = MappingProxyType({"waiting": 0, "working": 1, "idle": 2, "shell": 
 # zero-width space inside CLAUDE.md, fullwidth letters, `setting.json`, `сlaude.md` all passed the old `CLAUDE\.md|settings`);
 # the word is `settings` or `setting` (optionally `.json`) as a whole word, so "resetting the cache" keeps its button. Other
 # look-alike alphabets still pass: the desk verifies every receipt anyway.
-TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|\bsettings?(?:\.json)?\b", re.I)
+TIER2_TEXT_RE = re.compile(r"claude[\W_]*md|\bsettings\b|\bsettings?\.json\b", re.I)   # T-0202: the bare singular "setting" is a word
 CONFUSABLES = str.maketrans({"с": "c", "а": "a", "е": "e", "о": "o", "ѕ": "s", "р": "p", "х": "x", "і": "i",
                              "С": "C", "А": "A", "Е": "E", "О": "O", "Ѕ": "S", "Р": "P", "Х": "X", "І": "I",
                              "т": "t", "у": "y", "һ": "h", "ԁ": "d", "ԛ": "q", "ј": "j", "ӏ": "l", "մ": "n"})
@@ -802,7 +802,8 @@ def ticket_sections(path: str) -> dict:
     log_rows = []
     for l in reversed(log):
         m = re.match(r"^-\s*(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)\s+([^:]+):\s*(.*)$", l)
-        log_rows.append({"at": m.group(1) if m else "", "by": m.group(2).strip() if m else "", "text": redact(l.lstrip("- ").strip()),
+        # the stamp and the author are parsed out once: `text` is the line's body only (the drawer printed them twice, T-0202)
+        log_rows.append({"at": m.group(1) if m else "", "by": m.group(2).strip() if m else "", "text": redact((m.group(3) if m else l.lstrip("- ")).strip()),
                          "evidence": bool(EVIDENCE_RE.search(l))})
     return {"log": log_rows, "handoff": redact("\n".join(sections.get("Deploy handoff", [])).strip()),
             "problem": redact("\n".join(sections.get("Problem", [])).strip()[:2000])}
@@ -814,10 +815,23 @@ def live_checks(cfg, board: dict) -> list:
         path = readonly.file_of(cfg, c["id"]) if c.get("id") else None
         sec = ticket_sections(path) if path else {"log": []}
         ev = next((l for l in sec["log"] if l["evidence"]), None)
-        rows.append({"id": c["id"], "title": c["title"], "severity": c["severity"], "deploy": c.get("deploy", ""),
+        # ONE definition of "awaiting a live check" (T-0202), used by the KPI, the card and the Live checks page: deployed, its
+        # plan not void, no live-check line yet. A void plan is not awaiting anything.
+        rows.append({"id": c["id"], "title": c["title"], "severity": c["severity"], "deploy": fmt_deploy(c.get("deploy", "")),
                      "evidence": ev["text"] if ev else "", "evidence_at": ev["at"] if ev else "", "evidence_by": ev["by"] if ev else "",
-                     "has_evidence": bool(ev), "last": sec["log"][0]["text"] if sec["log"] else ""})
+                     "has_evidence": bool(ev), "plan_void": bool(c.get("plan_void")), "awaiting_live_check": not ev and not c.get("plan_void"),
+                     "last": sec["log"][0]["text"] if sec["log"] else ""})
     return rows
+
+
+def fmt_deploy(value) -> str:
+    """A ticket's `deploy:` as text: a YAML list is joined with ", " (the live page printed "[terraform, manual-aws]", T-0202)."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v).strip() for v in value if str(v).strip())
+    s = str(value or "").strip()
+    if s.startswith("[") and s.endswith("]"):
+        return ", ".join(p.strip() for p in s[1:-1].split(",") if p.strip())
+    return s
 
 
 class Snapshot:
@@ -1009,6 +1023,11 @@ class Snapshot:
         desk_row = next((r for r in rows if r["role"] == "desk"), None)
         counts = board["counts"]
         receipts = self.receipts_meta()
+        checks = live_checks(cfg, board)
+        awaiting_ids = {r["id"] for r in checks if r["awaiting_live_check"]}
+        for c in board["cards"]:                        # the deployed card says "awaiting live check" or "plan void", from the same rule
+            if c.get("status") == "deployed":
+                c["awaiting_live_check"] = c.get("id") in awaiting_ids
         return {
             "generated": panelstate.now_iso(), "version": panelstate.version(), "loading": self.loading(),
             "project": {"name": cfg.name, "short": cfg.short, "root": cfg.root, "trunk": cfg.trunk, "prod": cfg.prod, "trunk_sha": trunk or ""},
@@ -1024,12 +1043,13 @@ class Snapshot:
                      "waiting": by_state.get("waiting", 0), "working": by_state.get("working", 0), "idle": by_state.get("idle", 0),
                      "gone": by_state.get("gone", 0), "shell": by_state.get("shell", 0), "waiting_elsewhere": len(foreign_rows),
                      "to_deploy": len(board["lanes"].get("to deploy", [])), "deployed": counts.get("deployed", 0),
+                     "awaiting_live_check": len(awaiting_ids),
                      "sessions": len(rows), "tickets": board["total"]},
             "p0": board["p0"], "inbox": {"items": inbox["items"], "count": inbox.get("count"), "error": inbox_err},
             "board": {k: board[k] for k in ("lanes", "chips", "counts", "other", "newest_plan", "void_plans", "source", "warnings", "total")},
             "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
             "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},
-            "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": live_checks(cfg, board),
+            "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": checks,
             # T-0195: the SSO updated button: shown when the login is LOGIN / ERR / ? (a probe that ran, on a project with an aws
             # block) or anyone waits on it; hidden when ok and nobody waits, while the source warms up, and on a project without AWS
             "sso": {"waiting": sso_rows, "creds": creds_left,
