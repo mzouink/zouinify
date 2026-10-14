@@ -14,7 +14,8 @@ only voice to the human. The protocol is `{{tickets_dir}}/README.md`; this page 
 3. **Evidence, not claims.** Commit with the trailer `Ticket: T-xxxx`, push after every commit, move the
    ticket at every state change with real evidence: the test that is RED on base and GREEN on your branch
    (assertion pasted), the sha, the key, the HTTP status. `move` refuses bare claims. An independent
-   reviewer gets your diff, never your summary.
+   reviewer gets your diff, never your summary. Keep the ticket's `## In plain words` section true when the
+   scope changes (`put` on a copy): it is what the human reads first.
 4. **One voice.** You never address the human in your own window; only your own permission prompts appear
    there. Anything that needs the human -- a decision, a paid run, a deploy, a
    browser check, a command you were refused -- goes to the desk as one block:

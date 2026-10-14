@@ -118,6 +118,12 @@ if [ "${{3:-}}" = worktree ] && [ "${{4:-}}" = remove ]; then
     exit 1
   fi
 fi
+if [ "${{3:-}}" = commit ] && {{ [ -e "{tmp}/fail_commit" ] || [ -e "{tmp}/fail_commit_once" ]; }}; then   # T-0218: a concurrent git holds the index (once, or for good)
+  rm -f "{tmp}/fail_commit_once"
+  echo "fatal: Unable to create '{tmp}/main/.git/index.lock': File exists." >&2
+  echo "Another git process seems to be running in this repository... remove the file manually to continue." >&2
+  exit 128
+fi
 if [ "${{3:-}}" = push ]; then
   if [ -e "{tmp}/push500" ]; then
     echo "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500" >&2
@@ -146,7 +152,22 @@ exec "{sleep}" "$@"
 """
 
 
-def _ticket(template, tid, slug, status, title, fields=None):
+def _put_plain(lines, text):
+    """fill the `## In plain words` section (T-0217) in place: the template's section (its <placeholder> line replaced)
+    when the heading is there, else a new section right after the front matter"""
+    heads = [i for i, l in enumerate(lines) if l.rstrip() == "## In plain words"]
+    if heads:
+        i = heads[0] + 1; j = i
+        while j < len(lines) and not lines[j].startswith("## "):
+            j += 1
+        lines[i:j] = text.splitlines() + [""]
+    else:
+        close = [i for i, l in enumerate(lines) if l == "---"][1]
+        lines[close + 1:close + 1] = ["", "## In plain words"] + text.splitlines()
+
+
+def _ticket(template, tid, slug, status, title, fields=None, plain=None):
+    """a ticket from the template; plain= writes a `## In plain words` section right after the front matter (T-0217)"""
     fields = dict(fields or {})
     fields.update({"id": tid, "title": title, "status": status, "created": "2026-10-08 10:00"})
     out, in_fm = [], False
@@ -157,6 +178,8 @@ def _ticket(template, tid, slug, status, title, fields=None):
             key = line.split(":", 1)[0]
             line = "%s: %s" % (key, fields[key])
         out.append(line)
+    if plain is not None:
+        _put_plain(out, plain)
     return tid + "-" + slug + ".md", "\n".join(out) + "\n"
 
 
@@ -220,8 +243,8 @@ class TicketShWorld(unittest.TestCase):
             raise AssertionError("git %s failed: %s%s" % (" ".join(args), p.stdout, p.stderr))
         return p.stdout.strip()
 
-    def write_ticket(self, tid, slug, status, title, repo=None, fields=None):
-        name, text = _ticket(self.template, tid, slug, status, title, fields)
+    def write_ticket(self, tid, slug, status, title, repo=None, fields=None, plain=None):
+        name, text = _ticket(self.template, tid, slug, status, title, fields, plain)
         path = os.path.join(repo or self.main, "tickets", name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -324,6 +347,16 @@ class TicketShWorld(unittest.TestCase):
                 if line.startswith(key + ":"):
                     return line.split(":", 1)[1].split("#")[0].strip()
         return None
+
+    def set_plain(self, name, text):
+        """write the `## In plain words` section (T-0217) of tickets/<name> in main (not committed)"""
+        path = os.path.join(self.main, "tickets", name)
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+        _put_plain(lines, text)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+        return path
 
     def log_of(self, name):
         with open(os.path.join(self.main, "tickets", name), encoding="utf-8") as fh:

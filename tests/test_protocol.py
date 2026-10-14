@@ -105,6 +105,18 @@ class TestProtocol(World):
         self.assertIn("5. **No live mutations.** Nothing on the human-only list runs from a session", brief)
         self.assertIn("6. **Anything that costs money goes through the desk.**", brief)
         tmpl = self.read_out("_TEMPLATE.md")
+        # T-0215: the In plain words section sits right after the front matter, with the comment that tells the filer what to
+        # write; the core (1.2.0) drops the comment and <placeholder> lines, so a fresh ticket has plain "" until it is written
+        self.assertIn("---\n\n## In plain words\n<!-- 2-4 sentences for the human, in four parts: what is wrong or what is wanted; why it matters to them; "
+                      "what they will\n     notice when it is done; what they must do (or \"Nothing is needed from you.\"). No file paths, shas, session names or\n"
+                      "     acronyms.", tmpl)
+        self.assertIn("-->\n<What is wrong or wanted, why it matters, what they will notice, what they must do.>\n\n## Problem\n", tmpl)
+        self.assertEqual(tmpl.count("## In plain words"), 1)
+        self.assertIn("**In plain words.** Every ticket opens, right after the front matter, with a `## In plain words` section: 2-4 sentences", s3)
+        self.assertIn("`move ... ready` refuses a\nticket without it; the owner keeps it true when the scope changes. The panel shows it first, above the title, and\n"
+                      "`board --json` / `human --json` carry it as `plain`.", s3)
+        self.assertIn("then `## In plain words` (for the human; the panel shows it first), `## Problem`", section(readme, 8))
+        self.assertIn("Keep the ticket's `## In plain words` section true when the\n   scope changes (`put` on a copy): it is what the human reads first.", brief)
         self.assertIn("type: bug                      # bug | feature | process | chore", tmpl)
         self.assertIn("status: backlog                # backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped skipped", tmpl)
         self.assertIn("repos: [backend]               # backend\n", tmpl, "one repo: no 'may list several'")

@@ -1565,8 +1565,8 @@ class TestMergeAndPrune(MergeAndPruneHelpers):
 
 class HumanInboxHelpers(TicketShWorld):
     """the helpers of TestHumanInbox, shared by its generic tests here and its plugin-dependent tests in test_ticket_sh.py (T-0189)"""
-    def fixture(self, tid, slug, status, title, fields=None, log=None, handoff=None, investigation=None):
-        path = self.write_ticket(tid, slug, status, title, fields=fields)
+    def fixture(self, tid, slug, status, title, fields=None, log=None, handoff=None, investigation=None, plain=None):
+        path = self.write_ticket(tid, slug, status, title, fields=fields, plain=plain)
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         if log:
@@ -1912,7 +1912,7 @@ class TestBoardJson(TicketShWorld):
         self.assertEqual(b["asks_pending"], 1, "T-0007 is done: its stale human: line is not pending")
         self.assertEqual([t["id"] for t in b["tickets"]], ["T-%04d" % i for i in range(1, 10)])
         for t in b["tickets"]:
-            self.assertEqual(list(t), self.KEYS + ["stats"], t["id"]); self.assertIsNone(t["stats"])
+            self.assertEqual(list(t), self.KEYS + ["plain", "stats"], t["id"]); self.assertIsNone(t["stats"])   # plain: T-0217
             for k in self.KEYS:
                 self.assertIsInstance(t[k], list if k in self.LIST_KEYS else str, "%s.%s typed by key" % (t["id"], k))
         by = {t["id"]: t for t in b["tickets"]}
@@ -1996,3 +1996,280 @@ class TestBoardJson(TicketShWorld):
         self.assertEqual(self.ts("human", "--count", env=self.env_without_who()).out.strip(), "1")
         self.assertEqual(self.ts("human", env=self.env_without_who()).returncode, 0)
         self.assert_main_sane()
+
+
+class TestPlainWords(HumanInboxHelpers):
+    """T-0217 (core 1.2.0): a ticket's `## In plain words` section (T-0215: right after the front matter, 2-4 sentences
+    the human can understand) reaches tools as `plain` -- one line, HTML comments and <placeholder> lines dropped -- in
+    every `board --json` ticket and every `human --json` item, and backlog|skipped -> ready refuses a ticket without it
+    (TICKET_FORCE=1 passes with FORCED in the log). RED on 1.1.3 (db5b765): no `plain` key anywhere; the move succeeds."""
+    PLAIN = ("The invite page shows a blank box where the sign-in button should be.\n"
+             "Until it is fixed nobody new can be invited; once it is done the button is back.\n"
+             "Nothing to do on your side.")
+    ONE_LINE = ("The invite page shows a blank box where the sign-in button should be. Until it is fixed nobody new can be "
+                "invited; once it is done the button is back. Nothing to do on your side.")
+
+    def test_board_json_tickets_carry_plain_as_one_line(self):
+        self.write_ticket("T-0003", "with-plain", "backlog", "blank box", plain=self.PLAIN)
+        self.write_ticket("T-0004", "comment-only", "backlog", "placeholder only",
+                          plain="<!-- 2-4 sentences for the human:\n     what is wrong, why it matters -->\n<write them here>")
+        self.write_ticket("T-0005", "tricky", "backlog", "escaping", plain='He said "stop" \\ twice\t-- and <!-- not this --> this.')
+        self.commit_main("tickets: plain words")
+        b = json.loads(self.ts("board", "--json", env=self.env_without_who()).stdout)
+        by = {t["id"]: t for t in b["tickets"]}
+        self.assertEqual(by["T-0003"]["plain"], self.ONE_LINE, "lines joined by one space")
+        self.assertEqual(by["T-0004"]["plain"], "", "an HTML comment and a <placeholder> line are not plain words")
+        self.assertEqual(by["T-0001"]["plain"], "", "no section: the key is there, empty")
+        self.assertEqual(by["T-0005"]["plain"], 'He said "stop" \\ twice -- and this.', "escaped losslessly, whitespace squeezed")
+        for t in b["tickets"]:
+            self.assertEqual(list(t)[-2:], ["plain", "stats"], t["id"])
+        self.assertEqual(by["T-0003"]["title"], "blank box", "the front matter is untouched")
+
+    def test_human_json_items_carry_plain_and_the_item_id_ignores_it(self):
+        fields = {"severity": "P2", "blocked_on": "which colour for the button?"}
+        self.write_ticket("T-0003", "with-plain", "backlog", "blank box", fields=fields, plain=self.PLAIN)
+        self.commit_main("tickets: a question with plain words")
+        p = self.ts("ask", "T-0002", "CHECK the chip | open https://example.invalid/x | the chip appears | nothing")
+        self.assertEqual(p.returncode, 0, p.out)
+        items = {i["tickets"]: i for i in json.loads(self.ts("human", "--json", env=self.env_without_who()).stdout)}
+        self.assertEqual(sorted(items), ["T-0002", "T-0003"])
+        self.assertEqual(items["T-0003"]["plain"], self.ONE_LINE)
+        self.assertEqual(items["T-0002"]["plain"], "", "no section: empty, the key is there")
+        self.assertEqual(list(items["T-0003"])[:7], ["id", "verb", "tickets", "priority", "title", "plain", "since"])
+        before = items["T-0003"]["id"]
+        self.write_ticket("T-0003", "with-plain", "backlog", "blank box", fields=fields, plain="Shorter now.")
+        self.commit_main("tickets: plain words rewritten")
+        items = {i["tickets"]: i for i in json.loads(self.ts("human", "--json", env=self.env_without_who()).stdout)}
+        self.assertEqual((items["T-0003"]["id"], items["T-0003"]["plain"]), (before, "Shorter now."),
+                         "the id hashes verb|tickets|command|expect: rewriting the plain words keeps it")
+        self.assertNotIn("Shorter now.", self.ts("human", env=self.env_without_who()).out, "the text inbox is unchanged; the panel renders plain")
+        self.assert_main_sane()
+
+    def test_move_to_ready_needs_plain_words(self):
+        inv = "desk: looked at it, the box is a missing stylesheet."
+        self.fixture("T-0003", "no-plain", "backlog", "no plain words", investigation=inv)
+        self.fixture("T-0004", "placeholder-plain", "backlog", "placeholder", investigation=inv,
+                     plain="<!-- say it for the human -->\n<2-4 sentences>")
+        self.fixture("T-0005", "with-plain", "backlog", "with plain", investigation=inv, plain=self.PLAIN)
+        self.commit_main("tickets: three in backlog")
+        for tid, name in (("T-0003", "T-0003-no-plain.md"), ("T-0004", "T-0004-placeholder-plain.md")):
+            p = self.ts("move", tid, "ready", "desk: investigated")
+            self.assertNotEqual(p.returncode, 0, p.out)
+            self.assertIn("%s: backlog -> ready needs a written ## In plain words section" % tid, p.out)
+            self.assertIn("2-4 sentences the human can understand", p.out); self.assertIn("scripts/ticket.sh put %s" % tid, p.out)
+            self.assertEqual(self.front(name, "status"), "backlog")
+        p = self.ts("move", "T-0005", "ready", "desk: investigated")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertEqual(self.front("T-0005-with-plain.md", "status"), "ready")
+        p = self.ts("move", "T-0003", "ready", "desk: plain words come with the backfill", env=dict(self.env, TICKET_FORCE="1"))
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("backlog -> ready. FORCED (no In plain words section): desk: plain words come with the backfill", self.log_of("T-0003-no-plain.md"))
+        self.assertIn('items carry "plain"', self.ts("help").out, "the usage names the field"); self.assertIn('front matter + "plain" per ticket', self.ts("help").out)
+        self.assert_main_clean()
+
+    def test_a_fresh_ticket_from_the_template_is_refused_at_ready_until_the_placeholder_is_replaced(self):
+        """the template carries the heading with a one-line <placeholder>: `new` yields plain "" and the gate refuses"""
+        p = self.ts("new", "bug", "P2", "fresh from the template")
+        self.assertEqual(p.returncode, 0, p.out)
+        name = [f for f in os.listdir(os.path.join(self.main, "tickets")) if f.startswith("T-0003-")][0]
+        text = self.ticket_text(name)
+        self.assertIn("\n## In plain words\n<", text, "the template's section, placeholder untouched")
+        self.assertLess(text.index("## In plain words"), text.index("## Problem"))
+        with open(os.path.join(self.main, "tickets", name), encoding="utf-8") as fh:
+            text = fh.read()
+        text = text.replace("\n## Investigation\n", "\n## Investigation\ndesk: real, a missing stylesheet\n", 1)
+        with open(os.path.join(self.main, "tickets", name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.commit_main("tickets: T-0003 investigated")
+        b = json.loads(self.ts("board", "--json", env=self.env_without_who()).stdout)
+        self.assertEqual({t["id"]: t["plain"] for t in b["tickets"]}["T-0003"], "", "a <placeholder> line is not plain words")
+        p = self.ts("move", "T-0003", "ready", "desk: investigated")
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("T-0003: backlog -> ready needs a written ## In plain words section", p.out)
+        self.set_plain(name, "The sign-in button is missing on the invite page; nobody new can be invited until it is back.")
+        self.commit_main("tickets: T-0003 plain words")
+        p = self.ts("move", "T-0003", "ready", "desk: investigated, plain words written")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertEqual(self.front(name, "status"), "ready")
+        self.assert_main_clean()
+
+
+class TestPlainWordsEdges(HumanInboxHelpers):
+    """T-0218 (core 1.2.1): the reviewer's five edges of the plain-words rule. RED on 1.2.0 (13e0787): a comment holding
+    `--` leaks into plain and passes the gate; a heading after ## Log (or a second one) is read; a sentence starting with
+    `<` is dropped; there is no cap; blocked -> ready skips both gates."""
+    INV = "desk: real, a missing stylesheet."
+
+    def plain_of(self, tid):
+        b = json.loads(self.ts("board", "--json", env=self.env_without_who()).stdout)
+        return {t["id"]: t["plain"] for t in b["tickets"]}[tid]
+
+    def test_an_html_comment_holding_dashes_is_stripped(self):
+        self.fixture("T-0003", "dashes", "backlog", "dashes", investigation=self.INV,
+                     plain="<!-- a note -- with dashes, and an <angle> -->\nReal words for the human.")
+        self.fixture("T-0004", "dashes-only", "backlog", "dashes only", investigation=self.INV,
+                     plain="<!-- the filer left only this note -- with dashes -->")
+        self.fixture("T-0005", "unterminated", "backlog", "unterminated", investigation=self.INV, plain="Kept.\n<!-- never closed\nnot this")
+        self.commit_main("tickets: comments with dashes")
+        self.assertEqual(self.plain_of("T-0003"), "Real words for the human.")
+        self.assertEqual(self.plain_of("T-0004"), "")
+        self.assertEqual(self.plain_of("T-0005"), "Kept.", "an unterminated comment runs to the end of the section")
+        p = self.ts("move", "T-0004", "ready", "desk: investigated")
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("T-0004: backlog -> ready needs a written ## In plain words section", p.out)
+        p = self.ts("move", "T-0003", "ready", "desk: investigated")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assert_main_clean()
+
+    def test_only_the_first_section_before_the_log_counts(self):
+        # (a) the template's empty section at the top, a sneaky one after the Log
+        self.fixture("T-0003", "sneaky", "backlog", "sneaky", investigation=self.INV, handoff="## In plain words\nSneaky words at the bottom.")
+        # (b) a real one at the top and a second one inside Problem
+        path = self.fixture("T-0004", "twice", "backlog", "twice", investigation=self.INV, plain="First words.")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        text = text.replace("\n## Problem\n", "\n## Problem\nsome jargon\n\n## In plain words\nSecond words.\n", 1)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.commit_main("tickets: sections in odd places")
+        self.assertEqual(self.plain_of("T-0003"), "", "a heading after ## Log is history, not the summary")
+        self.assertEqual(self.plain_of("T-0004"), "First words.", "the first section counts, a second is ignored")
+        p = self.ts("move", "T-0003", "ready", "desk: investigated")
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("T-0003: backlog -> ready needs a written ## In plain words section", p.out)
+        self.assert_main_sane()
+
+    def test_a_sentence_starting_with_an_angle_bracket_stays(self):
+        self.fixture("T-0003", "angles", "backlog", "angles", investigation=self.INV,
+                     plain="<b>Bold</b> start, then text.\n<a placeholder line>\n<Everyone> must click once.\n<br>")
+        self.commit_main("tickets: angles")
+        self.assertEqual(self.plain_of("T-0003"), "<b>Bold</b> start, then text. <Everyone> must click once.",
+                         "only a line that is one <...> token is a placeholder")
+        self.assert_main_sane()
+
+    def test_plain_is_capped_at_1200_bytes_on_a_utf8_boundary(self):
+        self.fixture("T-0003", "long-ascii", "backlog", "long", investigation=self.INV, plain=("word " * 400).strip())
+        self.fixture("T-0004", "cut-in-a-char", "backlog", "cut", investigation=self.INV, plain="a" * 1199 + "é and more")
+        self.fixture("T-0005", "whole-chars", "backlog", "whole", investigation=self.INV, plain="é" * 700)
+        self.commit_main("tickets: long plain words")
+        p = self.ts("board", "--json", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        by = {t["id"]: t["plain"] for t in json.loads(p.stdout)["tickets"]}
+        self.assertEqual(len(by["T-0003"]), 1200); self.assertEqual(by["T-0003"], ("word " * 400)[:1200])
+        self.assertEqual(by["T-0004"], "a" * 1199, "the cut would split the two-byte character: it goes, the text stays valid UTF-8")
+        self.assertEqual(by["T-0005"], "é" * 600, "600 two-byte characters are exactly 1200 bytes")
+        items = {i["tickets"]: i for i in json.loads(self.ts("human", "--json", env=self.env_without_who()).stdout)}
+        self.assertNotIn("T-0003", items, "no ask, no item -- the cap is checked on the board side")
+        self.assert_main_sane()
+
+    def test_blocked_to_ready_is_gated_like_backlog(self):
+        q = {"severity": "P2", "blocked_on": "which colour?"}
+        self.fixture("T-0003", "blocked-no-plain", "blocked", "no plain", fields=q, investigation=self.INV)
+        self.fixture("T-0004", "blocked-no-inv", "blocked", "no investigation", fields=q)
+        self.fixture("T-0005", "blocked-complete", "blocked", "complete", fields=q, investigation=self.INV, plain="The colour is decided; nothing to do.")
+        self.commit_main("tickets: three blocked")
+        p = self.ts("move", "T-0003", "ready", "user: blue")
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("T-0003: blocked -> ready needs a written ## In plain words section", p.out)
+        p = self.ts("move", "T-0004", "ready", "user: blue")
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("T-0004: blocked -> ready needs a written ## Investigation", p.out)
+        p = self.ts("move", "T-0005", "ready", "user: blue")
+        self.assertEqual(p.returncode, 0, p.out); self.assertEqual(self.front("T-0005-blocked-complete.md", "status"), "ready")
+        p = self.ts("move", "T-0003", "ready", "user: blue; plain words with the backfill", env=dict(self.env, TICKET_FORCE="1"))
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("blocked -> ready. FORCED (no In plain words section): user: blue; plain words with the backfill", self.log_of("T-0003-blocked-no-plain.md"))
+        self.assert_main_clean()
+
+
+class TestAbortRestoresFromHead(TicketShWorld):
+    """T-0218: a concurrent git (`git status` takes index.lock for a moment) can make the ticket commit fail. The add and
+    the commit are retried, only on index.lock, at most 5 x 1 s, with the same files (g_unlocked); when the lock stays,
+    the run dies and puts the file back from HEAD, not from the index. On 1.2.0 (13e0787) there was no retry, and the
+    staged edit survived while "main worktree left clean" was printed; every later call refused "main worktree is
+    dirty" (T-0218's own claim and move, 2026-10-14). RED there."""
+    def test_a_lock_held_once_is_waited_out_and_the_command_completes(self):
+        env = self.wrap_env()
+        open(os.path.join(self.tmp, "fail_commit_once"), "w").close()
+        p = self.ts("claim", "T-0001", "qa", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("index.lock is busy (another git): retry 1/5 in 1 s", p.out)
+        self.assertEqual(self.sleep_calls(), ["sleep 1"], "one second, once")
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "in-dev")
+        self.assertIn("tickets: T-0001 -> in-dev (qa)", self.main_log())
+        self.assert_main_clean()
+
+    def test_a_lock_that_stays_aborts_after_five_retries_with_main_clean_and_unstaged(self):
+        env = self.wrap_env()
+        flag = os.path.join(self.tmp, "fail_commit"); open(flag, "w").close()
+        before = self.ticket_text("T-0001-alpha-ticket.md")
+        p = self.ts("claim", "T-0001", "qa", env=env)
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("index.lock", p.out); self.assertIn("stayed busy through 5 retries", p.out)
+        self.assertIn("aborted -- restored T-0001-alpha-ticket.md", p.out); self.assertIn("main worktree left clean", p.out)
+        self.assertEqual(self.sleep_calls(), ["sleep 1"] * 5)
+        self.assert_main_clean()
+        self.assertEqual(self.ticket_text("T-0001-alpha-ticket.md"), before, "the file is HEAD's again, in the index and the tree")
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "ready")
+        p = self.ts("board", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out); self.assertNotIn("DIRTY", p.out)
+        os.remove(flag)
+        # the worktree and branch the claim made before the commit stay; the next claim finds and reuses them
+        p = self.ts("claim", "T-0001", "qa", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "in-dev")
+        self.assert_main_clean()
+
+    def test_a_new_ticket_whose_commit_dies_is_gone_from_the_index_too(self):
+        env = self.wrap_env()
+        open(os.path.join(self.tmp, "fail_commit"), "w").close()
+        p = self.ts("new", "bug", "P3", "born under a lock", env=env)
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("index.lock", p.out)
+        self.assert_main_clean()
+        self.assertFalse([f for f in os.listdir(os.path.join(self.main, "tickets")) if f.startswith("T-0003-")], "the file is gone")
+        self.assertEqual(self.ts("board", env=self.env_without_who()).returncode, 0)
+
+    def test_a_real_lock_held_through_the_restore_still_leaves_an_existing_ticket_clean(self):
+        """reviewer of d1db45f: `checkout HEAD -- file` needs index.lock too, so with the lock held from the add through
+        the restore the edit stayed (" M") and "left clean" was false. Now HEAD's bytes come from `git show`, no lock."""
+        lock = os.path.join(self.main, ".git", "index.lock"); open(lock, "w").close()
+        before = self.ticket_text("T-0001-alpha-ticket.md")
+        try:
+            p = self.ts("log", "T-0001", "a line under a held lock")
+        finally:
+            os.remove(lock)
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("index.lock", p.out); self.assertIn("stayed busy through 5 retries", p.out)
+        self.assertIn("aborted -- restored T-0001-alpha-ticket.md; main worktree left clean", p.out)
+        self.assertNotIn("NOT clean", p.out)
+        self.assert_main_clean()
+        self.assertEqual(self.ticket_text("T-0001-alpha-ticket.md"), before)
+        self.assertEqual(self.ts("board", env=self.env_without_who()).returncode, 0)
+        p = self.ts("log", "T-0001", "a line once the lock is gone")
+        self.assertEqual(p.returncode, 0, p.out); self.assert_main_clean()
+
+    def test_a_real_lock_held_through_the_restore_leaves_no_trace_of_a_new_ticket(self):
+        lock = os.path.join(self.main, ".git", "index.lock"); open(lock, "w").close()
+        try:
+            p = self.ts("new", "bug", "P3", "born under a held lock")
+        finally:
+            os.remove(lock)
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("index.lock", p.out)
+        self.assertIn("main worktree left clean", p.out); self.assertNotIn("NOT clean", p.out)
+        self.assert_main_clean()
+        self.assertFalse([f for f in os.listdir(os.path.join(self.main, "tickets")) if f.startswith("T-0003-")], "the file is gone")
+        p = self.ts("new", "bug", "P3", "born once the lock is gone")
+        self.assertEqual(p.returncode, 0, p.out); self.assertIn("T-0003", p.out); self.assert_main_clean()
+
+    def test_any_other_commit_failure_is_final_at_once(self):
+        """a failure that does not name index.lock is not retried: the message is passed through, no sleep"""
+        env = self.wrap_env()
+        # a pre-commit hook that refuses: not a lock, so no retry
+        hooks = os.path.join(self.main, ".git", "hooks"); os.makedirs(hooks, exist_ok=True)
+        hook = os.path.join(hooks, "pre-commit")
+        with open(hook, "w") as fh:
+            fh.write("#!/usr/bin/env bash\necho 'hook says no' >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+        try:
+            p = self.ts("claim", "T-0001", "qa", env=env)
+        finally:
+            os.remove(hook)
+        self.assertNotEqual(p.returncode, 0, p.out); self.assertIn("hook says no", p.out); self.assertNotIn("retry", p.out)
+        self.assertEqual(self.sleep_calls(), [])
+        self.assert_main_clean()
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "ready")

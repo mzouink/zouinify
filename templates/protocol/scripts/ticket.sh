@@ -16,7 +16,7 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.1.3"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.2.1"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
@@ -46,8 +46,8 @@ usage() { # the commands, on stdout: an unknown or missing subcommand prints the
 #   scripts/ticket.sh prune [T-xxxx ...|--done] [--orphans] [--dry-run]   -> remove the worktree + branch (local and origin) of done/dropped tickets; refuses anything unmerged;
 #                                                                    --orphans: the dirs under .claude/worktrees/ that no worktree registers, when nothing in them is unique (T-0196)
 #   scripts/ticket.sh ask   T-xxxx "<VERB> <what> | <cmd> | <expected> | <if nothing>" -> one-line ask for the human (human: field; "" clears; a move clears)
-#   scripts/ticket.sh human [--count|--json]                     -> read-only: the human's inbox, derived from the tickets (T-0147)
-#   scripts/ticket.sh board [--json [--slow]]                    -> read-only, computed from git; --json: one object for tools, front matter only (T-0158)
+#   scripts/ticket.sh human [--count|--json]                     -> read-only: the human's inbox, derived from the tickets (T-0147); --json items carry "plain" (T-0217)
+#   scripts/ticket.sh board [--json [--slow]]                    -> read-only, computed from git; --json: one object for tools, front matter + "plain" per ticket (T-0158, T-0217)
 #   scripts/ticket.sh deploy-check <plan> [--tickets T-a,T-b] [--at <sha>] -> read-only pre-apply gate (T-0108)
 #   scripts/ticket.sh apply <plan> [--tickets T-a,T-b] [--at <sha>] -> HUMAN only (refused in a session or a tool call): deploy-check, then the saved plan; logged, one log line per ticket (T-0149)
 #   scripts/ticket.sh version                                    -> the core's version and the plugin in use (T-0186)
@@ -71,11 +71,21 @@ restore_edit() {
     g rebase --abort 2>/dev/null || true; echo "ticket.sh: aborted an interrupted rebase in $MAIN" >&2
   fi
   [ -n "$EDITED" ] || return 0
-  local e
+  local e left=""
   for e in $EDITED; do  # one or more ticket paths (no spaces in them), space-separated
-    if [ -n "$EDITED_NEW" ]; then rm -f "$e"; else g checkout -q -- "$e" 2>/dev/null || true; fi
+    # From HEAD, not from the index: commit_push stages the file before it commits, and a commit that dies (git's
+    # index.lock message from a concurrent git, T-0218) left the staged edit behind. `checkout` needs that same lock,
+    # so when it fails HEAD's bytes are written with `show`, which takes none; the index can only be cleaned once the
+    # lock is gone, and then the message says how. "left clean" is printed only when it is true.
+    if [ -n "$EDITED_NEW" ]; then g rm -q --cached -- "$e" 2>/dev/null || true; rm -f "$e"
+    else g checkout -q HEAD -- "$e" 2>/dev/null || g show "HEAD:${e#"$MAIN"/}" >"$e" 2>/dev/null || true; fi
+    [ -z "$(g status --porcelain -- "$e" 2>/dev/null)" ] || left="$left ${e#"$MAIN"/}"
   done
-  echo "ticket.sh: aborted -- restored $(for e in $EDITED; do basename "$e"; done | tr '\n' ' '); main worktree left clean" >&2
+  if [ -z "$left" ]; then
+    echo "ticket.sh: aborted -- restored $(for e in $EDITED; do basename "$e"; done | tr '\n' ' ')" | sed 's/ $//' | sed 's/$/; main worktree left clean/' >&2
+  else
+    echo "ticket.sh: aborted -- NOT clean: a git lock blocked the restore of$left. Once no other git runs in $MAIN:  git -C $MAIN restore --staged --worktree --$left" >&2
+  fi
 }
 trap restore_edit EXIT
 trap 'exit 130' INT TERM  # a killed run still goes through the EXIT trap above
@@ -160,9 +170,20 @@ push_pending() {
 # commit ONE ticket file and push; on ANY failed push rebase and retry. Only a server error waits
 # out the backoff: an ordinary non-ff race needs no wait, and we hold the lock the whole time.
 # If the push never succeeds the commit stays local (tree clean); the next ticket.sh run pushes it.
+g_unlocked() { # git in MAIN; only when it fails naming index.lock (a concurrent `git status`/commit holds it for a moment,
+  # T-0218) it is retried, at most 5 times 1 s apart, with the same arguments; any other failure is final at once
+  local n=0 rc err
+  while :; do
+    err=$(g "$@" 2>&1) && { [ -z "$err" ] || printf '%s\n' "$err" >&2; return 0; }
+    rc=$?
+    case $err in *index.lock*) ;; *) printf '%s\n' "$err" >&2; return "$rc";; esac
+    if [ "$n" -ge 5 ]; then printf '%s\n' "$err" >&2; echo "ticket.sh: $MAIN/.git/index.lock stayed busy through 5 retries" >&2; return "$rc"; fi
+    n=$((n + 1)); echo "ticket.sh: $MAIN/.git/index.lock is busy (another git): retry $n/5 in 1 s" >&2; sleep 1
+  done
+}
 commit_push() { # message file [file...]
   local k=1 s m=$1; shift
-  g add -- "$@"; g commit -q -m "$m" -- "$@"; EDITED=""
+  g_unlocked add -- "$@"; g_unlocked commit -q -m "$m" -- "$@"; EDITED=""
   push_once "push attempt $k" && { echo "pushed: $m"; return 0; }
   for s in $BACKOFF; do
     is_nonff || sleep "$s"
@@ -243,7 +264,7 @@ cmd_new() {
         -e "s/^status:.*/status: backlog/" -e "s/^created:.*/created: $(now)/" "$TD/_TEMPLATE.md" >"$f"
     set_field "$f" title "$title"
     append_log "$f" "- $(now) $WHO: filed -> backlog."
-    g add -- "$f"; g commit -q -m "tickets: $id new ($type $sev) $title" -- "$f"; EDITED=""
+    g_unlocked add -- "$f"; g_unlocked commit -q -m "tickets: $id new ($type $sev) $title" -- "$f"; EDITED=""
     k=$((k + 1)); if push_once "push attempt $k"; then pushed=1; break; fi
     if ! is_nonff; then  # server error, not an id race: keep the id, back off and retry the same commit
       rc=0
@@ -360,8 +381,12 @@ cmd_move() {
     [ -n "${TICKET_FORCE:-}" ] || die "$id: -> merged is written by 'scripts/ticket.sh merge $id' (ff-only, trailers checked, closed_by read after the merge), not by move. TICKET_FORCE=1 only for a merge that already happened by hand, with its shas in the evidence."
     ev="FORCED (merged by hand, not ticket.sh merge): $ev"
   fi
-  if { [ "$old" = backlog ] || [ "$old" = skipped ]; } && [ "$st" = ready ] && [ -z "$(sed -n '/^## Investigation/,/^## Log/p' "$f" | grep -v '^## \|^<\|^scope\|^$' | head -1)" ]; then
+  if { [ "$old" = backlog ] || [ "$old" = skipped ] || [ "$old" = blocked ]; } && [ "$st" = ready ] && [ -z "$(sed -n '/^## Investigation/,/^## Log/p' "$f" | grep -v '^## \|^<\|^scope\|^$' | head -1)" ]; then   # blocked: T-0218
     die "$id: $old -> ready needs a written ## Investigation (the ticket desk's job; see tickets/README.md)"
+  fi
+  if { [ "$old" = backlog ] || [ "$old" = skipped ] || [ "$old" = blocked ]; } && [ "$st" = ready ] && [ -z "$(plain_words "$f")" ]; then   # T-0217: T-0215's rule; blocked: T-0218
+    [ -n "${TICKET_FORCE:-}" ] || die "$id: $old -> ready needs a written ## In plain words section: right after the front matter, 2-4 sentences the human can understand (what is wrong or wanted, why it matters to them, what they will notice when it is done, what they must do), no paths, shas, session names or acronyms (T-0215). Write it with 'scripts/ticket.sh put $id <your edited copy> \"In plain words\"'. TICKET_FORCE=1 only with the reason in the evidence."
+    ev="FORCED (no In plain words section): $ev"
   fi
   if [ "$st" = done ] && [ "$old" = merged ] && [ "$(field "$f" deploy)" != none ]; then
     die "$id: merged -> done only when deploy: none; this ticket deploys via '$(field "$f" deploy)' (ready-to-deploy -> deployed first)"
@@ -1153,6 +1178,49 @@ human_collect() {
       "$(sed 's/^Verify[^:]*:[ ]*//' <<<"$q" | cut -c1-200)" "the real output named in the ticket's Verify lines" "$id stays at deployed, unverified" ""
   done
 }
+# T-0217 (1.2.0), T-0218 (1.2.1): a ticket's `## In plain words` section (T-0215: right after the front matter, 2-4
+# sentences the human can understand) reaches tools as ONE line. The rule, in PLAIN_AWK and nowhere else: the FIRST
+# `## In plain words` heading before `## Log` opens the section, the next `## ` heading closes it (plain_feed, one body
+# line at a time); HTML comments are stripped whatever they hold, a line that is only a `<placeholder>` is dropped, the
+# rest is joined by one space with the whitespace squeezed, capped at 1200 bytes on a UTF-8 boundary (plain_line); ""
+# when there is nothing. Shared by the -> ready gate (cmd_move), `board --json` (per ticket, inside board_json_tickets)
+# and `human --json` (per item, item_plain).
+PLAIN_AWK='function plain_reset() { pw = ""; pon = 0; pseen = 0; pdone = 0 }
+function plain_feed(l) {
+  if (pdone) return
+  if (l ~ /^## Log[ \t]*$/) { pdone = 1; pon = 0; return }
+  if (l ~ /^## /) { pon = 0; if (!pseen && l ~ /^## In plain words[ \t]*$/) { pon = 1; pseen = 1 }; return }
+  if (pon) pw = pw l "\n" }
+function plain_line(s,   n, i, j, l, L, out, rest) {
+  while ((i = index(s, "<!--")) > 0) { rest = substr(s, i + 4); j = index(rest, "-->"); s = substr(s, 1, i - 1) (j ? substr(rest, j + 3) : "") }
+  n = split(s, L, "\n"); out = ""
+  for (i = 1; i <= n; i++) { l = L[i]; gsub(/^[ \t]+|[ \t]+$/, "", l); if (l == "" || l ~ /^<[^>]*>$/) continue; out = out (out == "" ? "" : " ") l }
+  gsub(/[ \t]+/, " ", out)
+  if (length(out) > 1200) out = utf8_whole(substr(out, 1, 1200))
+  return out }
+function utf8_whole(s,   n, k, c, need, i) {
+  if (!hiinit) { for (i = 128; i < 256; i++) HI[sprintf("%c", i)] = i; hiinit = 1 }
+  n = length(s); k = n
+  while (k > 0 && (c = HI[substr(s, k, 1)] + 0) >= 128 && c < 192) k--
+  if (k == 0) return s
+  c = HI[substr(s, k, 1)] + 0; if (c < 192) return s
+  need = (c >= 240) ? 4 : (c >= 224) ? 3 : 2
+  return (n - k + 1 < need) ? substr(s, 1, k - 1) : s }
+'
+plain_words() { # file -> the one line (or nothing)
+  awk "$PLAIN_AWK"'BEGIN { plain_reset() } { plain_feed($0) } END { printf "%s", plain_line(pw) }' "$1"
+}
+item_plain() { # "T-a + T-b" (an inbox item'"'"'s tickets) -> their plain words on one line; several tickets: each prefixed by its id
+  local id f n=0 out="" p
+  for id in $1; do case $id in T-[0-9]*) n=$((n + 1));; esac; done
+  for id in $1; do
+    case $id in T-[0-9]*) ;; *) continue;; esac
+    f=$(file_of "$id" 2>/dev/null) || continue; p=$(plain_words "$f"); [ -n "$p" ] || continue
+    [ "$n" -le 1 ] || p="$id: $p"
+    out="${out:+$out  }$p"
+  done
+  printf '%s' "$out"
+}
 # JSON string escaping shared by `human --json` and `board --json` (T-0147/T-0158): \ and " as usual, every control
 # character by name (\t \n \r) or as \u00XX -- lossless, and the ops panel parses this, so no byte may break it.
 JSON_ESC_AWK='function esc(s,   i, c, n, out) {
@@ -1184,9 +1252,9 @@ cmd_human() {
       [ -n "$verb" ] || continue
       [ $first = 1 ] || printf ','; first=0
       # id (T-0158): stable across re-renders, changes when the ask text changes -- what a click on a page binds to
-      printf '{"id":"%s","verb":"%s","tickets":"%s","priority":"%s","title":"%s","since":"%s","command":"%s","expect":"%s","if_nothing":"%s","note":"%s"}' \
+      printf '{"id":"%s","verb":"%s","tickets":"%s","priority":"%s","title":"%s","plain":"%s","since":"%s","command":"%s","expect":"%s","if_nothing":"%s","note":"%s"}' \
         "$(printf '%s' "$verb|$ids|$cmd|$expect" | sha1sum | cut -c1-10)" \
-        "$verb" "$ids" "$prio" "$(human_json_str "$title")" "$stamp" "$(human_json_str "$cmd")" "$(human_json_str "$expect")" "$(human_json_str "$nothing")" "$(human_json_str "$note")"
+        "$verb" "$ids" "$prio" "$(human_json_str "$title")" "$(human_json_str "$(item_plain "$ids")")" "$stamp" "$(human_json_str "$cmd")" "$(human_json_str "$expect")" "$(human_json_str "$nothing")" "$(human_json_str "$note")"
     done < <(printf '%s' "$HUMAN_ITEMS" | sort -t"$US" -k1,1n -k2,2n -k3,3)
     printf ']\n'; return 0
   fi
@@ -1346,12 +1414,14 @@ orphans() { # -> "<branch>\t<commits not in trunk>\t<behind>" for every local br
 BOARD_JSON_KEYS="id title type severity status repos areas affects deploy owner worktree branch base claimed created depends_on siblings blocked_on human closed_by plan resolution"
 BOARD_JSON_LIST_KEYS="repos areas affects depends_on siblings closed_by"   # always arrays; every other key is always a string
 board_json_tickets() { # files... -> one line per ticket, US-separated (empty columns survive `read`): id, status, repos, branch, worktree, has ask (1|0), json object
+  # The object: every front-matter key (below), then "plain" (T-0217/T-0218: the ## In plain words section as one line
+  # by PLAIN_AWK's rule, "" when missing -- the only key read from the body); the caller appends "stats".
   # values follow field(): the first "key:" at column 1 of the front matter, a trailing "#..." comment stripped (so a
   # value with a '#' in it is cut there, as on the text board). Types are per KEY, never per value, so a consumer can rely
   # on them: the six list keys are always arrays ("[a, b]" split on commas; free text = one element; "" = []), every
   # other key is always a string ("" when empty; a map {<repo>: x, <repo>: y} stays the text as written). A file
   # without front matter is skipped.
-  awk -v keys="$BOARD_JSON_KEYS" -v listkeys="$BOARD_JSON_LIST_KEYS" "$JSON_ESC_AWK"'
+  awk -v keys="$BOARD_JSON_KEYS" -v listkeys="$BOARD_JSON_LIST_KEYS" "$JSON_ESC_AWK$PLAIN_AWK"'
     function jval(k, s,   n, i, parts, out) {
       if (!(k in L)) return "\"" esc(s) "\""
       if (s ~ /^\[.*\]$/) { s = substr(s, 2, length(s) - 2); gsub(/^[ ]+/, "", s); gsub(/[ ]+$/, "", s) }
@@ -1364,13 +1434,15 @@ board_json_tickets() { # files... -> one line per ticket, US-separated (empty co
       if (!started || V["id"] == "") return
       out = "{"
       for (i = 1; i <= nk; i++) out = out (i > 1 ? "," : "") "\"" K[i] "\":" jval(K[i], V[K[i]])
+      out = out ",\"plain\":\"" esc(plain_line(pw)) "\""
       printf "%s\037%s\037%s\037%s\037%s\037%d\037%s}\n", V["id"], V["status"], V["repos"], V["branch"], V["worktree"], (V["human"] != ""), out
     }
     BEGIN { nk = split(keys, K, " "); nl = split(listkeys, LK, " "); for (i = 1; i <= nl; i++) L[LK[i]] = 1 }
-    FNR == 1 { flush(); started = 1; fm = 0; for (i = 1; i <= nk; i++) V[K[i]] = ""; delete set; if ($0 == "---") { fm = 1; next } }
-    fm && $0 == "---" { fm = 0; nextfile }
+    FNR == 1 { flush(); started = 1; fm = 0; plain_reset(); for (i = 1; i <= nk; i++) V[K[i]] = ""; delete set; if ($0 == "---") { fm = 1; next } }
+    fm && $0 == "---" { fm = 0; next }
     fm { k = $0; sub(/:.*/, "", k)
          if (k ~ /^[a-z_]+$/ && (k in V) && !(k in set)) { v = $0; sub("^" k ":[ ]*", "", v); sub(/[ ]*#.*$/, "", v); V[k] = v; set[k] = 1 } }
+    !fm { plain_feed($0) }
     END { flush() }
   ' "$@"
 }

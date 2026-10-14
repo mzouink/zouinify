@@ -123,11 +123,18 @@ the desk), `log T-xxxx "<line>"` (a log line of the form `waits-on: aws-sso -- r
 ticket as waiting for the AWS login while it is the newest line: the panel lists it under its "SSO updated"
 button and the desk messages the owner when the login is back; it never reaches the human's inbox), `set T-xxxx <field> "<value>"`, `ask T-xxxx "<VERB> <what> | <command> |
 <expected> | <if you do nothing>"` (a one-line ask that appears in the human's `ticket.sh human`; `ask T-xxxx ""`
-or the next `move` clears it), and to write a ticket's Problem /
+or the next `move` clears it), and to write a ticket's In plain words / Problem /
 Fix / areas: **copy it out, edit the copy in your own worktree or scratchpad, then
 `put T-xxxx <copy> "<what>"`** -- never edit files under the main worktree's `{{tickets_dir}}/` by hand (that
 leaves main dirty and blocks every other session; `sync` exists only to rescue such an edit).
 Never change `status:` that way; use `move`.
+
+**In plain words.** Every ticket opens, right after the front matter, with a `## In plain words` section: 2-4 sentences
+the human can understand, in four parts -- what is wrong or wanted, why it matters to them, what they will notice when
+it is done, and what they must do (or "Nothing is needed from you."); no file paths, shas, session names or acronyms.
+The filer writes it at `backlog`; the desk rewrites it in plain words before `ready`, and `move ... ready` refuses a
+ticket without it; the owner keeps it true when the scope changes. The panel shows it first, above the title, and
+`board --json` / `human --json` carry it as `plain`.
 
 **One voice.** You never address the human in your own window; only your own permission prompts appear
 there. A decision, a paid run, a deploy, a browser check, a command you were refused: write
@@ -217,8 +224,8 @@ claim a `backlog` ticket; tell the desk. It launches every worker with one line 
 ## 8. Files
 
 - `T-NNNN-<slug>.md` -- one per ticket: front matter (`status`, `owner`, `areas`, `affects`, `deploy`,
-  `closed_by`, ...), then `## Problem`, `## Fix` (a checkbox per affected surface), `## Investigation`,
-  an append-only `## Log`, and `## Deploy handoff`.
+  `closed_by`, ...), then `## In plain words` (for the human; the panel shows it first), `## Problem`, `## Fix` (a
+  checkbox per affected surface), `## Investigation`, an append-only `## Log`, and `## Deploy handoff`.
 - `_TEMPLATE.md` -- the skeleton `ticket.sh new` copies.
 - `WORKER_BRIEF.md` -- the two-minute brief every session reads at launch (section 3 is the long form).
 - The human's list is `{{tickets_script}} human`, computed from these files (the `human:` field holds a session's ask).
