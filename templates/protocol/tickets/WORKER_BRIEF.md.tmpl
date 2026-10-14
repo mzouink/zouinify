@@ -17,8 +17,7 @@ only voice to the human. The protocol is `{{tickets_dir}}/README.md`; this page 
    reviewer gets your diff, never your summary. Keep the ticket's `## In plain words` section true when the
    scope changes (`put` on a copy): it is what the human reads first.
 4. **One voice.** You never address the human in your own window; only your own permission prompts appear
-   there. Anything that needs the human -- a decision, a paid run, a deploy, a
-   browser check, a command you were refused -- goes to the desk as one block:
+   there. Anything that needs the human -- {{plugin.human_asks}} -- goes to the desk as one block:
    `<VERB> <T-xxxx>: <what and why>`, the exact command, `expect: <last line>`, `if you do nothing:
    <consequence>`: `{{tickets_script}} ask T-xxxx "..."` when it belongs to a ticket, `SendMessage` to the
    desk when it does not. Then continue with something else: your ask is on the human's list at once
