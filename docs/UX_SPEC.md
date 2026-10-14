@@ -115,7 +115,10 @@ source on hover, a padlock showing `loopback` or `intranet`. No user menu: there
 | **Deploy & verify** | tickets in `ready-to-deploy` (+ `merged` with a deploy) | `deployed awaiting a live check: n` | `#/tickets?state=ready-to-deploy` |
 
 Counts are scoped to this project (sessions: `cwd == project root`; tickets: this `tickets/` dir). Skeletons while loading;
-`0` with a one-line explanation when empty; never an invented metric.
+`0` with a one-line explanation when empty; never an invented metric. The P0 banner above the cards is the red `role=alert`
+band for a P0 whose regression is still live (any status before `deployed`); a P0 at `deployed` (fix live, verification
+pending) is one calm line in the same slot, "P0 T-xxxx: fix deployed since <stamp>, verification pending (<owner>)", linking
+the ticket, outside `p0_open_tickets` and the title count (T-0212).
 
 ### 2.3 Ticket board (the lifecycle has 12 states, the dashboard shows 5 lanes)
 
@@ -339,8 +342,10 @@ exactly as lavish: `listening` (a poll is open), `working` (a receipt was delive
 event logs (nothing else is stored). Fixed note under the composer: "The desk treats this as a question or a claim, never as
 an approval. Approvals are typed in the tickets window." Desk only in v1 (one voice); a session picker is a later decision.
 Enter sends (a one-line input). Without a browser token the composer is disabled and the panel shows only the desk's last
-visible line. A draft survives the page's periodic repaint (it is kept in the page's state under the composer's key, and the
-focus stays in the box); the same composer sits at the bottom of every ticket drawer with the ticket id in the receipt.
+visible line. A draft survives the page's periodic repaint (it is kept in the page's state under the composer's key until it
+is sent or the page reloads, closing a drawer keeps it, and the focus stays in the box; Escape with a draft in the box does
+not close the drawer, as the box's tooltip says); the same composer sits at the bottom of every ticket drawer with the ticket
+id in the receipt.
 
 ### 2.10 Settings (read-only)
 
@@ -356,7 +361,7 @@ vendored `ticket.sh` core. Nothing editable from the page.
 | ≥ 1440 | sidebar, 3 KPIs, 5 lanes visible, lower rows 2 + 1 |
 | 1024-1439 | sidebar, board scrolls horizontally, lower rows 2 columns |
 | 768-1023 | collapsed sidebar, KPIs 3 then 2 + 1, board scrolls, panels stack |
-| < 768 (phone over the LAN) | top bar + menu; order: P0 banner, **Inbox**, **Panes waiting**, KPIs, board (horizontal scroll), Sessions, Desk chat; 44 px touch targets; safe-area padding; no hover-only actions |
+| < 768 (phone over the LAN) | top bar + menu; order: P0 banner (the red `role=alert` band for a P0 before `deployed`; a deployed P0, fix live and verification pending, is one calm line in the same slot, outside the KPI and the title count, T-0212), **Inbox**, **Panes waiting**, KPIs, board (horizontal scroll), Sessions, Desk chat; 44 px touch targets; safe-area padding; no hover-only actions |
 
 ## 4. States, security UX, accessibility
 

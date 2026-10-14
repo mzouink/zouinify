@@ -279,8 +279,11 @@ class TestApi(PanelWorld):
         self.assertEqual(b["chips"]["done"], 1)
         self.assertEqual(b["chips"]["dropped"], 1)
         self.assertEqual(s["kpis"]["p0"], 0, "the KPI counts P0 items in the inbox (none in HUMAN_JSON)")
-        self.assertEqual(s["kpis"]["p0_open_tickets"], 2)
-        self.assertEqual([t["id"] for t in s["p0"]], ["T-0005", "T-0011"], "the banner lists every open P0 ticket, with its state")
+        self.assertEqual(s["kpis"]["p0_open_tickets"], 1, "a P0 is open until its fix is deployed (T-0212)")
+        self.assertEqual([t["id"] for t in s["p0"]], ["T-0005"], "the alert band lists the live P0s only")
+        self.assertEqual([(t["id"], t["status"], t["since"]) for t in s["p0_verifying"]], [("T-0011", "deployed", "")],
+                         "a deployed P0 is verifying: its own list, no `-> deployed` log line in the fixture so no since")
+        self.assertEqual(s["kpis"]["p0_verifying"], 1)
         # newest plan: deploy/new.plan; T-0010's plan is old -> VOID
         self.assertEqual(b["newest_plan"], "new.plan")
         dep = [t for t in b["lanes"]["deployed"] if t["id"] == "T-0010"][0]
@@ -605,7 +608,8 @@ function verdictClass(r) { return ''; }
         self.assertRegex(js, r"if \(ev\.target\.matches\('\[data-rc-input\]'\)\) \{ const k = ev\.target\.getAttribute\('data-rc-input'\); if \(ev\.target\.value\) state\.typed\[k\] = ev\.target\.value; else delete state\.typed\[k\]; \}",
                          "the input listener keeps the draft under the input's key")
         self.assertIn("if (data.from === 'input') { delete state.typed[data.key];", js, "a sent message is no longer a draft")
-        self.assertIn("state.typed[key] = inp.value; inp.focus(); } else toast(NO_TOKEN); return; }", js, "a chip's text is the draft; without a composer it says why")
+        self.assertIn("state.typed[key] = inp.value; inp.focus(); } else toast('nothing to fill: this page has no composer'); return; }", js,
+                      "a chip's text is the draft; without a composer it says so (T-0214 review nit, folded into T-0212)")
         self.assertIn("if (ev.key === 'Escape') { if (ev.target.matches && ev.target.matches('[data-rc-input]') && ev.target.value) return; closeDrawer(true); }", js,
                       "Escape does not throw a draft away")
         # the repaint itself: no skeleton while the same ticket is open, the focus stays in the composer, the close button is
@@ -636,6 +640,66 @@ function verdictClass(r) { return ''; }
         if node:
             r = subprocess.run([node, "-e", "new Function(require('fs').readFileSync(0, 'utf8'))"], input=js, capture_output=True, text=True, timeout=30)
             self.assertEqual(r.returncode, 0, r.stderr)
+
+    # ---- T-0212: a deployed P0 is not a live incident --------------------------------------------------------
+    def test_a_deployed_p0_is_a_calm_line_with_its_deploy_time_not_an_alert(self):
+        """T-0212: the fix of T-0011 is live and its verification pending: it leaves board.p0 (the alert, the KPI) for
+        board.p0_verifying with `since` = the stamp of its newest `-> deployed` log line; a P0 anywhere before deployed stays
+        an alert; the status command counts the same way."""
+        path = os.path.join(self.root, "tickets", "T-0011-deployed-p0-regression.md")
+        with open(path, "a") as fh:
+            fh.write("- 2026-10-13 00:30 tp-desk: ready-to-deploy -> deployed. first attempt, serial 2 -> 3\n"
+                     "- 2026-10-13 01:00 tp-desk: deployed -> ready-to-deploy. rolled back (TICKET_FORCE)\n"
+                     "- 2026-10-13 01:30 tp-desk: ready-to-deploy -> deployed. CodeSha256 == plan, serial 3 -> 4\n"
+                     "- 2026-10-13 02:00 tp-debug: live check: HTTP 200 from /status, deployed-ish wording that is no state change\n")
+        s = self.get_json("/api/snapshot")
+        self.assertEqual([t["id"] for t in s["p0"]], ["T-0005"])
+        ver = s["p0_verifying"]
+        self.assertEqual([(t["id"], t["since"], t["owner"]) for t in ver], [("T-0011", "2026-10-13 01:30", "")],
+                         "since = the newest state change TO deployed: not the first deploy (00:30), not the rollback, not the later line")
+        self.assertEqual((s["kpis"]["p0_open_tickets"], s["kpis"]["p0_verifying"]), (1, 1))
+        self.assertEqual(s["kpis"]["p0"], 0, "the inbox count, which the title uses, is untouched")
+        dep = [t for t in s["board"]["lanes"]["deployed"] if t["id"] == "T-0011"]
+        self.assertEqual(len(dep), 1, "the ticket still sits in the deployed lane")
+        # the page: the live band keeps role=alert; the verifying line has none, links the ticket, says deployed since when
+        import shutil
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here (CI has it)")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        m = re.search(r"\n  function p0Banner\(s\) \{.*?\n  \}\n", js, re.S)
+        self.assertTrue(m)
+        esc = re.search(r"\n  const esc = .*?;\n", js).group(0)
+        live = {"id": "T-0005", "title": "second <ready> p0", "status": "ready", "owner": ""}
+        verifying = {"id": "T-0011", "title": "deployed p0", "status": "deployed", "owner": "tp-debug", "since": "2026-10-13 01:30"}
+        script = esc + "function sinceLabel(x) { return 'since ' + x; }\n" + m.group(0) + "\nconst cases = " + json.dumps(
+            [{"p0": [], "p0_verifying": [verifying]}, {"p0": [live], "p0_verifying": []}, {"p0": [live], "p0_verifying": [verifying]},
+             {"p0": [], "p0_verifying": []}, {"p0": []}]) + ";\nconsole.log(JSON.stringify(cases.map(p0Banner)));"
+        r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        only_ver, only_live, both, none, old_snapshot = json.loads(r.stdout)
+        self.assertNotIn('role="alert"', only_ver)
+        self.assertIn('<a href="#/tickets/T-0011" title="deployed p0">P0 T-0011</a>: fix deployed since 2026-10-13 01:30, verification pending (tp-debug)', only_ver)
+        self.assertNotIn("!! P0", only_ver)
+        self.assertIn('class="p0verifying"', only_ver)
+        self.assertIn('role="alert"', only_live)
+        self.assertIn("!! P0 T-0005", only_live)
+        self.assertIn("second &lt;ready&gt; p0", only_live)
+        self.assertNotIn("verification pending", only_live)
+        self.assertTrue(both.index('role="alert"') < both.index('class="p0verifying"'), "the alert first, the calm line under it")
+        self.assertEqual(none, "")
+        self.assertEqual(old_snapshot, "", "a snapshot without the new list renders nothing extra")
+        title = re.search(r"document\.title = .*;\n", js).group(0)
+        self.assertIn("s.kpis.p0 ?", title, "the title counts the inbox P0 items")
+        self.assertNotIn("p0_verifying", title)
+        self.assertNotIn("p0_open_tickets", title)
+        css = self.req("GET", "/static/app.css")[2].decode()
+        self.assertRegex(css, re.compile(r"^\.p0verifying \{[^}]*border: 1px solid var\(--border-subtle\)", re.M), "calm: the card border, not the red one")
+        self.assertIn(".dash .p0banner, .dash .p0verifying { order: 1; }", css, "same slot on a phone")
+        # the status command counts the same way
+        r = self.ok("status", "--json", "--no-cache")
+        d = json.loads(r.stdout)
+        self.assertEqual((d["p0_open_tickets"], d["p0_verifying"]), (1, 1))
 
     def test_lanes_scroll_inside_and_content_stays_in_its_box(self):
         """T-0199: the board is no longer as tall as its longest lane; a sha list, a receipt badge and the sessions table stay

@@ -207,9 +207,28 @@ def board_source(cfg) -> dict:
     merged_no_deploy = [c for c in cards if c["status"] == "merged" and (not c.get("deploy") or c["deploy"] == "none")]
     if merged_no_deploy:
         other["merged (no deploy)"] = len(merged_no_deploy)
-    p0 = [c for c in cards if c.get("severity") == "P0" and c["status"] not in readonly.TERMINAL]
-    return {"cards": cards, "lanes": lanes, "chips": chips, "counts": counts, "other": other, "p0": p0,
+    # a P0 is a live incident until its fix is deployed: before `deployed` it is the alert band, the KPI and the title count;
+    # at `deployed` (fix live, verification pending) it is a calm line of its own, outside those counts (T-0212)
+    p0_all = [c for c in cards if c.get("severity") == "P0" and c["status"] not in readonly.TERMINAL]
+    p0 = [c for c in p0_all if c["status"] != "deployed"]
+    p0_verifying = []
+    for c in p0_all:
+        if c["status"] == "deployed":
+            path = readonly.file_of(cfg, c["id"]) if c.get("id") else None
+            p0_verifying.append(dict(c, since=deployed_since(path) if path else ""))
+    return {"cards": cards, "lanes": lanes, "chips": chips, "counts": counts, "other": other, "p0": p0, "p0_verifying": p0_verifying,
             "newest_plan": newest, "void_plans": sorted(void), "source": source, "warnings": warnings, "total": len(cards)}
+
+
+DEPLOYED_LINE_RE = re.compile(r"(^|\s)->\s*deployed(?=[\s.,;:!)]|$)")      # the state word itself, not `deployed-...`
+
+
+def deployed_since(path: str) -> str:
+    """The stamp of the ticket's newest state-change log line to `deployed` (`... <old> -> deployed. <evidence>`), or ''."""
+    for row in ticket_sections(path)["log"]:          # newest first
+        if DEPLOYED_LINE_RE.search(row["text"]):
+            return row["at"]
+    return ""
 
 
 def walk_to_pane(pid, pane_by_pid: dict, depth: int = 5):
@@ -1013,7 +1032,7 @@ class Snapshot:
         creds_left = str((creds or {}).get("left") or "?")
         inbox = inbox or {"items": [], "count": None, "p0": 0}
         board = board or {"cards": [], "lanes": {n: [] for n, _ in LANES}, "chips": {k: 0 for k in CHIPS}, "counts": {}, "other": {},
-                          "p0": [], "newest_plan": "", "void_plans": [], "source": "", "warnings": [], "total": 0}
+                          "p0": [], "p0_verifying": [], "newest_plan": "", "void_plans": [], "source": "", "warnings": [], "total": 0}
         rows = (sessions or {}).get("rows", [])
         now = readonly.now_local(cfg)
         waiting = [r for r in rows if r["state"] == "waiting"]
@@ -1030,7 +1049,7 @@ class Snapshot:
         awaiting_ids = {r["id"] for r in checks if r["awaiting_live_check"]}
         # the cached board is shared across request threads: decorate COPIES of its cards, never the cache (T-0205)
         board = dict(board, cards=[dict(c) for c in board["cards"]], lanes={k: [dict(c) for c in v] for k, v in board["lanes"].items()},
-                     p0=[dict(c) for c in board["p0"]])
+                     p0=[dict(c) for c in board["p0"]], p0_verifying=[dict(c) for c in board.get("p0_verifying", [])])
         for c in board["cards"] + [c for lane in board["lanes"].values() for c in lane]:
             if c.get("status") == "deployed":           # the deployed card says "awaiting live check" or "plan void", from the same rule
                 c["awaiting_live_check"] = c.get("id") in awaiting_ids
@@ -1045,13 +1064,13 @@ class Snapshot:
                                 "state": desk_row["state"] if desk_row else "gone", "model": desk_row["model"] if desk_row else "?",
                                 "last_line": desk_row["last_line"] if desk_row else "", "last_reply": desk_row.get("last_reply", "") if desk_row else "",
                                 "presence": receipts["presence"], "polling": receipts["polling"]}},
-            "kpis": {"inbox": inbox.get("count"), "p0": inbox.get("p0", 0), "p0_open_tickets": len(board["p0"]),
+            "kpis": {"inbox": inbox.get("count"), "p0": inbox.get("p0", 0), "p0_open_tickets": len(board["p0"]), "p0_verifying": len(board["p0_verifying"]),
                      "waiting": by_state.get("waiting", 0), "working": by_state.get("working", 0), "idle": by_state.get("idle", 0),
                      "gone": by_state.get("gone", 0), "shell": by_state.get("shell", 0), "waiting_elsewhere": len(foreign_rows),
                      "to_deploy": len(board["lanes"].get("to deploy", [])), "deployed": counts.get("deployed", 0),
                      "awaiting_live_check": len(awaiting_ids),
                      "sessions": len(rows), "tickets": board["total"]},
-            "p0": board["p0"], "inbox": {"items": inbox["items"], "count": inbox.get("count"), "error": inbox_err},
+            "p0": board["p0"], "p0_verifying": board["p0_verifying"], "inbox": {"items": inbox["items"], "count": inbox.get("count"), "error": inbox_err},
             "board": {k: board[k] for k in ("lanes", "chips", "counts", "other", "newest_plan", "void_plans", "source", "warnings", "total")},
             "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
             "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},

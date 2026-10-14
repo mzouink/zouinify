@@ -146,16 +146,21 @@ def freeze_lists(cfg, tid: str) -> bool:
 
 
 def counts(cfg) -> tuple:
-    """({status: n}, number of open P0 tickets) from the front matter alone (no git, sub-second)."""
+    """({status: n}, open P0 tickets, deployed P0 tickets awaiting verification) from the front matter alone (no git,
+    sub-second). A P0 is open, a live incident, until its status is `deployed`; from there until done it is verifying
+    (the same split as the panel's banner, T-0212)."""
     by: dict = {}
-    p0 = 0
+    p0 = p0_verifying = 0
     for f in ticket_files(cfg):
         fm = front_matter(f)
         st = fm.get("status", "")
         by[st] = by.get(st, 0) + 1
         if fm.get("severity") == "P0" and st not in TERMINAL:
-            p0 += 1
-    return by, p0
+            if st == "deployed":
+                p0_verifying += 1
+            else:
+                p0 += 1
+    return by, p0, p0_verifying
 
 
 def ticket_sh(cfg, args: list, capture: bool = True, timeout: float = 180) -> subprocess.CompletedProcess:

@@ -722,10 +722,12 @@ class TestStatus(World):
         d = json.loads(r.stdout)
         self.assertEqual(d["inbox"], 4)
         self.assertEqual(d["p0"], 1)                 # inbox P0 items
-        self.assertEqual(d["p0_open_tickets"], 2)    # T-0005 (ready) + T-0011 (deployed) on the board
+        self.assertEqual(d["p0_open_tickets"], 1)    # T-0005 (ready): a live P0; T-0011 is deployed, so it is verifying, not open (T-0212)
+        self.assertEqual(d["p0_verifying"], 1)       # T-0011 (deployed P0, fix live, verification pending)
         self.assertEqual(d["counts"]["in-dev"], 1)
         self.assertNotIn("sitting", d)
         r = self.ok("status")
+        self.assertIn("P0      1 in the inbox (1 open P0 ticket(s) on the board, 1 deployed, verification pending)", r.stdout)
         self.assertIn("inbox", r.stdout)
         self.assertNotIn("sitting", r.stdout.lower())
 

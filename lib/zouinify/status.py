@@ -146,11 +146,11 @@ def collect(cfg, use_cache: bool = True) -> dict:
         except (OSError, ValueError):
             pass
     now = now_local(cfg)
-    by, p0_open = tk.counts(cfg)
+    by, p0_open, p0_verifying = tk.counts(cfg)
     items = tk.human_items(cfg)
     inbox = len(items) if items is not None else None
     p0 = sum(1 for it in items if str(it.get("priority", "")).upper() == "P0") if items is not None else 0
-    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "creds": creds(cfg, now, use_cache=use_cache),
+    data = {"inbox": inbox, "p0": p0, "p0_open_tickets": p0_open, "p0_verifying": p0_verifying, "creds": creds(cfg, now, use_cache=use_cache),
             "counts": by, "generated": now.replace(microsecond=0).isoformat(), "trunk": cfg.trunk, "project": cfg.name}
     try:
         os.makedirs(cfg.state_dir, exist_ok=True)
@@ -175,7 +175,8 @@ def long(data: dict) -> str:
     c = data.get("counts") or {}
     rows = [f"{data.get('project')} @ {data.get('generated')}  (trunk {data.get('trunk')})",
             f"inbox   {data.get('inbox') if data.get('inbox') is not None else '? (ticket.sh human --json failed)'}",
-            f"P0      {data.get('p0', 0)} in the inbox ({data.get('p0_open_tickets', 0)} open P0 ticket(s) on the board)",
+            f"P0      {data.get('p0', 0)} in the inbox ({data.get('p0_open_tickets', 0)} open P0 ticket(s) on the board"
+            + (f", {data['p0_verifying']} deployed, verification pending" if data.get("p0_verifying") else "") + ")",
             f"creds   {data['creds']['left']}  ({data['creds']['source']})",
             "board   " + ("  ".join(f"{k} {v}" for k, v in sorted(c.items())) or "no tickets")]
     return "\n".join(rows)
