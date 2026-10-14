@@ -17,10 +17,8 @@ also recomputes the digest passes: the header guards against a hand edit made by
 output is deterministic (the same sources give the same bytes)."""
 from __future__ import annotations
 
-import errno
 import os
 import re
-import stat
 import sys
 
 from zouinify import ZouinifyError, generated
@@ -99,33 +97,14 @@ def notes_file(root: str, role: str) -> str | None:
 
 def project_notes(root: str, role: str) -> str:
     """The notes spliced verbatim (one trailing newline stripped, nothing else touched: a `{{...}}` in them stays as
-    written), or the stub when the project has not written them yet. The file is opened O_NOFOLLOW and the open
-    descriptor must be the regular file notes_file() checked (same device and inode): a swap for a link or a non-file
-    between the check and the open is caught. A same-uid writer changing the bytes meanwhile is out of scope: it can
-    write the file directly, so no check here would add anything."""
-    p = notes_file(root, role)
-    if p is None:
+    written), or the stub when the project has not written them yet. notes_file() checks the directory and the path;
+    generated.read_project_text() does the O_NOFOLLOW open, the same-file check and the UTF-8 decode (shared with the
+    protocol's README.project.md since T-0219)."""
+    if notes_file(root, role) is None:
         return NOTES_STUB.format(role=role)
-    rel = notes_rel(role)
-    try:
-        checked = os.lstat(p)
-        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError as e:
-        if e.errno == errno.ELOOP:
-            raise ZouinifyError(f"{rel} is a symlink; project notes live under the project root only") from None
-        raise ZouinifyError(f"{rel}: {e.strerror}") from None
-    try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
-            raise ZouinifyError(f"{rel} changed while it was being read; run again")
-        with os.fdopen(fd, encoding="utf-8") as fh:
-            fd = -1
-            text = fh.read()
-    except UnicodeDecodeError:
-        raise ZouinifyError(f"{rel}: not UTF-8 text") from None
-    finally:
-        if fd >= 0:
-            os.close(fd)
+    text = generated.read_project_text(root, notes_rel(role), "project notes")
+    if text is None:                                  # gone between the check and the read
+        return NOTES_STUB.format(role=role)
     return text[:-1] if text.endswith("\n") else text
 
 

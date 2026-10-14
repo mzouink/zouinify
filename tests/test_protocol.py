@@ -389,6 +389,96 @@ class TestProtocol(World):
         self.assertNotIn("the deploys waiting", readme)
         self.assertNotIn("--human deploys-->", readme)
 
+    def test_the_project_readme_is_read_like_the_brief_notes_and_an_unclosed_fence_is_refused(self):
+        """T-0219 review: .ops/README.project.md can now replace any section, so it gets the brief notes' refusals: a symlink
+        (never followed), a non-file, a non-UTF-8 file; and a fence left open would swallow every later heading."""
+        elsewhere = os.path.join(self.tmp, "elsewhere.md")
+        with open(elsewhere, "w") as fh:
+            fh.write("## 0. Environments\n\nplanted from outside\n\n## 4. The rules\n\nmine now\n")
+        os.symlink(elsewhere, os.path.join(self.root, ".ops", "README.project.md"))
+        r = self.nz("protocol", "render", "--out", self.out)
+        self.assertIn(".ops/README.project.md is a symlink; the project's README sections live under the project root only", r.stderr)
+        self.assertFalse(os.path.exists(self.out), "refused before anything is written")
+        os.unlink(os.path.join(self.root, ".ops", "README.project.md"))
+        os.symlink(os.path.join(self.tmp, "nowhere.md"), os.path.join(self.root, ".ops", "README.project.md"))      # dangling
+        r = self.nz("protocol", "render", "--out", self.out)
+        self.assertIn(".ops/README.project.md is a symlink", r.stderr)
+        os.unlink(os.path.join(self.root, ".ops", "README.project.md"))
+        os.makedirs(os.path.join(self.root, ".ops", "README.project.md"))                                        # a directory
+        r = self.nz("protocol", "render", "--out", self.out)
+        self.assertIn(".ops/README.project.md exists and is not a regular file", r.stderr)
+        os.rmdir(os.path.join(self.root, ".ops", "README.project.md"))
+        with open(os.path.join(self.root, ".ops", "README.project.md"), "wb") as fh:
+            fh.write(b"## 0. Environments\n\n\xff\xfe not text\n")
+        r = self.nz("protocol", "render", "--out", self.out)
+        self.assertIn(".ops/README.project.md: not UTF-8 text", r.stderr)
+        self.assertFalse(os.path.exists(self.out))
+        self.write(".ops/README.project.md", "## 3. A\n\n```bash\necho never closed\n\n## 4. B\n\nmine\n")
+        r = self.nz("protocol", "render", "--out", self.out)
+        self.assertIn(".ops/README.project.md: the code fence opened at line 3 is never closed", r.stderr)
+        self.write(".ops/README.project.md", "## 3. A\n\n```bash\necho closed\n```\n\n## 4. B\n\nmine\n")
+        r = self.render()
+        self.assertIn("section 3  project", r.stdout)
+        self.assertIn("section 4  project", r.stdout)
+        self.assertIn("\n## 4. B\n\nmine\n\n## 5. States", self.read_out("README.md"))
+        # --project-readme FILE is the caller's own choice: a file outside the project is fine there, but a symlinked file or
+        # parent, a non-file and a non-UTF-8 file are refused the same way, with a clean error
+        with open(elsewhere, "w") as fh:
+            fh.write("## 6. The desk, ours\n\nflag text\n")
+        r = self.render("--force", "--project-readme", elsewhere)
+        self.assertIn("section 6  project", r.stdout)
+        self.assertIn("\n## 6. The desk, ours\n\nflag text\n\n## 7. Deploying", self.read_out("README.md"))
+        with open(elsewhere, "wb") as fh:
+            fh.write(b"\xff\xfe")
+        r = self.nz("protocol", "render", "--out", self.out, "--force", "--project-readme", elsewhere)
+        self.assertIn("--project-readme " + elsewhere + ": not UTF-8 text", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        link = os.path.join(self.tmp, "link.md")
+        os.symlink(elsewhere, link)
+        r = self.nz("protocol", "render", "--out", self.out, "--force", "--project-readme", link)
+        self.assertIn("--project-readme " + link + " is a symlink", r.stderr)
+        linkdir = os.path.join(self.tmp, "linkdir")
+        os.symlink(self.tmp, linkdir)
+        r = self.nz("protocol", "render", "--out", self.out, "--force", "--project-readme", os.path.join(linkdir, "elsewhere.md"))
+        self.assertIn("--project-readme " + linkdir + " is a symlink", r.stderr)
+        r = self.nz("protocol", "render", "--out", self.out, "--force", "--project-readme", os.path.join(self.tmp, "nope.md"))
+        self.assertIn("not a file", r.stderr)
+        # the default path: a symlinked parent (.ops itself) is refused before anything is read; the briefs point elsewhere so
+        # the config still loads
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        for role in ("desk", "manager", "debug", "chrome_debug"):
+            cfg = cfg.replace(f"brief: .ops/briefs/{role}.md", f"brief: docs/{role}.md")
+            self.write(f"docs/{role}.md", f"# {role}\n")
+        self.write(".ops/config.yaml", cfg)
+        os.unlink(os.path.join(self.root, ".ops", "README.project.md"))
+        real_ops = os.path.join(self.tmp, "real-ops")
+        import shutil
+        shutil.move(os.path.join(self.root, ".ops"), real_ops)
+        os.symlink(real_ops, os.path.join(self.root, ".ops"))
+        with open(os.path.join(real_ops, "README.project.md"), "w") as fh:
+            fh.write("## 0. Environments\n\nthrough the link\n")
+        self.ok("config", "--check")
+        r = self.nz("protocol", "render", "--out", self.out, "--force")
+        self.assertIn(".ops is a symlink; the project's README sections live under the project root only", r.stderr)
+        # the shared reader on its own: a swapped inode between the check and the open, and the rendered body's fence
+        if LIB not in sys.path:
+            sys.path.insert(0, LIB)
+        from unittest import mock
+        from zouinify import generated, protocol, ZouinifyError
+        os.unlink(os.path.join(self.root, ".ops"))
+        shutil.move(real_ops, os.path.join(self.root, ".ops"))
+        with open(os.path.join(self.root, ".ops", "README.project.md"), "w") as fh:
+            fh.write("## 0. Environments\n\nfine\n")
+        self.assertEqual(generated.read_project_text(self.root, ".ops/README.project.md", "x"), "## 0. Environments\n\nfine\n")
+        real_lstat = os.lstat
+        with mock.patch.object(generated.os, "lstat", lambda p: os.stat_result(tuple(real_lstat(p))[:1] + (real_lstat(p).st_ino + 1,) + tuple(real_lstat(p))[2:])):
+            with self.assertRaises(ZouinifyError) as cm:
+                generated.read_project_text(self.root, ".ops/README.project.md", "x")
+        self.assertIn("changed while it was being read; run again", str(cm.exception))
+        with self.assertRaises(ZouinifyError) as cm:
+            protocol.apply_overrides("# t\n\nintro\n\n## 0. A\n\n```\nnever closed\n\n## 1. B\n", {})
+        self.assertIn("unclosed code fence", str(cm.exception))
+
     def test_twelve_states_everywhere(self):
         with open(os.path.join(REPO_UNDER_TEST, "templates", "ops", "config.yaml.example"), encoding="utf-8") as fh:
             example = fh.read()

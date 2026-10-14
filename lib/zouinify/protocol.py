@@ -110,10 +110,13 @@ def project_sections(text: str) -> dict:
     sections: dict = {}
     current = None
     fenced = None
-    for line in text.split("\n"):
+    opened_at = 0
+    for lineno, line in enumerate(text.split("\n"), 1):
         f = FENCE_RE.match(line)
         if f:
             fenced = None if fenced == f.group(1) else (fenced or f.group(1))
+            if fenced is not None:
+                opened_at = lineno
         m = HEADING_RE.match(line) if fenced is None else None
         if m:
             n = int(m.group(1))
@@ -130,6 +133,8 @@ def project_sections(text: str) -> dict:
             continue
         if current is not None:
             sections[current].append(line)
+    if fenced is not None:                              # an unclosed fence would swallow every later heading (review)
+        raise ZouinifyError(f".ops/README.project.md: the code fence opened at line {opened_at} is never closed")
     out = {}
     for n, lines in sections.items():
         while lines and (not lines[-1].strip() or RULE_RE.match(lines[-1])):
@@ -156,6 +161,8 @@ def apply_overrides(body: str, sections: dict) -> tuple:
         if m:
             heads.append((pos, int(m.group(1))))
         pos += len(line) + 1
+    if fenced is not None:
+        raise ZouinifyError("the rendered README has an unclosed code fence; nothing written")
     nums = [n for _, n in heads]
     for n in sections:
         if n != "preamble" and n not in nums:
@@ -185,13 +192,18 @@ def apply_overrides(body: str, sections: dict) -> tuple:
 
 
 def read_project_readme(cfg, given: str | None) -> dict:
-    path = os.path.realpath(os.path.expanduser(given)) if given else cfg.path(PROJECT_README_REL)
-    if not os.path.isfile(path):
-        if given:
-            raise ZouinifyError(f"--project-readme {given}: not a file")
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        return project_sections(fh.read())
+    """The project's sections: from `<root>/.ops/README.project.md`, read like the brief notes (a symlink, a non-file, a
+    path resolving outside the project or a non-UTF-8 file refused, never followed: its text becomes part of the protocol
+    page every session reads; T-0219 review), or from an explicit --project-readme FILE, the caller's own choice."""
+    what = "the project's README sections"
+    if given:
+        try:
+            text = generated.read_project_text(cfg.root, PROJECT_README_REL, what, explicit=given)
+        except ZouinifyError as e:
+            raise ZouinifyError(f"--project-readme {e}") from None
+        return project_sections(text or "")
+    text = generated.read_project_text(cfg.root, PROJECT_README_REL, what)
+    return project_sections(text) if text is not None else {}
 
 
 def _join_words(items: list) -> str:
