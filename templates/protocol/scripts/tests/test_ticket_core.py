@@ -1231,6 +1231,202 @@ class TestMergeAndPrune(MergeAndPruneHelpers):
         self.assertEqual(p.returncode, 0, p.out); self.assertIn("is not a registered worktree", p.out)
         self.assertTrue(os.path.isfile(os.path.join(d, "notes.txt"))); self.assertTrue(self.local_has_branch("t0003-plain-dir"))
 
+    # ---- prune after a failed `git worktree remove`, and prune --orphans (T-0196) ----------------------
+    def test_prune_finishes_a_worktree_remove_that_left_copies_of_repo_objects(self):
+        """T-0196: on NFS `git worktree remove` dropped the registration and left tickets/T-0017..T-0034 behind
+        ("Directory not empty"); prune said "worktree remove failed, left alone" over a dir that was no worktree any more
+        and kept the branch. The wrapper replays it with two tracked files and an ignored file the verdict had approved:
+        every one has a copy in the repo, so prune finishes the removal and the log says what git left."""
+        wt, br = self.merged_and_done()
+        os.makedirs(os.path.join(wt, ".claude"))
+        with open(os.path.join(wt, ".claude", "cache.txt"), "w") as fh:
+            fh.write("ignored scratch\n")   # .claude/ is ignored: the verdict lets it go, git may leave it too
+        with open(os.path.join(self.tmp, "leave_behind"), "w") as fh:
+            fh.write("tickets/T-0001-alpha-ticket.md\ntickets/_TEMPLATE.md\n.claude/cache.txt\n")
+        p = self.ts("prune", "T-0001", env=self.wrap_env())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertNotIn("left alone", p.out)
+        self.assertIn("prune: T-0001 (backend): git worktree remove dropped the registration but left 3 file(s) in %s "
+                      "(error: failed to delete '%s': Directory not empty); every one is a copy of a repo object or an ignored file "
+                      "already approved, so prune removed the directory" % (wt, wt), p.out)
+        self.assertFalse(os.path.exists(wt)); self.assertFalse(self.local_has_branch(br)); self.assertFalse(self.origin_has_branch(br))
+        self.assertNotIn("t0001-alpha-ticket", self.git("-C", self.main, "worktree", "list"))
+        log = self.log_of("T-0001-alpha-ticket.md")
+        self.assertIn("removed worktree .claude/worktrees/t0001-alpha-ticket, branch %s, origin/%s" % (br, br), log)
+        self.assertIn("(git left 3 file(s) behind -- 'error: failed to delete", log); self.assertIn("-- prune removed the directory)", log)
+        self.assert_main_sane()
+
+    def test_prune_keeps_a_left_behind_dir_holding_a_file_the_repo_never_had_and_says_so(self):
+        """the same failure, but one leftover has content no repo object holds: the dir stays, named, the message says git
+        had already dropped the registration (no "left alone" over a non-worktree), the merged branch still goes, and the
+        orphans sweep names the dir too and keeps it"""
+        wt, br = self.merged_and_done()
+        with open(os.path.join(self.tmp, "leave_behind"), "w") as fh:
+            fh.write("tickets/_TEMPLATE.md\n+notes/stray.txt\n")
+        p = self.ts("prune", "T-0001", env=self.wrap_env())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: T-0001 (backend): git worktree remove dropped the registration but left %s "
+                      "(error: failed to delete '%s': Directory not empty); 1 of 2 file(s) in it have no copy in the repo's objects "
+                      "-- directory KEPT" % (wt, wt), p.out)
+        self.assertIn("\n    notes/stray.txt\n", p.out); self.assertIn("scripts/ticket.sh prune --orphans", p.out)
+        self.assertNotIn("worktree remove failed, left alone", p.out)
+        self.assertTrue(os.path.isfile(os.path.join(wt, "notes", "stray.txt")))
+        self.assertNotIn("t0001-alpha-ticket", self.git("-C", self.main, "worktree", "list"))
+        self.assertFalse(self.local_has_branch(br)); self.assertFalse(self.origin_has_branch(br))
+        self.assertIn("removed branch %s, origin/%s (worktree dir KEPT: git left 2 file(s), 1 with no copy in the repo's objects "
+                      "-- 'error: failed to delete" % (br, br), self.log_of("T-0001-alpha-ticket.md"))
+        self.assert_main_sane()
+        p = self.ts("prune", "--orphans", "--dry-run", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0001-alpha-ticket (backend): not a registered worktree; 1 of 2 file(s) "
+                      "have no copy in the repo's objects -- left alone (look at these, then delete it by hand):\n    notes/stray.txt\n", p.out)
+        self.assertIn("nothing to remove", p.out)
+        self.assertTrue(os.path.isfile(os.path.join(wt, "notes", "stray.txt")))
+
+    def test_prune_leaves_a_worktree_alone_when_git_refuses_to_remove_it(self):
+        """git refused up front (locked, or dirty in the window): still registered, nothing changed -- the old message, made exact"""
+        wt, br = self.merged_and_done()
+        self.flag("refuse_remove")
+        p = self.ts("prune", "T-0001", env=self.wrap_env())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: T-0001 (backend): worktree remove refused, worktree left alone (still registered): "
+                      "fatal: validation failed, cannot remove working tree:", p.out)
+        self.assertTrue(os.path.isdir(wt)); self.assertTrue(self.local_has_branch(br)); self.assertTrue(self.origin_has_branch(br))
+        self.assertIn("t0001-alpha-ticket", self.git("-C", self.main, "worktree", "list"))
+        self.assertNotIn("worktree removed (ticket.sh prune)", self.log_of("T-0001-alpha-ticket.md"))
+
+    def test_prune_orphans_removes_unregistered_dirs_that_hold_only_repo_objects(self):
+        """--orphans: a dir under .claude/worktrees/ that no worktree registers goes when every file in it is a copy of a repo
+        object (git's leftover .git pointer file aside); a tNNNN-* name is logged on its ticket, a registered worktree is never touched"""
+        wt, br = self.merged_and_done()   # a registered worktree: never an orphan
+        self.write_ticket("T-0003", "gamma", "done", "gamma"); self.commit_tickets()
+        wtd = os.path.join(self.main, ".claude", "worktrees")
+        d = os.path.join(wtd, "t0003-gamma"); os.makedirs(os.path.join(d, "tickets")); os.makedirs(os.path.join(d, "empty"))
+        shutil.copy(os.path.join(self.main, "tickets", "_TEMPLATE.md"), os.path.join(d, "tickets", "_TEMPLATE.md"))
+        shutil.copy(os.path.join(self.main, "scripts", "ticket.sh"), os.path.join(d, "ticket.sh"))
+        with open(os.path.join(d, ".git"), "w") as fh:
+            fh.write("gitdir: %s/.git/worktrees/gone\n" % self.main)
+        a = os.path.join(wtd, "agent-0123abcd"); os.makedirs(a)
+        shutil.copy(os.path.join(self.main, ".gitignore"), os.path.join(a, ".gitignore"))
+        head = self.main_head()
+        p = self.ts("prune", "--orphans", "--dry-run", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0003-gamma (backend): not a registered worktree, 2 file(s), "
+                      "every one a copy of a repo object -- would remove", p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/agent-0123abcd (backend): not a registered worktree, 1 file(s), "
+                      "every one a copy of a repo object -- would remove", p.out)
+        self.assertNotIn("t0001-alpha-ticket", p.out)
+        self.assertTrue(os.path.isdir(d)); self.assertTrue(os.path.isdir(a)); self.assertEqual(self.main_head(), head, "dry-run commits nothing")
+        p = self.ts("prune", "--orphans")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0003-gamma (backend): removed (2 file(s), every one a copy of a repo object)", p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/agent-0123abcd (backend): removed (1 file(s), every one a copy of a repo object)", p.out)
+        self.assertFalse(os.path.exists(d)); self.assertFalse(os.path.exists(a)); self.assertTrue(os.path.isdir(wt))
+        self.assertIn("worktree removed (ticket.sh prune): T-0003 (backend): orphan dir .claude/worktrees/t0003-gamma removed "
+                      "(2 file(s), every one a copy of a repo object, left behind by an earlier worktree remove)", self.log_of("T-0003-gamma.md"))
+        self.assertEqual(self.main_log().splitlines()[0], "tickets: prune (worktrees removed): T-0003")
+        self.assertEqual(self.origin_head(), self.main_head()); self.assert_main_sane()
+        p = self.ts("prune", "--orphans")
+        self.assertEqual(p.returncode, 0, p.out); self.assertIn("nothing to remove", p.out)
+
+    def test_prune_orphans_keeps_a_dir_with_unique_files_or_one_an_open_ticket_names(self):
+        wtd = os.path.join(self.main, ".claude", "worktrees")
+        d = os.path.join(wtd, "t0004-delta"); os.makedirs(d)
+        shutil.copy(os.path.join(self.main, "tickets", "_TEMPLATE.md"), os.path.join(d, "_TEMPLATE.md"))
+        with open(os.path.join(d, "notes.txt"), "w") as fh:
+            fh.write("never committed\n")
+        os.mkfifo(os.path.join(d, "pipe"))
+        e = os.path.join(wtd, "t0002-beta-ticket"); os.makedirs(e)   # the in-dev ticket names it
+        self.set_front("T-0002-beta-ticket.md", "worktree", ".claude/worktrees/t0002-beta-ticket"); self.commit_tickets()
+        head = self.main_head()
+        p = self.ts("prune", "--orphans")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0004-delta (backend): not a registered worktree; 2 of 3 file(s) have no copy "
+                      "in the repo's objects -- left alone (look at these, then delete it by hand):\n    notes.txt\n    pipe (not a regular file)\n", p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0002-beta-ticket (backend): not a registered worktree, but open ticket(s) T-0002 "
+                      "name it -- left alone", p.out)
+        self.assertIn("nothing to remove", p.out)
+        self.assertTrue(os.path.isfile(os.path.join(d, "notes.txt"))); self.assertTrue(os.path.isdir(e))
+        self.assertEqual(self.main_head(), head)
+        p = self.ts("prune", "--bogus")
+        self.assertNotEqual(p.returncode, 0); self.assertIn("usage: prune [T-xxxx ...|--done] [--orphans] [--dry-run]", p.out)
+
+    def test_prune_orphans_keeps_a_dir_it_cannot_list_in_full(self):
+        """review of T-0196: a subdirectory find cannot read (mode 000: a root-owned volume is the real case) made the listing
+        empty, so "nothing unique" and rm -rf would have taken a unique file with it -- a failed walk keeps the dir"""
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 directory")
+        wtd = os.path.join(self.main, ".claude", "worktrees")
+        d = os.path.join(wtd, "t0006-dark"); sub = os.path.join(d, "volume"); os.makedirs(sub)
+        with open(os.path.join(d, "notes.txt"), "w") as fh:
+            fh.write("never committed\n")
+        os.chmod(sub, 0); self.addCleanup(os.chmod, sub, 0o755)
+        p = self.ts("prune", "--orphans")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0006-dark (backend): not a registered worktree; 1 of ? file(s) have no copy in the "
+                      "repo's objects -- left alone (look at these, then delete it by hand):\n    . (could not be listed in full -- an unreadable subdirectory?)\n", p.out)
+        self.assertIn("nothing to remove", p.out)
+        self.assertTrue(os.path.isfile(os.path.join(d, "notes.txt"))); self.assertTrue(os.path.isdir(sub))
+
+    def test_prune_orphans_keeps_a_clone_and_a_live_worktree_pointer_but_not_a_stale_one(self):
+        """review of T-0196: a top-level .git was skipped whatever it was, so a standalone clone under .claude/worktrees/ (unpushed
+        history and all) counted as "nothing unique"; only git's stale `gitdir:` pointer file is nothing to keep"""
+        wtd = os.path.join(self.main, ".claude", "worktrees"); os.makedirs(wtd, exist_ok=True)
+        clone = os.path.join(wtd, "t0007-clone"); self.git("clone", "-q", self.main, clone)
+        with open(os.path.join(clone, "unpushed.txt"), "w") as fh:
+            fh.write("only here\n")
+        self.git("-C", clone, "add", "unpushed.txt"); self.git("-C", clone, "commit", "-q", "-m", "unpushed work")
+        live = os.path.join(wtd, "t0008-live"); os.makedirs(live)
+        shutil.copy(os.path.join(self.main, "tickets", "_TEMPLATE.md"), os.path.join(live, "_TEMPLATE.md"))
+        with open(os.path.join(live, ".git"), "w") as fh:
+            fh.write("gitdir: %s/.git\n" % self.main)   # exists: somebody's worktree, not ours to judge
+        stale = os.path.join(wtd, "t0009-stale"); os.makedirs(stale)
+        shutil.copy(os.path.join(self.main, "tickets", "_TEMPLATE.md"), os.path.join(stale, "_TEMPLATE.md"))
+        with open(os.path.join(stale, ".git"), "w") as fh:
+            fh.write("gitdir: %s/.git/worktrees/gone\n" % self.main)
+        p = self.ts("prune", "--orphans")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0007-clone (backend): not a registered worktree; 2 of", p.out)
+        self.assertIn("\n    .git (a repository of its own -- a clone, not a worktree)\n    unpushed.txt\n", p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0008-live (backend): not a registered worktree; 1 of 1 file(s) have no copy in the "
+                      "repo's objects -- left alone (look at these, then delete it by hand):\n    .git (points at a live gitdir: %s/.git)\n" % self.main, p.out)
+        self.assertIn("prune: orphan dir .claude/worktrees/t0009-stale (backend): removed (1 file(s), every one a copy of a repo object)", p.out)
+        self.assertTrue(os.path.isdir(os.path.join(clone, ".git"))); self.assertTrue(os.path.isfile(os.path.join(live, "_TEMPLATE.md")))
+        self.assertFalse(os.path.exists(stale))
+        self.assertEqual(self.git("-C", clone, "log", "--format=%s", "-1"), "unpushed work")
+
+    def test_prune_deletes_only_under_the_worktrees_dir(self):
+        """review of T-0196: worktree: is a path somebody wrote (an absolute one is allowed, a symlink possible); after a failed
+        remove, prune resolves it and deletes only strictly under .claude/worktrees/ -- anywhere else the dir is kept and said so"""
+        wt, br = self.merged_and_done()
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        self.git("-C", self.main, "worktree", "move", wt, elsewhere)
+        self.set_front("T-0001-alpha-ticket.md", "worktree", elsewhere); self.commit_tickets()
+        with open(os.path.join(self.tmp, "leave_behind"), "w") as fh:
+            fh.write("tickets/_TEMPLATE.md\n")
+        p = self.ts("prune", "T-0001", env=self.wrap_env())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("prune: T-0001 (backend): git worktree remove dropped the registration but left %s (error: failed to delete '%s': "
+                      "Directory not empty); it resolves to '%s', outside %s/.claude/worktrees/, the only place prune deletes in -- directory KEPT"
+                      % (elsewhere, elsewhere, os.path.realpath(elsewhere), self.main), p.out)
+        self.assertTrue(os.path.isfile(os.path.join(elsewhere, "tickets", "_TEMPLATE.md")))
+        self.assertFalse(self.local_has_branch(br))
+        self.assertIn("(worktree dir KEPT: outside .claude/worktrees/, not prune's to delete -- 'error: failed to delete", self.log_of("T-0001-alpha-ticket.md"))
+
+    def test_prune_orphans_refuses_a_worktrees_dir_that_resolves_outside_the_repo(self):
+        """review of T-0196: the loader checks the WORKTREES text; a symlink out of the repo it cannot see, managed_path does --
+        nothing under it is removed, and the dry-run says so too"""
+        outside = os.path.join(self.tmp, "outside"); d = os.path.join(outside, "t0010-out"); os.makedirs(d)
+        shutil.copy(os.path.join(self.main, "tickets", "_TEMPLATE.md"), os.path.join(d, "_TEMPLATE.md"))   # a copy of a repo object: only the containment rule keeps it
+        os.makedirs(os.path.join(self.main, ".claude"), exist_ok=True); os.symlink(outside, os.path.join(self.main, ".claude", "worktrees"))
+        for args in (("prune", "--orphans", "--dry-run"), ("prune", "--orphans")):
+            p = self.ts(*args)
+            self.assertEqual(p.returncode, 0, p.out)
+            self.assertIn("prune: orphan dir .claude/worktrees/t0010-out (backend): %s/.claude/worktrees does not resolve to a directory strictly inside "
+                          "the repo and outside its .git, or .claude/worktrees/t0010-out is not strictly inside it -- left alone (prune deletes nowhere else)" % self.main, p.out)
+            self.assertIn("nothing to remove", p.out)
+        self.assertTrue(os.path.isfile(os.path.join(d, "_TEMPLATE.md")))
+
     def test_prune_handles_a_plain_named_two_repo_ticket_per_repo_and_skips_a_branchless_one(self):
         """merge refuses a plain branch on repos: [backend, frontend] (which repo?); prune looks in both repos, each on its
         own merits -- 14 of the real done tickets are like that. A done ticket that never had a branch says nothing."""

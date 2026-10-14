@@ -88,6 +88,11 @@ REAL_SLEEP = shutil.which("sleep")
 #                         fresh ref advertisement and gets a GENUINE non-fast-forward rejection
 #        <tmp>/lease_race (content: a branch) -> origin's copy of that branch is moved first, so a
 #                         --force-with-lease delete must be refused as stale
+#        <tmp>/leave_behind (content: paths relative to the worktree, one per line; "+path" = a file that
+#                         appeared meanwhile with content the repo never held) -> `worktree remove` does what
+#                         it did on NFS (T-0196): the registration goes, the directory stays with those files,
+#                         stderr "failed to delete '<path>': Directory not empty", exit 1
+#        <tmp>/refuse_remove -> `worktree remove` refuses up front (nothing changes), exit 128
 #   sleep: every call logged to <tmp>/sleep.log; <tmp>/sleep_race -> the other clone pushes its
 #        prepared commit during the backoff
 GIT_WRAPPER = """#!/usr/bin/env bash
@@ -95,6 +100,23 @@ if [ "${{3:-}}" = fetch ] && [ -e "{tmp}/fail_fetch_once" ]; then
   rm -f "{tmp}/fail_fetch_once"
   echo "fatal: unable to access 'https://github.com/x/y/': The requested URL returned error: 502" >&2
   exit 128
+fi
+if [ "${{3:-}}" = worktree ] && [ "${{4:-}}" = remove ]; then
+  if [ -e "{tmp}/refuse_remove" ]; then echo "fatal: validation failed, cannot remove working tree: '$5' is locked (test)" >&2; exit 128; fi
+  if [ -e "{tmp}/leave_behind" ]; then
+    wt=$5; keep="{tmp}/leave_behind.keep"; rm -rf "$keep"; mkdir -p "$keep"
+    while IFS= read -r f; do
+      case $f in
+        "") continue ;;
+        +*) f=${{f#+}}; mkdir -p "$keep/$(dirname "$f")"; echo "stray $RANDOM $$ $(date +%s%N)" >"$keep/$f" ;;
+        *) mkdir -p "$keep/$(dirname "$f")"; cp -p "$wt/$f" "$keep/$f" ;;
+      esac
+    done <"{tmp}/leave_behind"
+    "{git}" "$@" >/dev/null 2>&1 || true   # the real remove: clean tree, so the registration and the files go
+    mkdir -p "$wt"; cp -a "$keep/." "$wt/"   # ... and the skipped files are back, in a directory git no longer knows
+    echo "error: failed to delete '$wt': Directory not empty" >&2
+    exit 1
+  fi
 fi
 if [ "${{3:-}}" = push ]; then
   if [ -e "{tmp}/push500" ]; then

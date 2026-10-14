@@ -16,7 +16,7 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.1.2"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.1.3"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
@@ -43,7 +43,8 @@ usage() { # the commands, on stdout: an unknown or missing subcommand prints the
 #   scripts/ticket.sh put   T-xxxx <file> "<what changed>"       -> replace a ticket with a copy you edited ELSEWHERE (preferred)
 #   scripts/ticket.sh sync  T-xxxx "<what changed>"              -> commit hand edits to that one ticket file (main gets dirty: avoid)
 #   scripts/ticket.sh merge T-xxxx [--allow-trailers T-yyyy,..] -> the ONLY merge path: ff-only, trailers checked, closed_by after the merge
-#   scripts/ticket.sh prune [T-xxxx ...|--done] [--dry-run]       -> remove the worktree + branch (local and origin) of done/dropped tickets; refuses anything unmerged
+#   scripts/ticket.sh prune [T-xxxx ...|--done] [--orphans] [--dry-run]   -> remove the worktree + branch (local and origin) of done/dropped tickets; refuses anything unmerged;
+#                                                                    --orphans: the dirs under .claude/worktrees/ that no worktree registers, when nothing in them is unique (T-0196)
 #   scripts/ticket.sh ask   T-xxxx "<VERB> <what> | <cmd> | <expected> | <if nothing>" -> one-line ask for the human (human: field; "" clears; a move clears)
 #   scripts/ticket.sh human [--count|--json]                     -> read-only: the human's inbox, derived from the tickets (T-0147)
 #   scripts/ticket.sh board [--json [--slow]]                    -> read-only, computed from git; --json: one object for tools, front matter only (T-0158)
@@ -662,7 +663,18 @@ cmd_merge() {
 # Known and accepted: an empty commit has no patch-id, so git cherry calls it a copy of any empty commit on
 # trunk -- it carries nothing to lose. A squash-merged branch keeps its own commits (no copies) and is left
 # alone with them listed: delete it by hand once you have read them.
-PRUNE_PLAN=""; PRUNED=""; PRUNE_FILES=""; FETCHED_TRUNKS=""
+# T-0196: `git worktree remove` can drop the registration and still leave the directory: "failed to delete '<path>':
+# Directory not empty" (builtin/worktree.c goes on to delete_git_dir whatever delete_git_work_tree returned). On this NFS
+# mount it hit 34 clean worktrees on 2026-10-13: git unlinks entries while it reads a directory, the readdir continuation
+# after the first deletions skipped one run of entries (the same 17 tickets/*.md in every dir), rmdir failed, and the dirs
+# stayed behind, registered nowhere, while prune said "failed, left alone". Now what git leaves is judged file by file
+# (unique_files): a file whose content is a repo object, or an ignored file the verdict just approved, is nothing to keep,
+# and prune removes the directory itself (rm -rf lists a directory in full before it deletes; a second pass catches a skip);
+# anything else keeps the directory, named, and the message says what really happened: a dir that cannot be listed in full,
+# a .git of its own (a clone) or one pointing at a live gitdir, a path that resolves outside <repo>/WORKTREES (the only
+# place prune deletes in). `prune --orphans` applies the same judgement to every unregistered dir under WORKTREES of every
+# repo (the dirs of earlier failures).
+PRUNE_PLAN=""; PRUNED=""; PRUNE_FILES=""; FETCHED_TRUNKS=""; ORPHAN_PLAN=""; ORPHANS_REMOVED=0; LEFTOVER_NOTE=""
 VALUABLE_IGNORED_RE_CORE='\.(backup|bak|orig|pem|key|p12|env|sqlite3?|db)(\.[^/]*)?/?$|(^|/)\.env(\.|/|$)|secret|credential|(^|/)backups?(/|$)'
 VALUABLE_IGNORED_RE=""   # the core's pattern | the plugin's (plugin_ignored_valuable_re: tfstate/tfvars/tfplan here); set by load_plugin
 is_main_checkout() { # path -> 0 when it is a repository's MAIN working tree (its git dir is the .git itself, not .git/worktrees/<name>)
@@ -699,7 +711,7 @@ other_open_tickets_naming() { # id branch worktree-basename -> ids of other, not
 worktree_verdict() { # repo wpath branch id label -> 0 when the worktree may go; else prints why and returns 1
   local repo=$1 wpath=$2 br=$3 id=$4 lbl=$5 entry val list
   entry=$(worktree_entry "$repo" "$wpath")
-  [ -n "$entry" ] || { echo "prune: $id ($lbl): $wpath is not a registered worktree of $repo -- left alone (not git's to remove; look at it by hand)"; return 1; }
+  [ -n "$entry" ] || { echo "prune: $id ($lbl): $wpath is not a registered worktree of $repo -- left alone (not git's to remove; look at it, then delete it by hand or run: scripts/ticket.sh prune --orphans)"; return 1; }
   if grep -q '^detached' <<<"$entry"; then echo "prune: $id ($lbl): worktree $wpath is on a detached HEAD (mid-rebase, or loose commits) -- left alone"; return 1; fi
   if ! grep -qx "branch refs/heads/$br" <<<"$entry"; then echo "prune: $id ($lbl): worktree $wpath is on $(sed -n 's|^branch refs/heads/||p' <<<"$entry"), not on $br -- left alone"; return 1; fi
   [ -z "$(git -C "$wpath" status --porcelain 2>/dev/null)" ] || { echo "prune: $id ($lbl): worktree $wpath is dirty -- left alone"; return 1; }
@@ -710,6 +722,148 @@ worktree_verdict() { # repo wpath branch id label -> 0 when the worktree may go;
     list=$(sed 's/^/    /' <<<"$val"); head -n 20 <<<"$list"; return 1
   fi
   return 0
+}
+# ---- what `git worktree remove` may leave behind (T-0196) ------------------------------------------------
+unique_files() { # repo dir [approved] -> one line per entry of dir (path relative to dir) that would be lost with it: a regular
+  # file or symlink whose blob is not in repo's object store and which the approved list (ignored files already allowed to
+  # go, one path per line) does not name; a file that cannot be hashed; anything that is neither (fifo, socket, device);
+  # a top-level .git that is a repository of its own or points at a live gitdir; and the whole dir when it cannot be
+  # listed in full. Empty output = everything in dir has a copy in the repo. Hashes are of the raw bytes (--no-filters):
+  # a file autocrlf or a clean filter would map onto a known blob is not that blob.
+  local repo=$1 dir=$2 approved=${3-} listing="" files="" links="" others="" shas="" missing="" l tgt sha gitdir
+  [ -d "$dir" ] || return 0
+  {
+    # the top-level .git: git's stale pointer file (gitdir: <path> that no longer exists) is nothing to keep; a .git DIRECTORY
+    # is a repository of its own (a clone left here, history and all) and a pointer at a live gitdir is somebody's worktree
+    if [ -d "$dir/.git" ] && [ ! -L "$dir/.git" ]; then echo ".git (a repository of its own -- a clone, not a worktree)"
+    elif [ -e "$dir/.git" ] || [ -L "$dir/.git" ]; then
+      gitdir=$(sed -n '1s/^gitdir: //p' "$dir/.git" 2>/dev/null || true)
+      if [ -z "$gitdir" ]; then echo ".git (not a gitdir pointer)"
+      else
+        case $gitdir in /*) ;; *) gitdir="$dir/$gitdir";; esac
+        [ ! -e "$gitdir" ] || echo ".git (points at a live gitdir: $gitdir)"
+      fi
+    fi
+    # one walk, type and path per entry. A walk that fails (an unreadable subdirectory: mode 000, a root-owned volume) keeps
+    # the dir: nothing is deleted on a partial list.
+    if ! listing=$(cd "$dir" && find . -mindepth 1 -path ./.git -prune -o -printf '%y %P\n' 2>/dev/null); then
+      echo ". (could not be listed in full -- an unreadable subdirectory?)"
+    else
+      files=$(sed -n 's/^f //p' <<<"$listing" | LC_ALL=C sort); links=$(sed -n 's/^l //p' <<<"$listing" | LC_ALL=C sort)
+      others=$(grep -v '^[fld] ' <<<"$listing" | sed 's/^. //' | LC_ALL=C sort || true)
+      if [ -n "$files" ]; then
+        if ! shas=$(sed "s|^|$dir/|" <<<"$files" | git -C "$repo" hash-object --no-filters --stdin-paths 2>/dev/null) \
+           || [ "$(wc -l <<<"$shas")" != "$(wc -l <<<"$files")" ]; then
+          sed 's/$/ (could not be hashed)/' <<<"$files"   # unreadable: nothing is deleted on a guess
+        else
+          missing=$(git -C "$repo" cat-file --batch-check <<<"$shas" | grep -n ' missing$' | cut -d: -f1 || true)   # line numbers = positions in $files
+          for l in $missing; do sed -n "${l}p" <<<"$files"; done
+        fi
+      fi
+      while IFS= read -r l; do   # a symlink's blob is its target path
+        [ -n "$l" ] || continue
+        if ! tgt=$(readlink "$dir/$l"); then echo "$l (unreadable symlink)"; continue; fi
+        sha=$(printf '%s' "$tgt" | git -C "$repo" hash-object --stdin) || { echo "$l (could not be hashed)"; continue; }
+        git -C "$repo" cat-file -e "$sha" 2>/dev/null || echo "$l"
+      done <<<"$links"
+      [ -z "$others" ] || sed 's/$/ (not a regular file)/' <<<"$others"
+    fi
+  } | { if [ -n "$approved" ]; then grep -vxF -f <(printf '%s\n' "$approved") || true; else cat; fi; }
+}
+managed_path() { # repo path -> the resolved path when it lies strictly under <repo>/$WORKTREES, and that dir itself (resolved: it may
+  # be a symlink) lies strictly inside the resolved repo and outside its .git -- the only place prune deletes in; nothing otherwise
+  local repo_real root real
+  repo_real=$(readlink -f "$1" 2>/dev/null) || return 0; [ -n "$repo_real" ] || return 0
+  root=$(readlink -f "$1/$WORKTREES" 2>/dev/null) || return 0; [ -n "$root" ] || return 0
+  case $root in "$repo_real"/.git|"$repo_real"/.git/*) return 0;; "$repo_real"/?*) ;; *) return 0;; esac
+  real=$(readlink -f "$2" 2>/dev/null) || return 0
+  case $real in "$root"/?*) echo "$real";; esac
+}
+count_entries() { local n; n=$(cd "$1" 2>/dev/null && find . -mindepth 1 -path ./.git -prune -o ! -type d -print 2>/dev/null | wc -l | tr -d ' ') || n="?"; echo "${n:-?}"; }   # dir -> files, links and other non-dirs in it (the top-level .git file aside)
+finish_worktree_removal() { # repo wpath id label git-error approved -> after a failed `git worktree remove`: 0 = the worktree is gone
+  # (LEFTOVER_NOTE says what git left and that prune removed it); 1 = git refused and the worktree is still registered (left
+  # alone, as before); 2 = git dropped the registration but the directory stays, named (something in it has no copy in the
+  # repo, or rm failed) -- the branch may still go. Every message says what really happened.
+  local repo=$1 wpath=$2 id=$3 lbl=$4 err=$5 approved=$6 first uniq n nu real
+  LEFTOVER_NOTE=""; first=$(head -n 1 <<<"$err")
+  if [ -n "$(worktree_entry "$repo" "$wpath")" ]; then
+    echo "prune: $id ($lbl): worktree remove refused, worktree left alone (still registered): $first"; return 1
+  fi
+  if [ ! -e "$wpath" ] && [ ! -L "$wpath" ]; then LEFTOVER_NOTE=" (git worktree remove said '$first', yet the worktree is gone)"; return 0; fi
+  # the ticket's worktree: field is a path somebody wrote: resolve it (a symlink would make rm drop the link and the message
+  # lie) and delete only strictly under <repo>/WORKTREES, the one place prune owns
+  real=$(managed_path "$repo" "$wpath")
+  if [ -z "$real" ]; then
+    echo "prune: $id ($lbl): git worktree remove dropped the registration but left $wpath ($first); it resolves to '$(readlink -f "$wpath" 2>/dev/null || echo "?")', outside $repo/$WORKTREES/, the only place prune deletes in -- directory KEPT (look at it, then delete it by hand)"
+    LEFTOVER_NOTE=" (worktree dir KEPT: outside $WORKTREES/, not prune's to delete -- '$first')"; return 2
+  fi
+  n=$(count_entries "$real")
+  uniq=$(unique_files "$repo" "$real" "$approved")
+  if [ -n "$uniq" ]; then
+    nu=$(wc -l <<<"$uniq" | tr -d ' ')
+    echo "prune: $id ($lbl): git worktree remove dropped the registration but left $wpath ($first); $nu of $n file(s) in it have no copy in the repo's objects -- directory KEPT (it is no worktree any more: look at these, then delete it by hand or run: scripts/ticket.sh prune --orphans):"
+    head -n 20 <<<"$uniq" | sed 's/^/    /'
+    LEFTOVER_NOTE=" (worktree dir KEPT: git left $n file(s), $nu with no copy in the repo's objects -- '$first')"; return 2
+  fi
+  rm -rf -- "$real" 2>/dev/null || true; [ ! -e "$real" ] || rm -rf -- "$real" 2>/dev/null || true   # a second pass for what a readdir skipped
+  if [ -e "$real" ]; then
+    echo "prune: $id ($lbl): git worktree remove dropped the registration and left $wpath ($first); prune could not remove it either -- look at it by hand"
+    LEFTOVER_NOTE=" (worktree dir KEPT: neither git nor rm -rf could remove it -- '$first')"; return 2
+  fi
+  echo "prune: $id ($lbl): git worktree remove dropped the registration but left $n file(s) in $wpath ($first); every one is a copy of a repo object or an ignored file already approved, so prune removed the directory"
+  LEFTOVER_NOTE=" (git left $n file(s) behind -- '$first' -- all copies of repo objects or approved ignored files -- prune removed the directory)"
+  return 0
+}
+orphan_dirs() { # repo -> every dir under <repo>/$WORKTREES that no worktree of repo registers (absolute, one per line); nothing when the list cannot be read
+  local repo=$1 d reg real
+  [ -d "$repo/$WORKTREES" ] || return 0
+  reg=$(git -C "$repo" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r d; do readlink -f "$d" 2>/dev/null || echo "$d"; done) || return 0
+  for d in "$repo/$WORKTREES"/*/; do
+    d=${d%/}; { [ -d "$d" ] && [ ! -L "$d" ]; } || continue
+    real=$(readlink -f "$d" 2>/dev/null || echo "$d")
+    grep -qxF "$real" <<<"$reg" || echo "$d"
+  done
+}
+orphan_check() { # repo -> the verdict for every orphan dir of repo (printed); a removable one is appended to ORPHAN_PLAN
+  local repo=$1 lbl d rel uniq n open
+  lbl=$(repo_label "$repo")
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue; rel=${d#"$repo"/}
+    open=$(other_open_tickets_naming "" "" "$(basename "$d")")
+    [ -z "$open" ] || { echo "prune: orphan dir $rel ($lbl): not a registered worktree, but open ticket(s) ${open}name it -- left alone"; continue; }
+    [ -n "$(managed_path "$repo" "$d")" ] || { echo "prune: orphan dir $rel ($lbl): $repo/$WORKTREES does not resolve to a directory strictly inside the repo and outside its .git, or $rel is not strictly inside it -- left alone (prune deletes nowhere else)"; continue; }
+    n=$(count_entries "$d")
+    uniq=$(unique_files "$repo" "$d")
+    if [ -n "$uniq" ]; then
+      echo "prune: orphan dir $rel ($lbl): not a registered worktree; $(wc -l <<<"$uniq" | tr -d ' ') of $n file(s) have no copy in the repo's objects -- left alone (look at these, then delete it by hand):"
+      head -n 20 <<<"$uniq" | sed 's/^/    /'; continue
+    fi
+    ORPHAN_PLAN="$ORPHAN_PLAN$lbl|$repo|$d|$n
+"
+    echo "prune: orphan dir $rel ($lbl): not a registered worktree, $n file(s), every one a copy of a repo object -- would remove"
+  done < <(orphan_dirs "$repo")
+}
+orphan_apply() { # ORPHAN_PLAN -> the removals, each re-checked under the lock (still unregistered, no open ticket naming it, still nothing unique); a tNNNN-* dir is logged on its ticket through PRUNED
+  local lbl repo d n rel uniq open id real
+  while IFS='|' read -r lbl repo d n; do
+    [ -n "$d" ] || continue; rel=${d#"$repo"/}
+    [ -d "$d" ] || { echo "prune: orphan dir $rel ($lbl): gone already"; continue; }
+    real=$(managed_path "$repo" "$d"); [ -n "$real" ] || { echo "prune: orphan dir $rel ($lbl): $repo/$WORKTREES does not resolve to a directory strictly inside the repo and outside its .git, or $rel is not strictly inside it -- left alone (prune deletes nowhere else)"; continue; }
+    [ -z "$(worktree_entry "$repo" "$d")" ] || { echo "prune: orphan dir $rel ($lbl): is a registered worktree now -- left alone"; continue; }
+    open=$(other_open_tickets_naming "" "" "$(basename "$d")")
+    [ -z "$open" ] || { echo "prune: orphan dir $rel ($lbl): open ticket(s) ${open}name it now -- left alone"; continue; }
+    uniq=$(unique_files "$repo" "$d")
+    [ -z "$uniq" ] || { echo "prune: orphan dir $rel ($lbl): changed since the check ($(head -n 1 <<<"$uniq") has no copy in the repo's objects) -- left alone"; continue; }
+    rm -rf -- "$real" 2>/dev/null || true; [ ! -e "$real" ] || rm -rf -- "$real" 2>/dev/null || true
+    [ ! -e "$real" ] || { echo "prune: orphan dir $rel ($lbl): rm -rf could not remove it -- look at it by hand"; continue; }
+    echo "prune: orphan dir $rel ($lbl): removed ($n file(s), every one a copy of a repo object)"
+    ORPHANS_REMOVED=$((ORPHANS_REMOVED + 1))
+    id=$(sed -n 's/^t\([0-9][0-9][0-9][0-9]\)-.*/T-\1/p' <<<"$(basename "$d")")
+    if [ -n "$id" ] && ls "$TD"/"$id"-*.md >/dev/null 2>&1; then
+      PRUNED="$PRUNED$id|($lbl): orphan dir $rel removed ($n file(s), every one a copy of a repo object, left behind by an earlier worktree remove)
+"
+    fi
+  done <<<"$ORPHAN_PLAN"
 }
 prune_check() { # repo trunk branch worktree id -> prints the verdict; a removable item is appended to PRUNE_PLAN
   local repo=$1 tr=$2 br=$3 wt=$4 id=$5 lbl wpath="" ref base sha uniq eq ch list note="" have_wt="" lsha="" rsha="" why others ign bases
@@ -756,7 +910,7 @@ prune_check() { # repo trunk branch worktree id -> prints the verdict; a removab
   echo "prune: $id ($lbl): would remove${have_wt:+ worktree $wpath}${lsha:+ branch $br}${rsha:+ origin/$br}$note"
 }
 prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): removed ..." per item. Runs under the lock, after the pull.
-  local id lbl repo tr br wpath lsha rsha note did err cur st others
+  local id lbl repo tr br wpath lsha rsha note did err cur st others approved rc
   while IFS='|' read -r id lbl repo tr br wpath lsha rsha note; do
     [ -n "$id" ] || continue; did=""
     # the window between pass 1 and the lock: the ticket may have been reopened or its branch claimed by another
@@ -769,7 +923,12 @@ prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): remove
     [ "$cur" = "$lsha" ] || { echo "prune: $id ($lbl): $br moved since the check ($(cut -c1-7 <<<"$lsha") -> $(cut -c1-7 <<<"$cur")) -- left alone"; continue; }
     if [ -n "$wpath" ]; then
       worktree_verdict "$repo" "$wpath" "$br" "$id" "$lbl" || { echo "prune: $id ($lbl): the worktree changed since the check (above) -- left alone"; continue; }
-      if err=$(git -C "$repo" worktree remove "$wpath" 2>&1); then did="worktree ${wpath#"$repo"/}"; else echo "prune: $id ($lbl): worktree remove failed, left alone: $err"; continue; fi
+      approved=$(git -C "$wpath" ls-files -oi --exclude-standard 2>/dev/null || true)   # the ignored files the verdict just let go: git may leave them too
+      if err=$(git -C "$repo" worktree remove "$wpath" 2>&1); then did="worktree ${wpath#"$repo"/}"
+      else   # T-0196: git may have dropped the registration and left the directory; finish, keep, or leave alone -- truthfully
+        rc=0; finish_worktree_removal "$repo" "$wpath" "$id" "$lbl" "$err" "$approved" || rc=$?
+        case $rc in 0) did="worktree ${wpath#"$repo"/}"; note="$note$LEFTOVER_NOTE";; 1) continue;; *) note="$note$LEFTOVER_NOTE";; esac
+      fi
     fi
     if [ -n "$lsha" ]; then
       # compare-and-swap: the ref goes only if it still points at the sha pass 1 and the check above saw -- a commit
@@ -789,11 +948,11 @@ prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): remove
   done <<<"$PRUNE_PLAN"
 }
 cmd_prune() {
-  local dry="" all="" ids="" a id f st seen="" entries r any
+  local dry="" all="" ids="" orph="" a id f st seen="" entries r any
   for a in "$@"; do
-    case $a in --dry-run) dry=1;; --done) all=1;; T-[0-9][0-9][0-9][0-9]) ids="$ids $a";; *) die 'usage: prune [T-xxxx ...|--done] [--dry-run]';; esac
+    case $a in --dry-run) dry=1;; --done) all=1;; --orphans) orph=1;; T-[0-9][0-9][0-9][0-9]) ids="$ids $a";; *) die 'usage: prune [T-xxxx ...|--done] [--orphans] [--dry-run]';; esac
   done
-  [ -n "$ids$all" ] || die 'usage: prune [T-xxxx ...|--done] [--dry-run]   (done/dropped tickets only)'
+  [ -n "$ids$all$orph" ] || die "usage: prune [T-xxxx ...|--done] [--orphans] [--dry-run]   (done/dropped tickets; --orphans: the dirs under $WORKTREES/ that no worktree registers)"
   [ -n "$dry" ] || require_who
   [ -z "$all" ] || ids="$ids $(grep -l '^status: \(done\|dropped\)$' "$TD"/T-*.md 2>/dev/null | xargs -r -n1 basename | cut -c1-6 | tr '\n' ' ')"
   # pass 1, no lock: the verdict for every candidate (fetches are the slow part)
@@ -807,12 +966,14 @@ cmd_prune() {
     [ -n "$any" ] || continue  # never had a branch
     for r in $REPOS; do [ -z "${T_BR[$r]-}" ] || prune_check "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "${T_BR[$r]}" "${T_WT[$r]-}" "$id"; done
   done
-  [ -n "$PRUNE_PLAN" ] || { echo "prune: nothing to remove"; return 0; }
+  if [ -n "$orph" ]; then for r in $REPOS; do orphan_check "${REPO_PATH[$r]}"; done; fi   # the dirs an earlier worktree remove left behind (T-0196)
+  [ -n "$PRUNE_PLAN$ORPHAN_PLAN" ] || { echo "prune: nothing to remove"; return 0; }
   [ -z "$dry" ] || return 0
   # pass 2, under the lock with trunk synced: the removals and one commit -- seconds, however long pass 1 took
   require_clean_main
-  prune_apply
-  [ -n "$PRUNED" ] || { echo "prune: nothing removed"; return 0; }
+  [ -z "$PRUNE_PLAN" ] || prune_apply
+  [ -z "$ORPHAN_PLAN" ] || orphan_apply
+  [ -n "$PRUNED" ] || { [ "$ORPHANS_REMOVED" -gt 0 ] || echo "prune: nothing removed"; return 0; }
   for id in $(cut -d'|' -f1 <<<"$PRUNED" | sort -u); do
     f=$(file_of "$id"); EDITED="${EDITED:+$EDITED }$f"; PRUNE_FILES="${PRUNE_FILES:+$PRUNE_FILES }$f"
     entries=$(grep "^$id|" <<<"$PRUNED" | cut -d'|' -f2- | tr '\n' ';' | sed 's/;$//; s/;/; /g')
@@ -1413,6 +1574,12 @@ resolve_repos() { # REPOS (file or override) -> REPO0 and REPO_PATH/TRUNK/PROD p
     v="TICKET_REPO_${u}_TRUNK"; override_ok "$v"; [ -z "${!v-}" ] || REPO_TRUNK[$r]=${!v}
   done
 }
+worktrees_ok() { # value -> 0 when it is a relative path of plain segments: non-empty, no leading or trailing '/', no empty, '.' or '..' segment, not .git or under it
+  local v=$1   # patterns, not `read -a`: read drops a trailing empty field, so "a/" would pass as one plain segment
+  [ -n "$v" ] || return 1
+  case $v in /*|*/|*//*|.|./*|*/.|*/./*|..|../*|*/..|*/../*|.git|.git/*) return 1;; esac
+  return 0
+}
 load_config() { # everything derived from ticket.env, or a clear death
   local r p nm extra=""
   read_ticket_env || die "no $HERE/tickets/ticket.env -- the project's values (TRUNK, REPOS, ...). Write it (bare KEY=value lines; keys: $ENV_KEYS, REPO_<NAME>_PATH|TRUNK|PROD) or run: zouinify config --env --write"
@@ -1421,6 +1588,9 @@ load_config() { # everything derived from ticket.env, or a clear death
   resolve_repos
   [ -n "$TRUNK" ] || die "ticket.env: TRUNK is empty"
   [ -n "$TICKETS_DIR" ] && [ -n "$WORKTREES" ] && [ -n "$ASK_VERBS" ] && [ -n "$TICKET_TYPES" ] || die "ticket.env: TICKETS_DIR, WORKTREES, ASK_VERBS and TICKET_TYPES must not be empty (leave a key out to keep the default)"
+  # T-0196 review: prune --orphans deletes under <repo>/WORKTREES and nowhere else, so that value is checked here, before any
+  # command runs: '.' listed the repo's own dirs as orphans, '/' or '..' would reach anywhere, .git is git's
+  worktrees_ok "$WORKTREES" || die "${TICKET_WORKTREES:+TICKET_WORKTREES (an exported override): }ticket.env: WORKTREES='$WORKTREES' is not usable -- a relative path inside the repo, plain segments only (no leading '/', no '.', '..' or empty segment, not .git or under it): prune deletes only there"
   TD="$MAIN/$TICKETS_DIR"; KNOWN_REPOS=$REPOS
   for r in $REPOS; do
     p=${REPO_PATH[$r]-}; [ -n "$p" ] || die "ticket.env: REPO_$(repo_key "$r")_PATH is missing (REPOS names $r)"

@@ -222,6 +222,26 @@ class TestEnvHardening(EnvWorld):
         p = self.ts("board", env=env)
         self.assertEqual(p.returncode, 1, p.out); self.assertIn("TRUNK has an unusable value", p.out)
 
+    def test_worktrees_is_a_relative_path_of_plain_segments_or_nothing_runs(self):
+        """T-0196 review: WORKTREES was never validated, and `TICKET_WORKTREES=. prune --orphans --dry-run` listed main's own
+        scripts/ and tickets/ as orphans to remove. The loader dies on '.', '/', '..', a dotted or empty segment and .git,
+        from the file or the exported override, before any command runs."""
+        why = "is not usable -- a relative path inside the repo, plain segments only"
+        for val in (".", "/", "..", "a/../b", "a//b", "a/./b", "a/", ".git", ".git/worktrees", "/tmp/x"):
+            with self.subTest(val=val):
+                p = self.ts("prune", "--orphans", "--dry-run", env=self.env_without_who(TICKET_WORKTREES=val))
+                self.assertEqual(p.returncode, 1, p.out)
+                self.assertIn("TICKET_WORKTREES (an exported override): ticket.env: WORKTREES='%s' %s" % (val, why), p.out)
+                self.assertNotIn("would remove", p.out)
+                p = self.ts("board", env=self.env_without_who(TICKET_WORKTREES=val))
+                self.assertEqual(p.returncode, 1, p.out); self.assertIn("WORKTREES='%s' %s" % (val, why), p.out)
+        self.set_env(self.env_lines(drop=("WORKTREES",), extra="WORKTREES=.\n"))
+        p = self.ts("board", env=self.env_without_who())
+        self.assertEqual(p.returncode, 1, p.out); self.assertIn("ticket.env: WORKTREES='.' %s" % why, p.out); self.assertNotIn("TICKET_WORKTREES", p.out)
+        self.set_env(self.env_lines())
+        p = self.ts("prune", "--orphans", "--dry-run", env=self.env_without_who(TICKET_WORKTREES=".claude/other-worktrees"))
+        self.assertEqual(p.returncode, 0, p.out); self.assertIn("nothing to remove", p.out)   # a sound override: a path inside the repo
+
     def test_overrides_are_validated_before_anything_is_derived(self):
         """finding 3: TICKET_TRUNK='dev$(...)' was accepted; TICKET_REPOS skipped the name check and landed after the repo lookups"""
         marker = os.path.join(self.tmp, "ran")
