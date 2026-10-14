@@ -174,9 +174,21 @@ def card_of(fm: dict, path: str, root: str) -> dict:
     return c
 
 
+def core_version_tuple(v) -> tuple:
+    """`"1.2.1"` -> (1, 2, 1); anything unparsable -> ()."""
+    try:
+        return tuple(int(x) for x in str(v or "").strip().split(".")[:3])
+    except ValueError:
+        return ()
+
+
 def board_source(cfg) -> dict:
     bj = readonly.read_board_json(cfg)
     cards = []
+    core_version = str((bj or {}).get("version") or "")
+    # `plain` exists from core 1.2.0 (T-0217); a board --json that carries the key on its tickets says so too. Below that
+    # the page shows no "missing" hints and no chip: nothing is missing, the core simply predates the section (T-0215 review)
+    plain_supported = bool(bj) and (core_version_tuple(core_version) >= (1, 2) or any(isinstance(t, dict) and "plain" in t for t in bj["tickets"]))
     if bj:
         for t in bj["tickets"]:
             if isinstance(t, dict) and t.get("id"):
@@ -221,7 +233,8 @@ def board_source(cfg) -> dict:
             path = readonly.file_of(cfg, c["id"]) if c.get("id") else None
             p0_verifying.append(dict(c, since=deployed_since(path) if path else ""))
     return {"cards": cards, "lanes": lanes, "chips": chips, "counts": counts, "other": other, "p0": p0, "p0_verifying": p0_verifying,
-            "newest_plan": newest, "void_plans": sorted(void), "source": source, "warnings": warnings, "total": len(cards)}
+            "newest_plan": newest, "void_plans": sorted(void), "source": source, "warnings": warnings, "total": len(cards),
+            "core_version": core_version, "plain_supported": plain_supported}
 
 
 # the transition form ticket.sh writes, at the start of the line's body (ticket_sections strips the stamp and the author):
@@ -1039,7 +1052,8 @@ class Snapshot:
         creds_left = str((creds or {}).get("left") or "?")
         inbox = inbox or {"items": [], "count": None, "p0": 0}
         board = board or {"cards": [], "lanes": {n: [] for n, _ in LANES}, "chips": {k: 0 for k in CHIPS}, "counts": {}, "other": {},
-                          "p0": [], "p0_verifying": [], "newest_plan": "", "void_plans": [], "source": "", "warnings": [], "total": 0}
+                          "p0": [], "p0_verifying": [], "newest_plan": "", "void_plans": [], "source": "", "warnings": [], "total": 0,
+                          "core_version": "", "plain_supported": False}
         rows = (sessions or {}).get("rows", [])
         now = readonly.now_local(cfg)
         waiting = [r for r in rows if r["state"] == "waiting"]
@@ -1078,7 +1092,8 @@ class Snapshot:
                      "awaiting_live_check": len(awaiting_ids),
                      "sessions": len(rows), "tickets": board["total"]},
             "p0": board["p0"], "p0_verifying": board["p0_verifying"], "inbox": {"items": inbox["items"], "count": inbox.get("count"), "error": inbox_err},
-            "board": {k: board[k] for k in ("lanes", "chips", "counts", "other", "newest_plan", "void_plans", "source", "warnings", "total")},
+            "board": {k: board.get(k, "" if k == "core_version" else False if k == "plain_supported" else None)
+                      for k in ("lanes", "chips", "counts", "other", "newest_plan", "void_plans", "source", "warnings", "total", "core_version", "plain_supported")},
             "tickets": board["cards"], "sessions": {"rows": rows, "error": sess_err}, "waiting": waiting,
             "waiting_all": {"rows": waiting_all, "elsewhere": len(foreign_rows), "error": foreign_err},
             "creds": creds, "logs": logs or {}, "releases": releases or [], "live_checks": checks,

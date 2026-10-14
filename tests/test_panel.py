@@ -526,7 +526,7 @@ class TestApi(PanelWorld):
                 return m.group(0)
         raise AssertionError(f"{name} is not a definition of the page")
 
-    def _ticket_chat_in_node(self, statuses, recent=(), typed=None, can_write=True, plain=""):
+    def _ticket_chat_in_node(self, statuses, recent=(), typed=None, can_write=True, plain="", plain_supported=True):
         """Run the page's own ticketChat(id, status) in node from its source, with the page's esc() and the drafts kept in
         state.typed, the rest of the helpers stubbed: no DOM, the receipt button rendered as its data-rc JSON (no token
         logic). Returns {status: html}."""
@@ -536,7 +536,7 @@ class TestApi(PanelWorld):
             self.skipTest("node is not installed here (CI has it)")
         js = self.req("GET", "/static/app.js")[2].decode()
         fns = []
-        for name in ("NO_PLAIN", "PLAIN_CHIP", "firstSentence", "plainLine", "subtitle", "composer", "questionMsgs", "ticketChat"):
+        for name in ("NO_PLAIN", "PLAIN_CHIP", "firstSentence", "plainSupported", "plainLine", "subtitle", "composer", "questionMsgs", "ticketChat"):
             fns.append(self._js_def(js, name))
         chips = re.search(r"\n  const BACKLOG_CHIPS = \[.*?\];\n", js)
         self.assertTrue(chips, "the backlog chips are one list in the page")
@@ -546,7 +546,7 @@ class TestApi(PanelWorld):
 const NO_TOKEN = 'no token';
 const CSS = { escape: (x) => x };
 const document = { querySelector: () => null };
-const state = { sent: {}, typed: """ + json.dumps(typed or {}) + """, snap: { panel: { receipts: { recent: """ + json.dumps(list(recent)) + """ } } } };
+const state = { sent: {}, typed: """ + json.dumps(typed or {}) + """, snap: { board: { plain_supported: """ + ("true" if plain_supported else "false") + """ }, panel: { receipts: { recent: """ + json.dumps(list(recent)) + """ } } } };
 function canWrite() { return """ + ("true" if can_write else "false") + """; }
 function rc(label, data, cls = '') { return `<button type="button" class="btn" data-rc='${JSON.stringify(data)}'>${label}</button>`; }
 function sentBadge(key, pred) { return `<span class="badge sent">badge:${key}</span>`; }
@@ -725,11 +725,16 @@ function verdictClass(r) { return ''; }
         d = self.get_json("/api/tickets/T-0010")
         self.assertEqual(d["plain"], "")
         self.assertIn("problem", d, "the Problem section is still returned as before")
+        self.assertFalse(s["board"]["plain_supported"], "no board --json at all: the core predates plain")
+        self.assertEqual(s["board"]["core_version"], "")
+        html = self._ticket_chat_in_node(["backlog", "ready"], plain_supported=False)
+        self.assertEqual(re.findall(r'data-text="([^"]*)"', html["ready"]), [], "no plain chip on a core without plain words")
+        self.assertEqual(re.findall(r'data-text="([^"]*)"', html["backlog"]), ["triage now", "drop it (not needed)", "raise to P1"])
 
     def test_plain_words_come_from_board_json_and_human_json_and_reach_the_detail(self):
         """Core 1.2.0: `plain` rides board --json per ticket and human --json per item; the panel never parses the markdown.
         The detail endpoint takes it from the board data."""
-        board = {"tickets": [{"id": tid, "severity": sev, "title": slug.replace("-", " "), "status": status, "owner": owner,
+        board = {"version": "1.2.1", "tickets": [{"id": tid, "severity": sev, "title": slug.replace("-", " "), "status": status, "owner": owner,
                               "plain": {"T-0010": "The page shows a wrong total. You will see the right one after the fix. Nothing is needed from you.",
                                         "T-0001": ""}.get(tid, f"{tid} in plain words.")}
                              for tid, slug, status, sev, owner in TICKETS], "warnings": []}
@@ -761,11 +766,13 @@ function verdictClass(r) { return ''; }
         if not node:
             self.skipTest("node is not installed here (CI has it)")
         js = self.req("GET", "/static/app.js")[2].decode()
-        src = "".join(self._js_def(js, n) for n in ("esc", "NO_PLAIN", "PLAIN_CHIP", "firstSentence", "plainLine", "subtitle"))
-        script = src + """
+        src = "".join(self._js_def(js, n) for n in ("esc", "NO_PLAIN", "PLAIN_CHIP", "firstSentence", "plainSupported", "plainLine", "subtitle"))
+        script = "const state = { snap: { board: { plain_supported: true } } };\n" + src + """
 const out = { first: ["The total is wrong on the page. You will see it fixed.", "Dr. Smith cannot log in. It matters to everyone.", "e.g. the page breaks. Then nothing loads.",
   "Version 1.2.0 is live since 3.5 seconds ago. Really.", "No period here", "One. Two.", "  spaced out.  ", ""].map(firstSentence),
   sub_present: subtitle("Alpha beta gamma delta. Epsilon zeta."), sub_missing: subtitle(""), lead: plainLine("Lead <words>", "lead"), lead_missing: plainLine("", "lead"), plain: plainLine("x") };
+state.snap.board.plain_supported = false;
+out.old_core = [subtitle(""), plainLine("", "lead"), plainLine("still shown when written"), subtitle("Written words stay. Yes.")];
 console.log(JSON.stringify(out));"""
         r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -778,6 +785,10 @@ console.log(JSON.stringify(out));"""
         self.assertEqual(out["lead"], '<div class="plain lead">Lead &lt;words&gt;</div>')
         self.assertEqual(out["lead_missing"], '<div class="plain missing lead">no plain-words summary yet</div>')
         self.assertEqual(out["plain"], '<div class="plain ">x</div>')
+        self.assertEqual(out["old_core"], ["", "", '<div class="plain ">still shown when written</div>', '<span class="subtitle ">Written words stay.</span>'],
+                         "a core without plain words: no 'missing' hints, written words (none, in practice) would still show")
+        self.assertTrue(s["board"]["plain_supported"])
+        self.assertEqual(s["board"]["core_version"], "1.2.1")
         # where they sit: the drawer leads with them, above the title, then the Problem collapsed, then the front matter
         self.assertIn("${plainLine(t.plain, 'lead')}<div class=\"ttitle\">${esc(fm.title)}</div>${problem}<dl class=\"kv\">", js)
         self.assertIn("<details class=\"problem\"><summary>Problem", js)
@@ -797,7 +808,7 @@ console.log(JSON.stringify(out));"""
             self.assertEqual(len(chips), 4 if st == "backlog" else 1, st)
             self.assertEqual(html.count("data-rc='"), 1, f"{st}: the chip is not a receipt button")
         js = self.req("GET", "/static/app.js")[2].decode()
-        self.assertIn("const presets = (status === 'backlog' ? BACKLOG_CHIPS : []).concat(plain ? [] : [PLAIN_CHIP]);", js)
+        self.assertIn("const presets = (status === 'backlog' ? BACKLOG_CHIPS : []).concat(plain || !plainSupported() ? [] : [PLAIN_CHIP]);", js)
         self.assertIn("function ticketChat(id, status, plain = '') {", js)
         written = self._ticket_chat_in_node(["backlog", "ready"], plain="The words are written.")
         self.assertEqual(re.findall(r'data-text="([^"]*)"', written["backlog"]), ["triage now", "drop it (not needed)", "raise to P1"])
