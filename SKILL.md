@@ -11,8 +11,9 @@ disable-model-invocation: false
 Run `${CLAUDE_SKILL_DIR}/bin/zouinify $ARGUMENTS` from the project root (the directory holding `.ops/config.yaml`, or any
 directory under it) and relay its output verbatim. Commands today: `config`, `up`, `launch`, `status`, `down`, `briefs`
 (the rendered `.ops/briefs/*.md` are generated artefacts: edit `templates/briefs/*.md.tmpl` for what every project needs or
-`.ops/briefs.project/<role>.md` for what only this project knows, then `briefs render`; it refuses a hand-edited brief, and
-`--force` is for after the edit is folded back into one of those two), `panel start|stop|status|url|token rotate` (the read-only control panel: loopback by default, `panel.bind: intranet` with
+`.ops/briefs.project/<role>.md` for what only this project knows, then `briefs render`; a changed template, notes or config
+renders straight through, a hand-edited brief is refused, and `--force` is for that case only, after the edit is folded back
+into one of those two), `panel start|stop|status|url|token rotate` (the read-only control panel: loopback by default, `panel.bind: intranet` with
 the browser token, see `docs/REFERENCE.md`), `board`, `human`, `version`, `init` (bootstraps a repository: `.ops/config.yaml`,
 `.ops/briefs/*.md`, the `.ops/state/` line in `.gitignore`; it asks its questions on the human's terminal, so from a session
 run `init --non-interactive --name N --short S --human H` with values the human gave, adding `--dry-run` to show the plan

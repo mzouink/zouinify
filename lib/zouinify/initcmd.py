@@ -163,9 +163,10 @@ def render_config(v: dict) -> str:
     human_only = "\n".join(f"  - {x}" for x in HUMAN_ONLY_DEFAULT) + "\n" + prod_rule
     return f"""# .ops/config.yaml -- {v['name']}: the zouinify configuration of this repository (schema v1), written by `zouinify init`.
 # It holds no secret: names, paths, branch names, window names, a budget number. Edit it to taste, then
-# `zouinify config --check` and `zouinify briefs render --force`. Optional companions a project may add next to it,
-# owned by the project: .ops/README.project.md (its own protocol block), .ops/briefs.project/<role>.md (what only this
-# project knows, spliced into its rendered brief; the rendered .ops/briefs/*.md are generated, never edited) and .ops/INVENTORY.md.
+# `zouinify config --check` and `zouinify briefs render` (a changed config renders straight through; `--force` is for a
+# hand-edited brief only). Optional companions a project may add next to it, owned by the project: .ops/README.project.md
+# (its own protocol block), .ops/briefs.project/<role>.md (what only this project knows, spliced into its rendered brief;
+# the rendered .ops/briefs/*.md are generated, never edited) and .ops/INVENTORY.md.
 version: 1
 project: {{name: {q(v['name'])}, short: {q(sh)}}}
 repos:
@@ -441,6 +442,7 @@ def _cmd_init(target, flags, dry_run, non_interactive, out) -> int:
         launch.cmd_up(cfg, dry_run=True, out=out)
     except Exception as e:  # noqa: BLE001 - the preview must not undo a finished init
         print(f"  (up --dry-run could not run here: {e})", file=out)
-    print(f"\nnext: edit {cfgmod.CONFIG_REL} (human_only, repos, budget, deploy kinds), `zouinify briefs render --force` to refresh the "
-          f"briefs, `zouinify config --check`, then `zouinify up`. {SECOND_HALF}.", file=out)
+    print(f"\nnext: edit {cfgmod.CONFIG_REL} (human_only, repos, budget, deploy kinds), `zouinify briefs render` to refresh the "
+          f"briefs (they carry their digest, so a changed config renders straight through), `zouinify config --check`, then "
+          f"`zouinify up`. {SECOND_HALF}.", file=out)
     return 0

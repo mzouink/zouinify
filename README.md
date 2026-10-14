@@ -52,9 +52,10 @@ answers the questions from flags (for a session, which has no terminal). `init -
 a terminal (`--dry-run` shows its plan anywhere); the ticket core it installs is a byte-identical, pinned copy of the upstream
 script (`templates/protocol/MANIFEST`). Without `init`: copy `templates/ops/config.yaml.example` to `.ops/config.yaml` and run
 `zouinify briefs render`. The rendered briefs are generated artefacts: edit `templates/briefs/*.md.tmpl` for what every project
-needs or `.ops/briefs.project/<role>.md` for what only your project knows, then render; render refuses a hand-edited brief, and
-`--force` is for after the edit is folded back into one of those two. Needs Python 3.9+ with PyYAML, tmux 3.2+, git 2.31+,
-bash 4+ and the `claude` CLI on PATH.
+needs or `.ops/briefs.project/<role>.md` for what only your project knows, then render; a changed template, notes or config
+renders straight through (each brief carries the digest of its body in its header), a hand-edited brief is refused, and
+`--force` is for that case only, after the edit is folded back into one of those two. Needs Python 3.9+ with PyYAML, tmux
+3.2+, git 2.31+, bash 4+ and the `claude` CLI on PATH.
 
 ## How it fits together
 
