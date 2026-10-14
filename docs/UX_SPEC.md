@@ -305,8 +305,10 @@ State mapping, with text labels (never color alone):
 | `shell` | pane runs a non-claude command (the human is in it) | grey outline |
 
 Columns: role (desk/manager/debug/chrome_debug/worker, from the registry or the config's name map), name, tmux window,
-**model** from the status bar (red `Sonnet?` badge when it is not the configured model: a real failure mode), state, ticket,
-last visible line or last `Stop` reply (hook), age. The desk row is pinned first with its poll presence. The model is read from the status bar on the visible screen: `?` when the bar is not on screen (a dialog or a prompt covers it); the red badge fires only when a model was read and differs from the configured one. Expect it to fire on day one for sessions started before the launcher existed; that is the point, not a bug. Session detail
+**model** from the status bar (red `Sonnet?` badge when a session zouinify configured runs another model; a role with no
+configured model, such as `other`, shows its model plainly: T-0200), state, ticket, last visible line or last `Stop` reply
+(hook; the visible line skips the CLI's chrome: the status bar, "Update installed · Restart to update", spinner lines, the
+shortcuts hint; the prompt box with text in it wins, else the session's own last line: T-0200), age. The desk row is pinned first with its poll presence. The model is read from the status bar on the visible screen: `?` when the bar is not on screen (a dialog or a prompt covers it); the red badge fires only when a model was read and differs from the configured one. Expect it to fire on day one for sessions started before the launcher existed; that is the point, not a bug. Session detail
 (`#/sessions/<name>`): the redacted screen, last reply, hook event timeline, ticket link, registry entry. Controls: none in
 v1; after T-0162 only **[kill]** on a session whose ticket is `done`/`dropped` (receipt; the desk runs `zouinify down`) and
 **[launch]** for a configured role that is `gone`.

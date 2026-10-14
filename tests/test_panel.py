@@ -524,6 +524,50 @@ class TestApi(PanelWorld):
         self.assertIn('class="mono closed-by truncate" title="${esc(shas)}"', js, "the full sha list is the title; one line on the card")
         self.assertIn('<div class="body scroll-x"><table class="tbl">', js)
         self.assertIn("<th class=\"actions\">actions</th>", js)
+    def test_last_line_skips_the_cli_chrome(self):
+        """T-0200: 7 of 21 live rows showed Claude Code's own "Update installed · Restart to update" as their last line."""
+        screens = os.path.join(HERE, "screens")
+        read = lambda n: open(os.path.join(screens, n + ".txt"), encoding="utf-8").read()  # noqa: E731
+        lbl = panel_sources.last_body_line
+        self.assertEqual(lbl(read("idle_draft_and_allow_prose")), "❯ stop here, wait for C.3", "the prompt box with text wins")
+        without_draft = "\n".join(l for l in read("idle_draft_and_allow_prose").splitlines() if "stop here, wait for" not in l)
+        self.assertEqual(lbl(without_draft), "As the brief says, I'm stopping here.", "else the session's own last line, border stripped")
+        self.assertEqual(lbl(read("busy_numbered_list")), "Starting with step 1 now.", "the spinner line and the empty prompt are chrome")
+        tail = "Deployed T-0145: serial 3 -> 4.\n                                       ✔ Update installed · Restart to update  │\n" \
+               "────────────────────\n❯ \n────────────────────\n   [Opus 5.5] 📁 someproj | 🌿 dev\n   💰 $41.56 | ⏱️   4d 5h 57m | 7% ctx\n" \
+               "  ⏵⏵ auto mode on (shift+tab to cycle) · ⇧ 1 agent\n  ? for shortcuts\n"
+        self.assertEqual(lbl(tail), "Deployed T-0145: serial 3 -> 4.")
+        self.assertEqual(lbl("✻ Cogitated for 54s · done 2:45 PM\n   [Fable 5.1] x | dev\n"), "", "nothing but chrome: no last line")
+        self.assertNotIn("1. Yes", lbl(read("waiting_option_dialog")), "a dialog's selected option is not the prompt box")
+        for name in ("idle_draft_and_allow_prose", "busy_numbered_list", "waiting_yn", "waiting_footer_only", "idle_prose_question"):
+            self.assertNotIn("Update installed", lbl(read(name)), name)
+            self.assertNotIn("Restart to update", lbl(read(name)), name)
+
+    def test_model_badge_is_red_only_for_a_role_with_a_configured_model(self):
+        """T-0200: `other` sessions (no configured model) showed "Opus 5.5 ≠ fable" in red; only a session zouinify configured
+        may be red. The desk configured fable and showing Opus is."""
+        subprocess.run(["tmux", "new-session", "-d", "-s", "assembly-tpl", "-c", self.root, "claude", "--model", "opus", "--", "assembly-tpl"],
+                       env=self.env, check=True, capture_output=True)
+        with open(os.path.join(self.state, "screen-assembly-tpl.txt"), "w") as fh:
+            fh.write("working on templates\n   [Opus 5.5] 📁 someproj | 🌿 dev\n")
+        with open(os.path.join(self.state, "screen-tp-desk.txt"), "w") as fh:
+            fh.write("desk here\n   [Opus 5.5] 📁 someproj | 🌿 dev\n")
+        with open(os.path.join(self.state, "sessions.json")) as fh:
+            pid = json.load(fh)["assembly-tpl"]["pid"]
+        with open(self.agents) as fh:
+            agents = json.load(fh)
+        agents.append({"name": "assembly-tpl", "cwd": self.root, "status": "idle", "pid": pid, "kind": "interactive", "sessionId": "sid-asm"})
+        with open(self.agents, "w") as fh:
+            json.dump(agents, fh)
+        self.srv.fresh_at.clear()
+        rows = {r["name"]: r for r in self.get_json("/api/snapshot?fresh=1")["sessions"]["rows"]}
+        other, desk = rows["assembly-tpl"], rows["tp-desk"]
+        self.assertEqual((other["role"], other["model"], other["model_expected"], other["model_mismatch"]), ("other", "Opus 5.5", "", False))
+        self.assertEqual((desk["role"], desk["model"], desk["model_expected"], desk["model_mismatch"]), ("desk", "Opus 5.5", "fable", True))
+        self.assertEqual(other["last_line"], "working on templates")
+        js = self.req("GET", "/static/app.js")[2].decode()
+        self.assertNotIn("<dt>status</dt>", js, "one vocabulary: the state badge, no `status: busy` next to `working`")
+        self.assertIn("no model configured for this role: shown as is", js)
 
     def test_sources_carry_ages_and_settings(self):
         s = self.get_json("/api/snapshot")

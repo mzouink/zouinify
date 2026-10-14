@@ -21,6 +21,10 @@ from zouinify import panelstate, readonly
 from zouinify.panel.redact import FILE_EXT, redact
 
 CHROME_RE = re.compile(r"^\s*(\[[A-Z][a-z]+ [0-9.]+\]|\U0001F4B0|⏵|─|╭|╰|│\s*$|❯\s*$|>\s*$)")
+# the CLI's own notices and activity lines, never a session's last words (T-0200): the update notice, the shortcuts hint, the
+# spinner / "Cogitated for 54s · done" lines, the auto-mode line, the context/cost bar
+NOTICE_RE = re.compile(r"Update installed|Restart to update|\?\s*for shortcuts|^\s*[✻✶✳✢✽✾✿❋⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s|^\s*⏵|auto mode (on|off)|\d+% ctx|esc to interrupt")
+PROMPT_TEXT_RE = re.compile(r"^\s*❯\s+(\S.*)$")   # the prompt box with text in it (a typed prompt or a draft): what is being asked
 EVIDENCE_RE = re.compile(
     r"LIVE CHECK PASSED|\breload|\bserial\b|sha256|CodeSha256|arn:aws|s3://|invalidation|No changes\.|paid (run|job)|"
     r"\bweb[0-9a-f]{10,}\b|\bdescribe-[a-z]|\bget-[a-z]+-[a-z]|\blist-[a-z]+|(HTTP[/0-9.]*|->) *[1-5][0-9]{2}\b|smoke_release", re.I)
@@ -217,8 +221,23 @@ def walk_to_pane(pid, pane_by_pid: dict, depth: int = 5):
 
 
 def last_body_line(screen: str) -> str:
-    body = [l for l in screen.splitlines() if l.strip() and not CHROME_RE.match(l)]
-    return body[-1].strip()[:160] if body else ""
+    """The session's last visible words, with the CLI's chrome skipped (T-0200): the status bar, the update notice, the
+    shortcuts hint, spinner and "done" lines, box borders. Prefers the last `❯ <text>` prompt-box line (what is being
+    asked), else the last line of the session's own text. The hook's last reply, when there is one, wins over this at
+    row level (apply_events)."""
+    kept = []
+    for raw in screen.splitlines():
+        if not raw.strip() or CHROME_RE.match(raw) or NOTICE_RE.search(raw) or FOOTER_RE.match(raw):   # a dialog footer is chrome too
+            continue
+        text = BOX_RE.sub("", raw).strip()
+        if not text or NOTICE_RE.search(text) or re.fullmatch(r"[─╭╰│┌┐└┘├┤┬┴┼═║╔╗╚╝]+", text):
+            continue
+        kept.append((raw, text))
+    for raw, text in reversed(kept):
+        m = PROMPT_TEXT_RE.match(raw)
+        if m and not OPTION_RE.match(raw):                  # `❯ 1. Yes` is a dialog's selected option, not the prompt box
+            return ("❯ " + m.group(1).strip())[:160]
+    return kept[-1][1][:160] if kept else ""
 
 
 # A session "waits for you" only on a REAL prompt (T-0177): an option dialog (the permission box, an AskUserQuestion)
@@ -685,11 +704,13 @@ def sessions_source(cfg, events=None) -> dict:
             state = "idle"
         else:
             state = status
-        want = cfg.sessions[role].model if role in cfg.sessions else (cfg.model or "")
+        # the red badge means "a session zouinify configured runs another model": a role with no configured model (`other`,
+        # a session zouinify did not launch) shows its model plainly (T-0200)
+        want = cfg.sessions[role].model if role in cfg.sessions else ""
         label = readonly.model_on_screen(screen, cfg.model_re)
         rows.append({"name": name, "role": role, "tmux": tmux_name, "ticket": ticket, "state": state, "status": status,
                      "model": label or "?", "model_expected": want,
-                     "model_mismatch": bool(label and readonly.alias_of(want) and readonly.model_word(label) != readonly.alias_of(want)),
+                     "model_mismatch": bool(label and want and readonly.alias_of(want) and readonly.model_word(label) != readonly.alias_of(want)),
                      "last_line": last_body_line(screen), "waiting_for": waiting_for if state == "waiting" else "", "since": "",
                      "started_at": a.get("startedAt"), "pid": a.get("pid"), "cwd": a.get("cwd"), "session_id": a.get("sessionId"),
                      "launched_at": e.get("launched_at"), "by": e.get("by"), "registered": bool(e)})

@@ -192,7 +192,7 @@ class TestWaitingState(PanelWorld):
         self.plant("tp-desk", "idle_prose_question")
         r, _ = self.row("tp-desk")
         self.assertEqual(r["state"], "waiting")
-        self.assertIn("Brewed for 11s", r["waiting_for"], "no prompt shape: the last body line stands in")
+        self.assertIn("Still waiting on you: should I file a ticket", r["waiting_for"], "no prompt shape: the session's own last line stands in (the spinner line is chrome, T-0200)")
 
 
 if __name__ == "__main__":
