@@ -12,7 +12,7 @@ import time
 import unittest
 import zlib
 
-from test_core import FAKES, HERE, ZOUINIFY, World, _chmod_x, mark_runner
+from test_core import FAKES, HERE, ZOUINIFY, World, _chmod_x, mark_runner, release_runner
 
 LIB = os.path.join(os.environ.get("ZOUINIFY_REPO_UNDER_TEST") or os.path.dirname(HERE), "lib")   # the repo under test, as test_term
 
@@ -38,6 +38,7 @@ class InitWorld(World):
         self.assertTrue(os.path.isfile(ZOUINIFY) and os.access(ZOUINIFY, os.X_OK), f"no executable CLI at {ZOUINIFY}")
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="zouinify-init-"))
         mark_runner(self.tmp)
+        self.addCleanup(release_runner, self.tmp)
         self.root = os.path.join(self.tmp, "proj")
         self.home = os.path.join(self.tmp, "home")
         self.state = os.path.join(self.tmp, "tmux-state")

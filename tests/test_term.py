@@ -35,7 +35,7 @@ REPO = os.environ.get("ZOUINIFY_REPO_UNDER_TEST") or os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 sys.path.insert(0, HERE)
 
-from test_core import World, ZOUINIFY  # noqa: E402
+from test_core import World, ZOUINIFY, mark_runner, release_runner  # noqa: E402
 
 try:
     from zouinify import config as cfgmod
@@ -861,7 +861,8 @@ class TestTermControl(World):
 
     def test_a_leftover_server_of_a_dead_run_is_reaped_and_a_live_runs_is_not(self):
         """T-0225: a killed pytest leaves its detached server running for hours; tests/conftest.py stops, at the next session
-        start, every test server whose world's `.test-runner` names a dead pytest, and leaves a live run's alone."""
+        start, every test server whose world's `.test-runner` is unlocked and names a dead pytest, and leaves a live run's
+        alone (the lock its runner holds is the proof of life)."""
         import conftest
         self.set_secret()
         self.ok("term", "start")
@@ -872,18 +873,55 @@ class TestTermControl(World):
         self.assertTrue(conftest.same_server(pid, self.root), "the kill target is re-read from /proc: this user's server for this path")
         self.assertFalse(conftest.same_server(pid, self.root + "x"), "another path: not the same server")
         self.assertFalse(conftest.same_server(os.getpid(), self.root), "another process: not a server")
+        self.assertTrue(conftest._signal(pid, self.root, 0), "signal 0 through the gate (a pidfd where there is one): delivered")
+        self.assertFalse(conftest._signal(pid, self.root + "x", 0), "the gate refuses another path")
+        self.assertFalse(conftest._signal(os.getpid(), self.root, 0), "and a process that is no server")
+        sent, opened = [], []                                         # the pidfd branch, with the platform calls faked (this box has none)
+        def fake_open(p):
+            if p != pid:
+                raise ProcessLookupError(p)
+            opened.append(os.open(os.devnull, os.O_RDONLY))
+            return opened[-1]
+        def fake_send(fd, sig, *a):
+            sent.append((fd, sig))
+        with mock.patch.object(os, "pidfd_open", fake_open, create=True), mock.patch.object(signal, "pidfd_send_signal", fake_send, create=True):
+            self.assertTrue(conftest._signal(pid, self.root, 0))
+            self.assertEqual(sent, [(opened[0], 0)], "sent through the pidfd opened before the /proc re-read")
+            self.assertFalse(conftest._signal(pid, self.root + "x", 0), "another path: nothing sent")
+            self.assertFalse(conftest._signal(os.getpid(), self.root, 0), "no pidfd for a process that is no server")
+        self.assertEqual(len(sent), 1)
+        for fd in opened:
+            with self.assertRaises(OSError, msg="every pidfd closed"):
+                os.fstat(fd)
         marker = os.path.join(self.tmp, ".test-runner")
         self.assertEqual(open(marker).read().strip(), str(os.getpid()), "the world names the pytest that owns it")
         mine = [row for row in conftest.test_servers() if row[0] == pid]
         self.assertEqual([(v, w) for _, _, w, v, _ in mine], [("keep", os.path.realpath(self.tmp))], "a live runner's server is kept")
-        self.assertIn("is alive", mine[0][4])
+        self.assertIn("holds the marker lock", mine[0][4], "this pytest holds the lock: that is the proof, before any pid check")
         reaped = f"reaped a leftover test server from a dead run: pid {pid}"     # the checks name this pid: other sessions' servers may be reaped alongside
         buf = io.StringIO()
         conftest.reap_leftovers(buf)
         self.assertNotIn(reaped, buf.getvalue())
         self.assertTrue(conftest._alive(pid), "left alone")
+        # the runner's lock is the proof of life: a marker naming a pid that is dead HERE (a sandboxed runner writes a
+        # namespace-local pid) is still a live runner's while the lock is held
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        with open(marker, "w") as fh:
+            fh.write(f"{gone.pid}\n")
+        self.assertEqual(conftest.runner_of(self.tmp), ("locked", gone.pid))
+        buf = io.StringIO()
+        conftest.reap_leftovers(buf)
+        self.assertIn(f"kept a zouinify test server: pid {pid}", buf.getvalue())
+        self.assertIn("holds the marker lock", buf.getvalue())
+        self.assertTrue(conftest._alive(pid), "kept")
+        release_runner(self.tmp)                                      # the runner died: its lock went with it
+        self.assertEqual(conftest.runner_of(self.tmp), ("dead", gone.pid), "now provably dead: lock free and no such pid")
+        mark_runner(self.tmp)                                         # back to a live runner for the cases below
+        self.assertEqual(conftest.runner_of(self.tmp), ("locked", os.getpid()))
         # no marker at all (test code older than the marker, maybe another session's run): kept, and said so -- never reaped
         os.unlink(marker)
+        release_runner(self.tmp)
         mine = [row for row in conftest.test_servers() if row[0] == pid]
         self.assertEqual([v for _, _, _, v, _ in mine], ["keep"])
         self.assertIn("no readable runner marker", mine[0][4])
@@ -901,9 +939,7 @@ class TestTermControl(World):
             conftest.reap_leftovers(buf)
             self.assertIn(f"kept a zouinify test server: pid {pid}", buf.getvalue(), garbled)
             self.assertTrue(conftest._alive(pid), garbled)
-        gone = subprocess.Popen(["true"])                             # a pid that has exited: the runner died
-        gone.wait()
-        with open(marker, "w") as fh:
+        with open(marker, "w") as fh:                                 # a dead pid and no lock: the runner died
             fh.write(f"{gone.pid}\n")
         self.assertEqual([p for p, _, _ in conftest.leftover_test_servers() if p == pid], [pid], "its runner is provably dead: a leftover")
         buf = io.StringIO()
@@ -922,6 +958,20 @@ class TestTermControl(World):
         world = os.path.realpath(self.tmp)
         self.assertEqual(conftest.world_of(self.root), (world, ""), "this test's own world: real, one level under the temp dir")
         self.assertEqual(conftest.world_of(os.path.join(self.tmp, "other"))[0], world, "any project name inside the world")
+        real_lstat = os.lstat
+        def foreign(path, *a, **kw):                                  # the world and the marker as another user's
+            st = real_lstat(path, *a, **kw)
+            if os.fspath(path) in (world, self.tmp, os.path.join(world, ".test-runner")):
+                return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, os.getuid() + 1, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+            return st
+        with mock.patch.object(os, "lstat", foreign):
+            self.assertEqual(conftest.world_of(self.root), (None, "the world belongs to another user"), "a world planted by another user in a shared temp dir")
+        def foreign_fstat(fd):
+            st = os.stat(fd)                                          # the real fstat, with the uid swapped
+            return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, os.getuid() + 1, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+        with mock.patch.object(os, "fstat", foreign_fstat):
+            self.assertEqual(conftest.runner_of(self.tmp), ("foreign", None), "another user's marker: not read, not a reason to reap")
+        self.assertEqual(conftest.world_of(self.root), (world, ""), "and this user's again without the patch")
         init = tempfile.mkdtemp(prefix="zouinify-init-", dir=tmp)
         self.addCleanup(os.rmdir, init)
         self.assertEqual(conftest.world_of(f"{init}/proj"), (init, ""), "an init world too")

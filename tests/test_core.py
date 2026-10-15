@@ -13,6 +13,7 @@ gives the RED evidence against the base commit:
 import glob
 import importlib
 import hashlib
+import fcntl
 import json
 import os
 import re
@@ -120,11 +121,31 @@ contact: {{human: tester}}
 """
 
 
+_RUNNER_LOCKS = {}                                                   # world -> the fd holding the marker's flock
+
+
 def mark_runner(world: str) -> None:
-    """`<world>/.test-runner` = this pytest's pid: a server started for this world whose runner is dead is a leftover that
-    tests/conftest.py reaps at the next session start (T-0225); a live runner's servers are left alone."""
-    with open(os.path.join(world, ".test-runner"), "w", encoding="utf-8") as fh:
-        fh.write(f"{os.getpid()}\n")
+    """`<world>/.test-runner` = this pytest's pid, and this pytest holds an flock on it until release_runner (tearDown) or
+    its own death: a server started for this world whose runner is dead is a leftover that tests/conftest.py reaps at the
+    next session start (T-0225); a live runner's servers are left alone. The lock is the proof of life that holds across
+    pid namespaces (a sandboxed runner writes a namespace-local pid) and pid reuse; the pid is the message."""
+    release_runner(world)
+    fd = os.open(os.path.join(world, ".test-runner"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)                 # the only other holder is a reaper, for microseconds: lock, then write
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+    except BaseException:
+        os.close(fd)
+        raise
+    _RUNNER_LOCKS[world] = fd
+
+
+def release_runner(world: str) -> None:
+    """Let go of the marker's flock (the runner is done with the world, or a test plays a runner that died)."""
+    fd = _RUNNER_LOCKS.pop(world, None)
+    if fd is not None:
+        os.close(fd)
 
 
 def _chmod_x(path):
@@ -143,6 +164,7 @@ class World(unittest.TestCase):
                         f"no executable CLI at {ZOUINIFY}")
         self.tmp = tempfile.mkdtemp(prefix="zouinify-test-")
         mark_runner(self.tmp)
+        self.addCleanup(release_runner, self.tmp)      # after tearDown, whichever subclass's; even when setUp fails later
         self.root = os.path.join(self.tmp, "proj")
         self.sso = os.path.join(self.tmp, "sso")
         self.home = os.path.join(self.tmp, "home")
