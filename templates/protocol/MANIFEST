@@ -1,13 +1,13 @@
-# templates/protocol/MANIFEST -- the vendored ticket protocol core (T-0185; re-pinned by T-0190, T-0193, T-0204, T-0215): byte-identical copies of the upstream files at the pinned commit.
+# templates/protocol/MANIFEST -- the vendored ticket protocol core (T-0185; re-pinned by T-0190, T-0193, T-0204, T-0215, T-0230): byte-identical copies of the upstream files at the pinned commit.
 # tests/test_vendored.py checks every sha256 below, and diffs each file against `git -C $ZOUINIFY_UPSTREAM_REPO show <pin>:<path>` when that variable names a checkout.
 # Re-pin: copy the files from the new commit, update pin/version/hooks and the sums, one commit, one ticket.
-pin 8b12d852f6a4d61f669eb5ec76eb6ad2e300778b
-version 1.2.2
+pin bd103c8962197a5f571dd3bf3da51f3d2c6cd76f
+version 1.2.4
 hooks plugin_evidence_check plugin_plan_key plugin_plan_void plugin_command_void_reason plugin_ask_check plugin_verb_for plugin_expect_line plugin_ignored_valuable_re plugin_deploy_kinds plugin_deploy_check plugin_apply_usage plugin_apply_prepare plugin_apply
-sha256 135da2f288d5e6986f6840eaebd94c91c6214b3345183d0c21aabf6f4ad06c19 scripts/ticket.sh
-sha256 cd3622181e48358743b88113d688e3be627df095364b05dd74d1b377029867c8 scripts/tests/ticket_world.py
-sha256 0c48998600b83cfc456287c71a35874a610aef83a8e64e548cd4eb28686e651e scripts/tests/test_ticket_core.py
-sha256 00ce30c3345331663acc35c9d9254dcedf88d853d0615153638948e855d2c008 scripts/tests/test_ticket_env.py
+sha256 18c2be40981d03dd1305218a9ef23aed1ed39cc1fd5cf123a61992d616d541fd scripts/ticket.sh
+sha256 f12068617aadef3cafc8e3bfa4df99112315e64bdd343a52870589924245118a scripts/tests/ticket_world.py
+sha256 334eab126bd8ef03310e9dacfb36871313c1a63fae8297260eec287ba6397dfa scripts/tests/test_ticket_core.py
+sha256 e0f5cbcd11bd2ba9a9fc9e0eec5e0bf8f22f245a2cff6293eb2260bddec9d868 scripts/tests/test_ticket_env.py
 sha256 765979b83877f810d98ab70d0b93edbaa52c04614dc380d461f3be25aacf9942 scripts/tests/test_ticket_repos.py
 sha256 29087ecef58d2911024b87c3b86cb066b614d0059b21264f4d5f818b511e41bb tickets/plugins/none/plugin.sh
 sha256 0a36e00ad5505a2125a9f2482dfc847585d8b0e7655d952cd0b7f620157cf662 tickets/plugins/none/docs/brief-live-mutations.md

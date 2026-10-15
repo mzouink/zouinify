@@ -101,10 +101,22 @@ if [ "${{3:-}}" = fetch ] && [ -e "{tmp}/fail_fetch_once" ]; then
   echo "fatal: unable to access 'https://github.com/x/y/': The requested URL returned error: 502" >&2
   exit 128
 fi
+if [ "${{3:-}}" = worktree ] && [ "${{4:-}}" = list ]; then   # T-0203: the branch guard's listing
+  n=$(cat "{tmp}/worktree_list_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"{tmp}/worktree_list_calls"
+  if [ "$n" = "$(cat "{tmp}/fail_worktree_list_at" 2>/dev/null || echo never)" ]; then   # the Nth listing fails (1 = pass 1's, 2 = the one before the delete)
+    echo "fatal: unable to read worktree list: Input/output error (test)" >&2; exit 128
+  fi
+  if [ -e "{tmp}/slow_worktree_list" ]; then   # the listing arrives in two writes with a pause between them -- as git, whose stdio flushes every 4 KiB, delivers a listing over that size (the main repo's is 7 KiB) from a slow filesystem
+    "{git}" "$@" || exit $?
+    {sleep} 0.5; printf '\n' || exit 141   # a reader that left after its match has closed the pipe by now: SIGPIPE, as git gets
+    exit 0
+  fi
+fi
 if [ "${{3:-}}" = worktree ] && [ "${{4:-}}" = remove ]; then
-  if [ -e "{tmp}/refuse_remove" ]; then echo "fatal: validation failed, cannot remove working tree: '$5' is locked (test)" >&2; exit 128; fi
+  wt=$5; [ "$wt" != --force ] || wt=$6   # T-0203: prune forces the one case it has checked
+  if [ -e "{tmp}/refuse_remove" ]; then echo "fatal: validation failed, cannot remove working tree: '$wt' is locked (test)" >&2; exit 128; fi
   if [ -e "{tmp}/leave_behind" ]; then
-    wt=$5; keep="{tmp}/leave_behind.keep"; rm -rf "$keep"; mkdir -p "$keep"
+    keep="{tmp}/leave_behind.keep"; rm -rf "$keep"; mkdir -p "$keep"
     while IFS= read -r f; do
       case $f in
         "") continue ;;

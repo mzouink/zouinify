@@ -377,13 +377,20 @@ class TestDocsFragments(unittest.TestCase):
     """The deploy-specific prose travels with the plugin (zouinify renders README/WORKER_BRIEF/_TEMPLATE from generic
     templates plus these fragments): every fragment is verbatim in this project's rendered file."""
     WHERE = {"rule-": "tickets/README.md", "evidence-": "tickets/README.md", "verbs": "tickets/README.md",
+             "inbox-": "tickets/README.md", "human-": "tickets/README.md", "life-": "tickets/README.md", "prune-": "tickets/README.md",
              "brief-": "tickets/WORKER_BRIEF.md", "handoff": "tickets/_TEMPLATE.md"}
+    # zouinify's FRAGMENTS: every deploy plugin ships them (the `none` plugin too)
+    REQUIRED = ["brief-live-mutations", "brief-paid-runs", "evidence-deployed", "evidence-done", "handoff",
+                "rule-after-deploy", "rule-deploy-evidence", "rule-no-live-mutations", "rule-protect-artifacts"]
+    # zouinify's OPTIONAL_FRAGMENTS (T-0219): the template's generic words stand when a plugin's docs lack the file, so the
+    # `none` plugin ships none of them; this project's aws-terraform docs supply all of them (T-0223)
+    OPTIONAL = ["verbs", "inbox-waiting", "inbox-kinds", "human-deploy-row", "life-deploy-step", "evidence-in-review",
+                "prune-ignored", "human-asks"]
 
     def test_every_aws_terraform_fragment_is_verbatim_in_its_document(self):
         d = os.path.join(DOCS_REPO, "tickets", "plugins", "aws-terraform", "docs")
         names = sorted(f for f in os.listdir(d) if f.endswith(".md"))
-        self.assertEqual(names, ["brief-live-mutations.md", "brief-paid-runs.md", "evidence-deployed.md", "evidence-done.md", "handoff.md",
-                                 "rule-after-deploy.md", "rule-deploy-evidence.md", "rule-no-live-mutations.md", "rule-protect-artifacts.md", "verbs.md"])
+        self.assertEqual(names, sorted(n + ".md" for n in self.REQUIRED + self.OPTIONAL))
         for f in names:
             doc = next(v for k, v in self.WHERE.items() if f.startswith(k))
             with open(os.path.join(d, f), encoding="utf-8") as fh:
@@ -394,8 +401,8 @@ class TestDocsFragments(unittest.TestCase):
                 self.assertTrue(frag.strip(), "empty fragment")
                 self.assertIn(frag.rstrip("\n"), text, "%s is not verbatim in %s" % (f, doc))
         none = os.path.join(DOCS_REPO, "tickets", "plugins", "none", "docs")
-        self.assertEqual(sorted(os.listdir(none)), [n for n in names if n != "verbs.md"],
-                         "the none plugin ships the same fragment names; verbs.md is optional and none has none (zouinify renders the sentence from the project's ASK_VERBS)")
+        self.assertEqual(sorted(os.listdir(none)), sorted(n + ".md" for n in self.REQUIRED),
+                         "the none plugin ships exactly the required fragments; the optional ones (verbs and the T-0219 slots) fall back to the template's words")
         for f in ("evidence-deployed.md", "evidence-done.md"):   # a §5 row has three columns: State | Who moves it in | Evidence in Log
             for d in (os.path.join(DOCS_REPO, "tickets", "plugins", "aws-terraform", "docs"), none):
                 with open(os.path.join(d, f), encoding="utf-8") as fh:

@@ -16,7 +16,7 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.2.2"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready), T-0220 (1.2.2: the JSON-producing awks run under LC_ALL=C, so every awk counts bytes -- under gawk in a UTF-8 locale the 1200 cap was 1200 characters and %c wrote two bytes; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.2.4"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready), T-0220 (1.2.2: the JSON-producing awks run under LC_ALL=C, so every awk counts bytes -- under gawk in a UTF-8 locale the 1200 cap was 1200 characters and %c wrote two bytes; same keys, hooks and JSON schemas), T-0203 (1.2.3: a plain worktree: next to a map branch: is the default repo's; prune reads the worktree list whole and keeps a branch a registered worktree holds, or one whose list it cannot read, in both passes; a worktree whose branch was deleted under it (HEAD unborn) goes, with --force, only when nothing in it is unsaved; same contract), T-0228 (1.2.4: the board's per-repo stats look only at a NAMED worktree -- with none named, dirty is null (text board: "no worktree") and worktree_missing false, where the repo's own directory was counted before; same keys): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
@@ -71,7 +71,7 @@ restore_edit() {
     g rebase --abort 2>/dev/null || true; echo "ticket.sh: aborted an interrupted rebase in $MAIN" >&2
   fi
   [ -n "$EDITED" ] || return 0
-  local e left=""
+  local e left="" st
   for e in $EDITED; do  # one or more ticket paths (no spaces in them), space-separated
     # From HEAD, not from the index: commit_push stages the file before it commits, and a commit that dies (git's
     # index.lock message from a concurrent git, T-0218) left the staged edit behind. `checkout` needs that same lock,
@@ -79,12 +79,13 @@ restore_edit() {
     # lock is gone, and then the message says how. "left clean" is printed only when it is true.
     if [ -n "$EDITED_NEW" ]; then g rm -q --cached -- "$e" 2>/dev/null || true; rm -f "$e"
     else g checkout -q HEAD -- "$e" 2>/dev/null || g show "HEAD:${e#"$MAIN"/}" >"$e" 2>/dev/null || true; fi
-    [ -z "$(g status --porcelain -- "$e" 2>/dev/null)" ] || left="$left ${e#"$MAIN"/}"
+    st=$(g status --porcelain -- "$e" 2>/dev/null) || st="(git status failed)"   # a status that cannot run is not "clean" (T-0218 review nit)
+    [ -z "$st" ] || left="$left ${e#"$MAIN"/}"
   done
   if [ -z "$left" ]; then
     echo "ticket.sh: aborted -- restored $(for e in $EDITED; do basename "$e"; done | tr '\n' ' ')" | sed 's/ $//' | sed 's/$/; main worktree left clean/' >&2
   else
-    echo "ticket.sh: aborted -- NOT clean: a git lock blocked the restore of$left. Once no other git runs in $MAIN:  git -C $MAIN restore --staged --worktree --$left" >&2
+    echo "ticket.sh: aborted -- NOT clean: a git lock blocked the restore of$left. Once no other git runs in $MAIN:  git -C \"$MAIN\" restore --staged --worktree --$left" >&2
   fi
 }
 trap restore_edit EXIT
@@ -483,6 +484,12 @@ repo_trunk() { [ "$1" = "$REPO0" ] && echo "$TRUNK" || echo "${REPO_TRUNK[$1]}";
 map_wt() { # worktree-map repo -> that repo's worktree as branch_stats/prune want it: the other repos' map paths are written relative to their parent dir
   local v; v=$(mapget "$1" "$2"); if [ "$2" = "$REPO0" ]; then echo "$v"; else sed "s|^$(basename "${REPO_PATH[$2]}")/||" <<<"$v"; fi
 }
+repo_wt() { # worktree-field repo repos-field -> that repo's worktree: its entry in a map, or a plain value when the repo is the one a plain
+  # value belongs to (T-0203: the default repo when repos: names it, else the first other configured one -- as ticket_repo picks for a plain
+  # branch:), else nothing. claim writes a plain worktree: for a two-repo ticket; the other repo's worktree is added by hand.
+  local pick
+  if [[ $1 == "{"* ]]; then map_wt "$1" "$2"; else pick=$(ticket_repo "$3"); [ "$2" != "${pick:-$REPO0}" ] || echo "$1"; fi
+}
 ticket_repo() { # repos-field -> the configured repo a plain branch:/worktree: belongs to: the default repo when named, else the first other configured name repos: lists (REPOS order), else nothing
   local toks r t; toks=$(tr -d '[]' <<<"$1" | tr ',' ' ')
   for t in $toks; do [ "$t" != "$REPO0" ] || { echo "$REPO0"; return 0; }; done
@@ -497,7 +504,7 @@ ticket_branches() { # ticket-file -> T_BR[repo] / T_WT[repo] for every repo the 
   # shellcheck disable=SC2086
   set -- $repos
   if [[ $br == "{"* ]]; then
-    for r in $REPOS; do T_BR[$r]=$(mapget "$br" "$r"); T_WT[$r]=$(map_wt "$wt" "$r"); done
+    for r in $REPOS; do T_BR[$r]=$(mapget "$br" "$r"); T_WT[$r]=$(repo_wt "$wt" "$r" "$repos"); done   # T-0203: a plain worktree: is the default repo's (mapget found no key in it: prune never saw the worktree and deleted the branch under it)
     keys=$(tr -d '{}' <<<"$br" | tr ',' '\n' | sed -n 's/^[ ]*\([^: ]*\):.*/\1/p')
     for k in $keys; do case " $KNOWN_REPOS " in *" $k "*) ;; *) BRANCH_PROBLEMS="$BRANCH_PROBLEMS the branch map names repo '$k', which ticket.sh cannot merge or prune (only: $KNOWN_REPOS);";; esac; done
   elif [ $# -le 1 ]; then   # one repo (or none named): the plain values are its; an unknown name takes the default repo's slot and is flagged below
@@ -699,8 +706,8 @@ cmd_merge() {
 # a .git of its own (a clone) or one pointing at a live gitdir, a path that resolves outside <repo>/WORKTREES (the only
 # place prune deletes in). `prune --orphans` applies the same judgement to every unregistered dir under WORKTREES of every
 # repo (the dirs of earlier failures).
-PRUNE_PLAN=""; PRUNED=""; PRUNE_FILES=""; FETCHED_TRUNKS=""; ORPHAN_PLAN=""; ORPHANS_REMOVED=0; LEFTOVER_NOTE=""
-VALUABLE_IGNORED_RE_CORE='\.(backup|bak|orig|pem|key|p12|env|sqlite3?|db)(\.[^/]*)?/?$|(^|/)\.env(\.|/|$)|secret|credential|(^|/)backups?(/|$)'
+PRUNE_PLAN=""; PRUNED=""; PRUNE_FILES=""; FETCHED_TRUNKS=""; ORPHAN_PLAN=""; ORPHANS_REMOVED=0; LEFTOVER_NOTE=""; UNBORN_REMOVE=""; UNBORN_LAST=""
+VALUABLE_IGNORED_RE_CORE='\.(backup|bak|orig|pem|key|p12|env|sqlite3?|db)(\.[^/]*)?/?$|(^|/)\.env(\.|/|$)|secret|credential|(^|/)backups?(/|$)|(^|/)\.claude/settings\.local\.json$|(^|/)\.ops/state(/|$)'   # T-0203 review: a worktree's own Claude settings and zouinify state are kept too
 VALUABLE_IGNORED_RE=""   # the core's pattern | the plugin's (plugin_ignored_valuable_re: tfstate/tfvars/tfplan here); set by load_plugin
 is_main_checkout() { # path -> 0 when it is a repository's MAIN working tree (its git dir is the .git itself, not .git/worktrees/<name>)
   local d; d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 1
@@ -719,6 +726,18 @@ worktree_entry() { # repo path -> that worktree's block of `git worktree list --
   done < <(git -C "$1" worktree list --porcelain 2>/dev/null; echo)
   return 0
 }
+branch_holder() { # repo branch -> the path of the registered worktree that has the branch checked out, or nothing; returns 1 and
+  # prints git's first error line when the list cannot be read. The list is read whole, never piped into `grep -q` (T-0203):
+  # that one-liner said "not checked out" for a branch that was -- when `git worktree list` failed (grep saw nothing), or
+  # when grep's early exit sent git a SIGPIPE on a listing over one stdio buffer (4 KiB; the main repo's is 7 KiB) that
+  # pipefail counted -- and three branches were deleted under their registered worktrees on 2026-10-13.
+  local list path="" line
+  list=$(git -C "$1" worktree list --porcelain 2>&1) || { head -n 1 <<<"$list"; return 1; }
+  while IFS= read -r line; do
+    case $line in "worktree "*) path=${line#worktree };; "branch refs/heads/$2") printf '%s' "$path"; return 0;; esac
+  done <<<"$list"
+  return 0
+}
 other_open_tickets_naming() { # id branch worktree-basename -> ids of other, not done/dropped tickets whose branch:/worktree: name them exactly
   local id=$1 br=$2 wtb=$3
   awk -v br="$br" -v wtb="$wtb" '
@@ -733,18 +752,62 @@ other_open_tickets_naming() { # id branch worktree-basename -> ids of other, not
     function flush() { if (hit && st!="done" && st!="dropped") { n=split(fn, p, "/"); print substr(p[n], 1, 6) } }
     END { if (fn) flush() }' "$TD"/T-*.md | grep -v "^$id\$" | tr '\n' ' ' || true
 }
-worktree_verdict() { # repo wpath branch id label -> 0 when the worktree may go; else prints why and returns 1
-  local repo=$1 wpath=$2 br=$3 id=$4 lbl=$5 entry val list
+unborn_unsaved() { # repo wpath trunk -> 0 when a worktree whose branch was deleted under it holds nothing unsaved; else prints why (one line) and
+  # returns 1. Saved means: the files equal the index, nothing is untracked, and the index equals the tree of the worktree's last
+  # HEAD -- the newest entry of its own reflog (logs/HEAD; `git reflog` itself refuses an unborn HEAD) -- which is on trunk or
+  # origin's trunk, so every byte in it sits in a reachable commit. Staged, uncommitted work passes every other test (a `git add`ed
+  # file equals its index entry and its blob exists) and is what the last-HEAD comparison catches (T-0203 review). Any git call or
+  # reflog that fails counts as unsaved. On success the last HEAD's sha is printed (the caller runs this in a subshell).
+  local repo=$1 wpath=$2 tr=$3 log last u d
+  git -C "$wpath" diff --quiet 2>/dev/null || { echo "files differ from the index (unstaged edits, or git diff failed)"; return 1; }
+  u=$(git -C "$wpath" ls-files -o --exclude-standard 2>&1) || u="(git ls-files failed: $(head -n 1 <<<"$u"))"
+  [ -z "$u" ] || { echo "untracked: $(head -n 3 <<<"$u" | tr '\n' ' ' | sed 's/ $//')"; return 1; }
+  { log=$(git -C "$wpath" rev-parse --git-path logs/HEAD 2>/dev/null) && [ -s "$log" ]; } || { echo "no reflog, so the last HEAD cannot be established"; return 1; }
+  last=$(tail -n 1 "$log" | cut -d' ' -f2)
+  case $last in 0000000000000000000000000000000000000000|"") echo "the reflog's last HEAD is unborn"; return 1;; *[!0-9a-f]*) echo "the reflog's last line is unreadable"; return 1;; esac
+  git -C "$repo" rev-parse -q --verify "$last^{commit}" >/dev/null 2>&1 || { echo "the last HEAD $(cut -c1-7 <<<"$last") is not in the repo any more"; return 1; }
+  if ! git -C "$repo" merge-base --is-ancestor "$last" "$tr" 2>/dev/null && ! git -C "$repo" merge-base --is-ancestor "$last" "refs/remotes/origin/$tr" 2>/dev/null; then
+    echo "the last HEAD $(cut -c1-7 <<<"$last") is not on $tr (nor origin/$tr) -- its commits may be unmerged"; return 1
+  fi
+  if ! git -C "$wpath" diff --cached --quiet "$last" 2>/dev/null; then
+    d=$(git -C "$wpath" diff --cached --name-status "$last" 2>/dev/null | head -n 5 | tr '\t' ' ' | tr '\n' ' ' | sed 's/ $//')
+    echo "the index differs from the last HEAD $(cut -c1-7 <<<"$last") (staged, uncommitted work): $d"; return 1
+  fi
+  printf '%s' "$last"
+  return 0
+}
+worktree_verdict() { # repo wpath branch id label trunk -> 0 when the worktree may go; else prints why and returns 1
+  local repo=$1 wpath=$2 br=$3 id=$4 lbl=$5 tr=$6 entry val list unborn="" why uniq ign
+  UNBORN_REMOVE=""; UNBORN_LAST=""
   entry=$(worktree_entry "$repo" "$wpath")
   [ -n "$entry" ] || { echo "prune: $id ($lbl): $wpath is not a registered worktree of $repo -- left alone (not git's to remove; look at it, then delete it by hand or run: scripts/ticket.sh prune --orphans)"; return 1; }
   if grep -q '^detached' <<<"$entry"; then echo "prune: $id ($lbl): worktree $wpath is on a detached HEAD (mid-rebase, or loose commits) -- left alone"; return 1; fi
   if ! grep -qx "branch refs/heads/$br" <<<"$entry"; then echo "prune: $id ($lbl): worktree $wpath is on $(sed -n 's|^branch refs/heads/||p' <<<"$entry"), not on $br -- left alone"; return 1; fi
-  [ -z "$(git -C "$wpath" status --porcelain 2>/dev/null)" ] || { echo "prune: $id ($lbl): worktree $wpath is dirty -- left alone"; return 1; }
-  # ignored FILES one by one (ls-files -oi walks into ignored directories such as terraform.tfstate.d/; status --ignored would collapse them)
-  val=$(git -C "$wpath" ls-files -oi --exclude-standard 2>/dev/null | grep -E "$VALUABLE_IGNORED_RE" || true)
+  # T-0203: a worktree whose branch was deleted under it (prune did that on 2026-10-13) has an unborn HEAD: every file in its
+  # index shows as added, `status` calls it dirty and `worktree remove` refuses it. It goes with --force (the one place prune
+  # forces anything) only when unborn_unsaved finds nothing unsaved: files equal to the index, nothing untracked, and the
+  # index equal to the tree of its last HEAD, a commit on trunk. Anything else in that state is left alone and named.
+  if grep -qx 'HEAD 0000000000000000000000000000000000000000' <<<"$entry" && ! git -C "$repo" show-ref -q --verify "refs/heads/$br"; then unborn=1; fi
+  if [ -z "$unborn" ]; then
+    [ -z "$(git -C "$wpath" status --porcelain 2>/dev/null)" ] || { echo "prune: $id ($lbl): worktree $wpath is dirty -- left alone"; return 1; }
+  elif why=$(unborn_unsaved "$repo" "$wpath" "$tr"); then UNBORN_LAST=$why
+  else echo "prune: $id ($lbl): worktree $wpath has no branch any more ($br was deleted under it: HEAD unborn) and is not known to be saved: $why -- left alone (look at it; then: git -C $repo worktree remove --force ${wpath#"$repo"/})"; return 1
+  fi
+  # ignored FILES one by one (ls-files -oi walks into ignored directories such as terraform.tfstate.d/; status --ignored would collapse them);
+  # a listing that fails is not "no ignored files" (T-0203 review)
+  ign=$(git -C "$wpath" ls-files -oi --exclude-standard 2>&1) || { echo "prune: $id ($lbl): worktree $wpath: git ls-files failed -- left alone: $(head -n 1 <<<"$ign")"; return 1; }
+  val=$(grep -E "$VALUABLE_IGNORED_RE" <<<"$ign" || true)
   if [ -n "$val" ]; then
     echo "prune: $id ($lbl): worktree $wpath holds ignored files that may matter -- left alone (move or delete them by hand):"
     list=$(sed 's/^/    /' <<<"$val"); head -n 20 <<<"$list"; return 1
+  fi
+  if [ -n "$unborn" ]; then
+    uniq=$(unique_files "$repo" "$wpath" "$ign" | grep -v '^\.git (points at a live gitdir: ' || true)   # its .git points at its own registration, live until the remove
+    if [ -n "$uniq" ]; then
+      echo "prune: $id ($lbl): worktree $wpath has no branch any more ($br was deleted under it: HEAD unborn); $(wc -l <<<"$uniq" | tr -d ' ') file(s) in it have no copy in the repo's objects -- left alone (look at these, then: git -C $repo worktree remove --force ${wpath#"$repo"/}):"
+      head -n 20 <<<"$uniq" | sed 's/^/    /'; return 1
+    fi
+    UNBORN_REMOVE=1
   fi
   return 0
 }
@@ -891,20 +954,26 @@ orphan_apply() { # ORPHAN_PLAN -> the removals, each re-checked under the lock (
   done <<<"$ORPHAN_PLAN"
 }
 prune_check() { # repo trunk branch worktree id -> prints the verdict; a removable item is appended to PRUNE_PLAN
-  local repo=$1 tr=$2 br=$3 wt=$4 id=$5 lbl wpath="" ref base sha uniq eq ch list note="" have_wt="" lsha="" rsha="" why others ign bases
+  local repo=$1 tr=$2 br=$3 wt=$4 id=$5 lbl wpath="" ref base sha uniq eq ch list note="" have_wt="" lsha="" rsha="" why others ign bases holder held="" brtxt=""
   lbl=$(repo_label "$repo")
   [ -n "$br" ] || return 0
   why=$(branch_problem "$br" "$tr"); [ -z "$why" ] || { echo "prune: $id ($lbl): branch '$br' -- refused: $why"; return 0; }
   [ -d "$repo" ] || { echo "prune: $id ($lbl): repo $repo not found -- left alone"; return 0; }
   case $wt in /*) wpath=$wt;; "") ;; *) wpath="$repo/$wt";; esac
+  if [ -z "$wpath" ]; then   # T-0203: no worktree named in this repo, yet a registered one under $WORKTREES/ is on the branch (a two-repo ticket's
+    # second worktree, added by hand): it is the ticket's worktree here, judged like a named one. A holder anywhere else stays one (branch kept).
+    if ! holder=$(branch_holder "$repo" "$br"); then echo "prune: $id ($lbl): git worktree list failed ($holder) -- left alone"; return 0; fi
+    if [ -n "$holder" ] && [ -n "$(managed_path "$repo" "$holder")" ]; then wpath=$holder; note="$note (worktree not in the ticket's worktree: field, registered on $br)"; fi
+  fi
   others=$(other_open_tickets_naming "$id" "$br" "${wpath:+$(basename "$wpath")}")
   [ -z "$others" ] || { echo "prune: $id ($lbl): branch or worktree also named by open ticket(s) $others-- left alone"; return 0; }
   if git -C "$repo" show-ref -q --verify "refs/heads/$br"; then lsha=$(git -C "$repo" rev-parse "refs/heads/$br"); fi
   if fetch_ref "$repo" "$br"; then rsha=$(git -C "$repo" rev-parse "refs/remotes/origin/$br"); fi
   case " $FETCHED_TRUNKS " in *" $repo "*) ;; *) fetch_ref "$repo" "$tr" || true; FETCHED_TRUNKS="$FETCHED_TRUNKS $repo";; esac  # origin's trunk is compared too
   if [ -n "$wpath" ] && [ -e "$wpath" ]; then
-    worktree_verdict "$repo" "$wpath" "$br" "$id" "$lbl" || return 0
+    worktree_verdict "$repo" "$wpath" "$br" "$id" "$lbl" "$tr" || return 0
     have_wt=1
+    [ -z "$UNBORN_REMOVE" ] || note="$note (the worktree has no branch: $br was deleted under it, HEAD unborn -- its index is the tree of its last commit $(cut -c1-7 <<<"$UNBORN_LAST"), which is on $tr, and nothing in it is unsaved, so it goes with --force)"
   fi
   [ -n "$lsha$rsha$have_wt" ] || { echo "prune: $id ($lbl): nothing left for $br"; return 0; }
   git -C "$repo" rev-parse -q --verify "$tr^{commit}" >/dev/null 2>&1 \
@@ -930,12 +999,22 @@ prune_check() { # repo trunk branch worktree id -> prints the verdict; a removab
     ign=$(git -C "$wpath" status --porcelain --ignored 2>/dev/null | sed -n 's/^!! //p' || true)
     [ -z "$ign" ] || note="$note (also deletes $(wc -l <<<"$ign" | tr -d ' ') ignored path(s): $(head -n 3 <<<"$ign" | tr '\n' ' '))"
   fi
+  # T-0203: a branch a registered worktree holds stays (as `git branch -d` would refuse; `update-ref -d` does not), said
+  # here already, not first under the lock; the ticket's own worktree is the one holder that is no obstacle (it goes first)
+  if [ -n "$lsha" ]; then
+    if ! holder=$(branch_holder "$repo" "$br"); then echo "prune: $id ($lbl): git worktree list failed ($holder) -- left alone"; return 0; fi
+    if [ -n "$holder" ] && [ "$(readlink -f "$holder" 2>/dev/null || echo "$holder")" != "$([ -z "$have_wt" ] || readlink -f "$wpath" 2>/dev/null || echo "$wpath")" ]; then held=$holder; fi
+  fi
+  if [ -n "$held" ]; then
+    echo "prune: $id ($lbl): $br is checked out in another worktree -- branch kept ($held is not the ticket's worktree: field; when it is done with: git -C $repo worktree remove ${held#"$repo"/}, then prune again)"
+    [ -n "$have_wt$rsha" ] || return 0
+  else brtxt=${lsha:+ branch $br}; fi
   PRUNE_PLAN="$PRUNE_PLAN$id|$lbl|$repo|$tr|$br|${have_wt:+$wpath}|$lsha|$rsha|$note
 "
-  echo "prune: $id ($lbl): would remove${have_wt:+ worktree $wpath}${lsha:+ branch $br}${rsha:+ origin/$br}$note"
+  echo "prune: $id ($lbl): would remove${have_wt:+ worktree $wpath}$brtxt${rsha:+ origin/$br}$note"
 }
 prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): removed ..." per item. Runs under the lock, after the pull.
-  local id lbl repo tr br wpath lsha rsha note did err cur st others approved rc
+  local id lbl repo tr br wpath lsha rsha note did err cur st others approved rc holder why
   while IFS='|' read -r id lbl repo tr br wpath lsha rsha note; do
     [ -n "$id" ] || continue; did=""
     # the window between pass 1 and the lock: the ticket may have been reopened or its branch claimed by another
@@ -947,9 +1026,12 @@ prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): remove
     cur=$(git -C "$repo" rev-parse -q --verify "refs/heads/$br" 2>/dev/null || true)
     [ "$cur" = "$lsha" ] || { echo "prune: $id ($lbl): $br moved since the check ($(cut -c1-7 <<<"$lsha") -> $(cut -c1-7 <<<"$cur")) -- left alone"; continue; }
     if [ -n "$wpath" ]; then
-      worktree_verdict "$repo" "$wpath" "$br" "$id" "$lbl" || { echo "prune: $id ($lbl): the worktree changed since the check (above) -- left alone"; continue; }
+      worktree_verdict "$repo" "$wpath" "$br" "$id" "$lbl" "$tr" || { echo "prune: $id ($lbl): the worktree changed since the check (above) -- left alone"; continue; }
       approved=$(git -C "$wpath" ls-files -oi --exclude-standard 2>/dev/null || true)   # the ignored files the verdict just let go: git may leave them too
-      if err=$(git -C "$repo" worktree remove "$wpath" 2>&1); then did="worktree ${wpath#"$repo"/}"
+      if [ -n "$UNBORN_REMOVE" ] && ! why=$(unborn_unsaved "$repo" "$wpath" "$tr"); then   # once more, right before the one forced remove: a file written since the verdict a moment ago would be lost, where the plain remove refuses (T-0203 review)
+        echo "prune: $id ($lbl): worktree $wpath changed since the check ($why) -- left alone"; continue
+      fi
+      if err=$(git -C "$repo" worktree remove ${UNBORN_REMOVE:+--force} "$wpath" 2>&1); then did="worktree ${wpath#"$repo"/}"   # --force only for a worktree whose branch was deleted under it, and the verdict found nothing unsaved (T-0203)
       else   # T-0196: git may have dropped the registration and left the directory; finish, keep, or leave alone -- truthfully
         rc=0; finish_worktree_removal "$repo" "$wpath" "$id" "$lbl" "$err" "$approved" || rc=$?
         case $rc in 0) did="worktree ${wpath#"$repo"/}"; note="$note$LEFTOVER_NOTE";; 1) continue;; *) note="$note$LEFTOVER_NOTE";; esac
@@ -958,7 +1040,9 @@ prune_apply() { # PRUNE_PLAN -> the removals; PRUNED collects "id|(repo): remove
     if [ -n "$lsha" ]; then
       # compare-and-swap: the ref goes only if it still points at the sha pass 1 and the check above saw -- a commit
       # that lands in between (the worktree was still there a moment ago) keeps the branch. Never `branch -D`.
-      if git -C "$repo" worktree list --porcelain | grep -qx "branch refs/heads/$br"; then echo "prune: $id ($lbl): $br is checked out in another worktree -- branch kept"
+      # T-0203: the guard reads the list whole and keeps the branch when it cannot (see branch_holder); checked again here, right before the delete
+      if ! holder=$(branch_holder "$repo" "$br"); then echo "prune: $id ($lbl): git worktree list failed ($holder) -- branch $br kept (not known to be free)"
+      elif [ -n "$holder" ]; then echo "prune: $id ($lbl): $br is checked out in another worktree -- branch kept ($holder; when it is done with: git -C $repo worktree remove ${holder#"$repo"/}, then prune again)"
       elif err=$(git -C "$repo" update-ref -d "refs/heads/$br" "$lsha" 2>&1); then did="${did:+$did, }branch $br"
       else echo "prune: $id ($lbl): $br moved since the check -- branch kept: $(head -n 1 <<<"$err")"; fi
     fi
@@ -1392,8 +1476,10 @@ branch_stats() { # repo trunk branch worktree -> "behind N  ahead N  dirty N"
     out="behind $(git -C "$repo" rev-list --count "$br..$tr")  ahead $(git -C "$repo" rev-list --count "$tr..$br")"
   else out="branch '$br' missing!"; fi
   case $wt in /*) ;; *) wt="$repo/$wt";; esac
-  if [ -d "$wt" ]; then d=$(git -C "$wt" status --porcelain | wc -l); out="$out  dirty $d$([ "$d" -gt 0 ] && echo ' !')"
-  elif [ -n "$4" ]; then out="$out  worktree missing!"; fi
+  # only a NAMED worktree is looked at: with none, "$repo/" is a directory and the repo's own status was counted (T-0228)
+  if [ -z "$4" ]; then out="$out  no worktree"
+  elif [ -d "$wt" ]; then d=$(git -C "$wt" status --porcelain | wc -l); out="$out  dirty $d$([ "$d" -gt 0 ] && echo ' !')"
+  else out="$out  worktree missing!"; fi
   echo "$out"
 }
 
@@ -1454,7 +1540,8 @@ branch_stats_json() { # repo trunk branch worktree -> {"behind":N|null,"ahead":N
     bm=false; behind=$(git -C "$repo" rev-list --count "$br..$tr"); ahead=$(git -C "$repo" rev-list --count "$tr..$br")
   fi
   case $wt in /*) ;; *) wt="$repo/$wt";; esac
-  if [ -d "$wt" ]; then dirty=$(git -C "$wt" status --porcelain | wc -l); elif [ -n "$4" ]; then wm=true; fi
+  if [ -z "$4" ]; then :   # no worktree named: dirty stays null, worktree_missing false (T-0228: "$repo/" is a directory, and the repo's own status was counted)
+  elif [ -d "$wt" ]; then dirty=$(git -C "$wt" status --porcelain | wc -l); else wm=true; fi
   printf '{"behind":%s,"ahead":%s,"dirty":%s,"branch_missing":%s,"worktree_missing":%s}' "$behind" "$ahead" "$dirty" "$bm" "$wm"
 }
 cmd_board_json() { # [--slow] -> one JSON object (see the usage line); the text board is untouched
@@ -1483,7 +1570,7 @@ cmd_board_json() { # [--slow] -> one JSON object (see the usage line); the text 
             stats="{"; sep=""
             for r in $REPOS; do   # every repo the map names, in REPOS order
               rb=$(mapget "$br" "$r"); [ -n "$rb" ] || continue
-              stats="$stats$sep\"$r\":$(branch_stats_json "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "$rb" "$(map_wt "$wt" "$r")")"; sep=","
+              stats="$stats$sep\"$r\":$(branch_stats_json "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "$rb" "$(repo_wt "$wt" "$r" "$repos")")"; sep=","
             done; stats="$stats}"
           else pick=$(ticket_repo "$repos"); pick=${pick:-$REPO0}; stats=$(branch_stats_json "${REPO_PATH[$pick]}" "$(repo_trunk "$pick")" "$br" "$wt"); fi ;;
       esac
@@ -1531,7 +1618,7 @@ cmd_board() {
             sep=""
             for r in $REPOS; do   # every repo the map names, in REPOS order
               rb=$(mapget "$br" "$r"); [ -n "$rb" ] || continue
-              line="$line  $sep$r: $(branch_stats "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "$rb" "$(map_wt "$wt" "$r")")"; sep="| "
+              line="$line  $sep$r: $(branch_stats "${REPO_PATH[$r]}" "$(repo_trunk "$r")" "$rb" "$(repo_wt "$wt" "$r" "$repos")")"; sep="| "
             done
           else pick=$(ticket_repo "$repos"); pick=${pick:-$REPO0}; line="$line  $(branch_stats "${REPO_PATH[$pick]}" "$(repo_trunk "$pick")" "$br" "$wt")"; fi
           [ -z "$(field "$f" claimed)" ] || line="$line  claimed $(age "$(field "$f" claimed)") ago"

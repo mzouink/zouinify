@@ -346,6 +346,15 @@ class TestProtocol(World):
                        "`git worktree remove` itself can drop the registration and still leave the directory behind; prune\n    then judges what is left file by file",
                        "`scripts/ticket.sh prune --orphans [--dry-run]` applies the same rule to every dir under `.claude/worktrees/` (in\n    every repo) that no "
                        "worktree registers, skipping one an open ticket names; a `tNNNN-*` dir is logged on its ticket.",
+                       # T-0230: core 1.2.3's prune rules (T-0203) in rule 11, pinned here at 1.2.4
+                       "A two-repo ticket's plain `worktree:` next to its `branch:` map is the default repo's (claim writes it that way; the\n    "
+                       "other repo's worktree is added by hand), so prune sees it, and a registered worktree under `.claude/worktrees/` that is on\n    "
+                       "the ticket's branch while the ticket names none there counts as the ticket's worktree in that repo. A branch that a\n    "
+                       "registered worktree elsewhere still holds is kept and the worktree named, in the dry run already and again right\n    "
+                       "before the delete, and so is a branch whose worktree list cannot be read; a worktree whose branch was deleted under\n    "
+                       "it (HEAD unborn, every file shown as added) goes, with `--force`, only when its files match its index, nothing is\n    "
+                       "untracked and the index is the tree of its last commit, one on trunk, local or origin's (so every byte of it sits in a\n    "
+                       "reachable commit; staged, uncommitted work keeps it) -- otherwise it is left alone and what is unsaved is named.",
                        "- `../scripts/ticket.sh` -- the only way tickets change: a project-free core (zouinify vendors it byte-identical, pinned to\n  one upstream "
                        "commit; `scripts/ticket.sh version` prints its contract version: the hook list, `ticket.env`'s keys and the\n  two JSON schemas)",
                        "one bare `KEY=value` per line; the core PARSES it, never sources it.",
@@ -357,7 +366,8 @@ class TestProtocol(World):
                        "ordered by priority, then kind (deploys, decisions, asks, checks),\nthen the oldest first",
                        "--ticket.sh merge--> merged --handoff--> ready-to-deploy --human deploys--> deployed --live check--> done",
                        "| `in-review` | owner | suites covering `areas` run (command + summary line); RED-on-base / GREEN-on-branch test; the linters of the touched languages;",
-                       "files that may matter (secrets, keys, backups, and whatever the deploy plugin names); and",
+                       "or holding ignored files\n    that may matter (secrets, keys, backups, and whatever the deploy plugin names; a worktree's own "
+                       "`.claude/settings.local.json` and `.ops/state/` too); and",
                        "Anything that needs the human -- a decision, a paid run, a deploy, a browser check, a command you were refused -- is written\nas the section 1 block"):
             with self.subTest(needle=needle[:60]):
                 self.assertIn(needle, readme)

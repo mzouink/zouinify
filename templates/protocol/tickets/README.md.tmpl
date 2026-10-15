@@ -180,8 +180,8 @@ desk, don't work around it.
     done, no open ticket naming its branch on the trunk just pulled, the worktree and the branch unchanged -- and
     only then removed, with the remote delete leased on the sha the check saw, and one log commit for the sweep.
     It refuses, and says why: a trunk, protected or odd branch name; a branch or worktree another open ticket
-    names; a worktree that is not registered, detached (mid-rebase), on another branch, dirty, or holding ignored
-    files that may matter ({{plugin.prune_ignored}}); and
+    names; a worktree that is not registered, detached (mid-rebase), on another branch, dirty, or holding ignored files
+    that may matter ({{plugin.prune_ignored}}; a worktree's own `.claude/settings.local.json` and `.ops/state/` too); and
     any commit with no patch-equivalent in trunk, local and origin's (`git cherry`: a branch left at its pre-rebase
     tip after a rebase-and-merge counts as merged; a squash-merged branch does not and is listed for you to delete
     by hand). A merged branch has nothing left to keep, and dozens of stale worktrees make the board's orphan list
@@ -192,6 +192,14 @@ desk, don't work around it.
     its own or pointing at a live gitdir, and a path that resolves outside `{{worktrees}}/`, the only place prune deletes
     in). `{{tickets_script}} prune --orphans [--dry-run]` applies the same rule to every dir under `{{worktrees}}/` (in
     every repo) that no worktree registers, skipping one an open ticket names; a `tNNNN-*` dir is logged on its ticket.
+    A two-repo ticket's plain `worktree:` next to its `branch:` map is the default repo's (claim writes it that way; the
+    other repo's worktree is added by hand), so prune sees it, and a registered worktree under `{{worktrees}}/` that is on
+    the ticket's branch while the ticket names none there counts as the ticket's worktree in that repo. A branch that a
+    registered worktree elsewhere still holds is kept and the worktree named, in the dry run already and again right
+    before the delete, and so is a branch whose worktree list cannot be read; a worktree whose branch was deleted under
+    it (HEAD unborn, every file shown as added) goes, with `--force`, only when its files match its index, nothing is
+    untracked and the index is the tree of its last commit, one on trunk, local or origin's (so every byte of it sits in a
+    reachable commit; staged, uncommitted work keeps it) -- otherwise it is left alone and what is unsaved is named.
 12. **Freeze.** While `{{tickets_dir}}/FREEZE` exists on trunk, `claim` refuses every ticket whose id is not listed
     in it (one `T-xxxx` per line, `#` comments allowed) and `board` prints the list. The manager owns the
     file: a hotfix is added to it, not forced past it (`TICKET_FORCE=1` stamps the log line `FORCED`).

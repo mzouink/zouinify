@@ -1537,6 +1537,278 @@ class TestMergeAndPrune(MergeAndPruneHelpers):
         self.assertFalse(os.path.isdir(wt), "the (clean) worktree itself went")
         self.assert_main_sane()
 
+    # ---- T-0203: a plain worktree: next to a map branch:; the branch guard reads the list whole; a worktree whose branch went --
+    def unborn(self, wt, br):
+        """the 2026-10-13 damage: the branch deleted under its registered worktree (HEAD unborn, every file shown as added)"""
+        self.git("-C", self.main, "update-ref", "-d", "refs/heads/" + br)
+        self.assertIn("HEAD 0000000000000000000000000000000000000000", self.git("-C", self.main, "worktree", "list", "--porcelain"))
+        self.assertTrue(self.git("-C", wt, "status", "--porcelain").startswith("A  "), "every tracked file shows as added")
+
+    def worktree_registered(self, wt):
+        return ("worktree " + os.path.realpath(wt)) in self.git("-C", self.main, "worktree", "list", "--porcelain")
+
+    def test_prune_and_board_see_the_plain_worktree_of_a_map_branch_ticket(self):
+        """T-0203 (1): T-0055/T-0093 -- repos: [backend, frontend], branch: a map, worktree: plain (claim writes it so; the
+        frontend worktree was added by hand). mapget found no `backend:` key in the plain path, so neither the board nor
+        prune saw the worktree, and prune deleted the branch under it. The plain worktree is the default repo's."""
+        fe_origin, fe_main, env = self.fe_world()
+        self.git("-C", fe_main, "checkout", "-q", "-b", "t0001-fe")
+        with open(os.path.join(fe_main, "b.js"), "w") as fh:
+            fh.write("1\n")
+        self.git("-C", fe_main, "add", "-A"); self.git("-C", fe_main, "commit", "-q", "-m", "fe change\n\nTicket: T-0001")
+        self.git("-C", fe_main, "push", "-q", "origin", "t0001-fe"); self.git("-C", fe_main, "checkout", "-q", TRUNK)
+        wt = self.claim("T-0001", env=env)
+        self.branch_commit(wt, "x.txt", "x"); br = self.push_branch(wt); self.to_ready_to_merge("T-0001", env=env)
+        self.set_front("T-0001-alpha-ticket.md", "branch", "{backend: %s, frontend: t0001-fe}" % br)
+        self.set_front("T-0001-alpha-ticket.md", "repos", "[backend, frontend]")
+        self.commit_tickets("tickets: T-0001 two-repo map, plain worktree")
+        self.rebase_and_push(wt)
+        with open(os.path.join(wt, "scratch.txt"), "w") as fh: fh.write("untracked\n")   # dirt only the worktree has: the board counts it only when it looks there
+        p = self.ts("board", "--json", "--slow", env=self.env_without_who(TICKET_FE_REPO=fe_main)); self.assertEqual(p.returncode, 0, p.out)
+        t = [x for x in json.loads(p.stdout)["tickets"] if x["id"] == "T-0001"][0]
+        self.assertEqual(t["stats"]["backend"]["dirty"], 1, "the plain worktree is the backend's: its dirt counted (0 on base: the worktree unseen) -- %s" % t["stats"])
+        os.remove(os.path.join(wt, "scratch.txt"))
+        p = self.ts("merge", "T-0001", env=env); self.assertEqual(p.returncode, 0, p.out)
+        p = self.ts("move", "T-0001", "done", "deploy: none, merged", env=env); self.assertEqual(p.returncode, 0, p.out)
+        p = self.ts("prune", "T-0001", "--dry-run", env=self.env_without_who(TICKET_FE_REPO=fe_main))
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (backend): would remove worktree %s branch %s origin/%s" % (wt, br, br), p.out)
+        self.assertIn("T-0001 (frontend): would remove branch t0001-fe origin/t0001-fe", p.out)
+        p = self.ts("prune", "T-0001", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertFalse(os.path.isdir(wt)); self.assertFalse(self.local_has_branch(br)); self.assertFalse(self.origin_has_branch(br))
+        self.assertFalse(self.local_has_branch("t0001-fe", fe_main)); self.assertFalse(self.origin_has_branch("t0001-fe", fe_origin))
+        log = self.log_of("T-0001-alpha-ticket.md")
+        self.assertIn("T-0001 (backend): removed worktree .claude/worktrees/t0001-alpha-ticket, branch %s, origin/%s; (frontend): removed branch t0001-fe, origin/t0001-fe" % (br, br), log)
+        self.assert_main_sane()
+
+    def fe_ticket(self, fe_main, env, fe_worktree=None):
+        """a done two-repo ticket: backend half through claim/merge, frontend branch t0001-fe with a trailered commit; optionally
+        checked out in a frontend worktree the ticket's worktree: field does not name (T-0093's t0093-chat-turn-budget)"""
+        self.git("-C", fe_main, "checkout", "-q", "-b", "t0001-fe")
+        with open(os.path.join(fe_main, "b.js"), "w") as fh:
+            fh.write("1\n")
+        self.git("-C", fe_main, "add", "-A"); self.git("-C", fe_main, "commit", "-q", "-m", "fe change\n\nTicket: T-0001")
+        self.git("-C", fe_main, "push", "-q", "origin", "t0001-fe"); self.git("-C", fe_main, "checkout", "-q", TRUNK)
+        if fe_worktree: self.git("-C", fe_main, "worktree", "add", "-q", fe_worktree, "t0001-fe")
+        wt = self.claim("T-0001", env=env)
+        self.branch_commit(wt, "x.txt", "x"); br = self.push_branch(wt); self.to_ready_to_merge("T-0001", env=env)
+        self.set_front("T-0001-alpha-ticket.md", "branch", "{backend: %s, frontend: t0001-fe}" % br)
+        self.set_front("T-0001-alpha-ticket.md", "repos", "[backend, frontend]")
+        self.commit_tickets("tickets: T-0001 two-repo map, plain worktree")
+        self.rebase_and_push(wt)
+        p = self.ts("merge", "T-0001", env=env); self.assertEqual(p.returncode, 0, p.out)
+        p = self.ts("move", "T-0001", "done", "deploy: none, merged", env=env); self.assertEqual(p.returncode, 0, p.out)
+        return wt, br
+
+    def test_prune_adopts_the_registered_worktree_on_the_ticket_branch_when_none_is_named(self):
+        """T-0093's frontend worktree, added by hand and never written into the ticket: registered under .claude/worktrees/ on
+        the ticket's frontend branch. It is the ticket's worktree there -- judged and removed like a named one, said so"""
+        fe_origin, fe_main, env = self.fe_world()
+        fe_wt = os.path.join(fe_main, ".claude", "worktrees", "t0001-fe-by-hand")
+        wt, br = self.fe_ticket(fe_main, env, fe_worktree=fe_wt)
+        near = os.path.join(fe_main, ".claude", "worktrees", "t0001-fe-x")   # a branch that merely starts with the ticket's name is nobody's leftover
+        self.git("-C", fe_main, "worktree", "add", "-q", "-b", "t0001-fe-x", near, "t0001-fe")
+        p = self.ts("prune", "T-0001", "--dry-run", env=self.env_without_who(TICKET_FE_REPO=fe_main))
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (frontend): would remove worktree %s branch t0001-fe origin/t0001-fe (worktree not in the ticket's worktree: field, registered on t0001-fe)" % fe_wt, p.out)
+        self.assertNotIn("t0001-fe-x", p.out)
+        with open(os.path.join(fe_wt, "b.js"), "a") as fh: fh.write("unsaved\n")   # the full verdict applies to it
+        p = self.ts("prune", "T-0001", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (frontend): worktree %s is dirty -- left alone" % fe_wt, p.out)
+        self.assertTrue(os.path.isdir(fe_wt)); self.assertTrue(self.local_has_branch("t0001-fe", fe_main))
+        self.git("-C", fe_wt, "checkout", "--", "b.js")
+        p = self.ts("prune", "T-0001", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertFalse(os.path.isdir(fe_wt)); self.assertFalse(self.local_has_branch("t0001-fe", fe_main)); self.assertFalse(self.origin_has_branch("t0001-fe", fe_origin))
+        self.assertIn("(frontend): removed worktree .claude/worktrees/t0001-fe-by-hand, branch t0001-fe, origin/t0001-fe (worktree not in the ticket's worktree: field, registered on t0001-fe)", self.log_of("T-0001-alpha-ticket.md"))
+        self.assertTrue(os.path.isdir(near)); self.assertTrue(self.local_has_branch("t0001-fe-x", fe_main), "the exact name only: t0001-fe-x and its worktree untouched")
+        self.assertEqual(self.git("-C", near, "rev-parse", "--abbrev-ref", "HEAD"), "t0001-fe-x")
+        self.assert_main_sane()
+
+    def test_prune_keeps_a_branch_held_by_a_worktree_outside_the_worktrees_dir(self):
+        """a holder prune does not own (not under .claude/worktrees/) is never adopted: branch kept, the path and the command named"""
+        fe_origin, fe_main, env = self.fe_world()
+        side = os.path.join(self.tmp, "fe-side-checkout")
+        wt, br = self.fe_ticket(fe_main, env, fe_worktree=side)
+        p = self.ts("prune", "T-0001", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (frontend): t0001-fe is checked out in another worktree -- branch kept (%s is not the ticket's worktree: field; when it is done with: git -C %s worktree remove %s, then prune again)" % (side, fe_main, side), p.out)
+        self.assertTrue(self.local_has_branch("t0001-fe", fe_main)); self.assertTrue(os.path.isdir(side))
+        self.assertEqual(self.git("-C", side, "rev-parse", "HEAD"), self.git("-C", fe_main, "rev-parse", "t0001-fe"))
+        self.assertFalse(self.origin_has_branch("t0001-fe", fe_origin), "origin's copy of the merged branch goes")
+        self.assert_main_sane()
+
+    def held_elsewhere(self):
+        """a done ticket whose branch a registered worktree holds that its worktree: field does not name (T-0093's frontend
+        worktree, added by hand): the branch must stay, in the dry run's words already"""
+        wt, br = self.merged_and_done()
+        self.set_front("T-0001-alpha-ticket.md", "worktree", ".claude/worktrees/elsewhere")
+        self.commit_tickets("tickets: T-0001 worktree field points elsewhere")
+        return wt, br
+
+    def assert_branch_intact(self, wt, br):
+        self.assertTrue(self.local_has_branch(br), "the branch a registered worktree holds survives")
+        self.assertTrue(self.worktree_registered(wt))
+        self.assertEqual(self.git("-C", wt, "rev-parse", "HEAD"), self.git("-C", self.main, "rev-parse", br), "the worktree's HEAD still resolves")
+
+    def test_prune_keeps_a_branch_a_registered_worktree_holds_and_names_it_in_the_dry_run(self):
+        wt, br = self.held_elsewhere()
+        p = self.ts("prune", "T-0001", "--dry-run", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (backend): %s is checked out in another worktree -- branch kept (%s is not the ticket's worktree: field; when it is done with: git -C %s worktree remove .claude/worktrees/t0001-alpha-ticket, then prune again)" % (br, os.path.realpath(wt), self.main), p.out)
+        self.assertIn("T-0001 (backend): would remove origin/%s" % br, p.out); self.assertNotIn("branch " + br, p.out)
+        p = self.ts("prune", "T-0001")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("checked out in another worktree -- branch kept", p.out)
+        self.assert_branch_intact(wt, br); self.assertFalse(self.origin_has_branch(br))
+        self.assertIn("T-0001 (backend): removed origin/%s" % br, self.log_of("T-0001-alpha-ticket.md"))
+        self.assert_main_sane()
+
+    def test_prune_keeps_the_branch_when_the_worktree_list_cannot_be_read(self):
+        """the one-line `git worktree list | grep -q` guard saw nothing when git failed, and the branch went under its
+        registered worktree; now a listing that fails keeps the branch -- in pass 1 (left alone) and right before the delete"""
+        wt, br = self.held_elsewhere()
+        env = self.wrap_env()
+        with open(os.path.join(self.tmp, "fail_worktree_list_at"), "w") as fh: fh.write("1\n")
+        p = self.ts("prune", "T-0001", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (backend): git worktree list failed (fatal: unable to read worktree list: Input/output error (test)) -- left alone", p.out)
+        self.assert_branch_intact(wt, br); self.assertTrue(self.origin_has_branch(br), "nothing planned, nothing removed")
+        os.remove(os.path.join(self.tmp, "worktree_list_calls"))
+        with open(os.path.join(self.tmp, "fail_worktree_list_at"), "w") as fh: fh.write("2\n")   # pass 1 reads it; the read before the delete fails
+        p = self.ts("prune", "T-0001", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("checked out in another worktree -- branch kept", p.out.split("would remove")[0])
+        self.assertIn("T-0001 (backend): git worktree list failed (fatal: unable to read worktree list: Input/output error (test)) -- branch %s kept (not known to be free)" % br, p.out)
+        self.assert_branch_intact(wt, br); self.assertFalse(self.origin_has_branch(br))
+        self.assert_main_sane()
+
+    def test_prune_branch_guard_survives_a_listing_that_arrives_in_two_writes(self):
+        """the likely 2026-10-13 mechanism: `grep -q` leaves at its first match; a listing over one 4 KiB stdio buffer (the
+        main repo's is 7 KiB) that git is still writing then ends in a SIGPIPE, which pipefail turned into "not checked
+        out" -- and `update-ref -d` has no guard of its own. The list is read whole now."""
+        wt, br = self.held_elsewhere()
+        open(os.path.join(self.tmp, "slow_worktree_list"), "w").close()
+        p = self.ts("prune", "T-0001", env=self.wrap_env())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("checked out in another worktree -- branch kept", p.out)
+        self.assert_branch_intact(wt, br); self.assertFalse(self.origin_has_branch(br))
+        self.assert_main_sane()
+
+    def unborn_left_alone(self, wt, br, why):
+        return "T-0001 (backend): worktree %s has no branch any more (%s was deleted under it: HEAD unborn) and is not known to be saved: %s -- left alone (look at it; then: git -C %s worktree remove --force .claude/worktrees/t0001-alpha-ticket)" % (wt, br, why, self.main)
+
+    def test_prune_removes_a_worktree_whose_branch_was_deleted_under_it_only_when_nothing_in_it_is_unsaved(self):
+        """T-0203 (2), the three live trees: HEAD unborn, every file `A `, `worktree remove` refuses as dirty. Files that
+        differ from the index, untracked ones, or STAGED uncommitted work (review: a `git add`ed file equals its index entry
+        and its blob exists, so only the index-vs-last-HEAD comparison sees it) keep the tree, named; otherwise it goes, with
+        --force, and the log says so."""
+        wt, br = self.merged_and_done()
+        last = self.git("-C", wt, "rev-parse", "--short=7", "HEAD")
+        self.unborn(wt, br)
+        with open(os.path.join(wt, "f0.txt"), "a") as fh: fh.write("edited after the branch went\n")
+        p = self.ts("prune", "T-0001", "--dry-run", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn(self.unborn_left_alone(wt, br, "files differ from the index (unstaged edits, or git diff failed)"), p.out)
+        self.git("-C", wt, "checkout", "--", "f0.txt")
+        with open(os.path.join(wt, "notes.txt"), "w") as fh: fh.write("unsaved\n")
+        p = self.ts("prune", "T-0001", env=self.env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn(self.unborn_left_alone(wt, br, "untracked: notes.txt"), p.out)
+        self.assertTrue(os.path.isdir(wt)); self.assertTrue(self.worktree_registered(wt)); self.assertTrue(self.origin_has_branch(br), "nothing removed while the tree is kept")
+        with open(os.path.join(wt, "wip.txt"), "w") as fh: fh.write("staged, never committed\n")
+        self.git("-C", wt, "add", "notes.txt", "wip.txt")   # the reviewer's data-loss path: everything matches the index and every blob exists
+        p = self.ts("prune", "T-0001", env=self.env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn(self.unborn_left_alone(wt, br, "the index differs from the last HEAD %s (staged, uncommitted work): A notes.txt A wip.txt" % last), p.out)
+        self.assertTrue(os.path.isdir(wt)); self.assertEqual(open(os.path.join(wt, "wip.txt")).read(), "staged, never committed\n")
+        self.git("-C", wt, "rm", "-q", "--cached", "notes.txt", "wip.txt"); os.remove(os.path.join(wt, "notes.txt")); os.remove(os.path.join(wt, "wip.txt"))
+        p = self.ts("prune", "T-0001", "--dry-run", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        note = "(the worktree has no branch: %s was deleted under it, HEAD unborn -- its index is the tree of its last commit %s, which is on %s, and nothing in it is unsaved, so it goes with --force)" % (br, last, TRUNK)
+        self.assertIn("T-0001 (backend): would remove worktree %s origin/%s %s" % (wt, br, note), p.out)
+        self.assertTrue(os.path.isdir(wt))
+        p = self.ts("prune", "T-0001")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertFalse(os.path.isdir(wt)); self.assertFalse(self.worktree_registered(wt)); self.assertFalse(self.origin_has_branch(br))
+        self.assertIn("T-0001 (backend): removed worktree .claude/worktrees/t0001-alpha-ticket, origin/%s %s" % (br, note), self.log_of("T-0001-alpha-ticket.md"))
+        self.assert_main_sane()
+
+    def test_prune_keeps_an_unborn_worktree_with_staged_uncommitted_work(self):
+        """the reviewer's reproduced data-loss path on the first cut: a `git add`ed file equals its index entry, is not
+        untracked and its blob exists (git add wrote it), so every file-level check passed and `--force` removed it -- the
+        content survived only as an unreachable blob the next gc deletes. The index must equal the tree of the last HEAD."""
+        wt, br = self.merged_and_done()
+        last = self.git("-C", wt, "rev-parse", "--short=7", "HEAD")
+        self.unborn(wt, br)
+        with open(os.path.join(wt, "wip.js"), "w") as fh: fh.write("staged, never committed\n")
+        self.git("-C", wt, "add", "wip.js")
+        p = self.ts("prune", "T-0001", env=self.env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertTrue(os.path.isdir(wt), "the worktree stays")
+        self.assertEqual(open(os.path.join(wt, "wip.js")).read(), "staged, never committed\n", "the staged work is still there")
+        self.assertTrue(self.worktree_registered(wt)); self.assertTrue(self.origin_has_branch(br), "nothing removed while the tree is kept")
+        self.assertIn(self.unborn_left_alone(wt, br, "the index differs from the last HEAD %s (staged, uncommitted work): A wip.js" % last), p.out)
+        self.assert_main_sane()
+
+    def test_prune_keeps_an_unborn_worktree_whose_last_head_is_not_on_trunk(self):
+        """the index may equal a commit nobody merged (the branch was deleted under a worktree with unmerged work): the last
+        HEAD from the worktree's reflog must be on trunk or origin's trunk, else the tree stays and the commit is named"""
+        wt, br = self.merged_and_done()
+        late = self.branch_commit(wt, "late.txt", "late, never merged")
+        self.unborn(wt, br)
+        p = self.ts("prune", "T-0001", env=self.env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn(self.unborn_left_alone(wt, br, "the last HEAD %s is not on %s (nor origin/%s) -- its commits may be unmerged" % (late, TRUNK, TRUNK)), p.out)
+        self.assertTrue(os.path.isdir(wt)); self.assertTrue(self.worktree_registered(wt))
+        self.assertEqual(self.git("-C", self.main, "cat-file", "-t", late), "commit", "the unmerged commit is still there to recover")
+        self.assert_main_sane()
+
+    LATE_FILE_GIT = """#!/usr/bin/env bash
+# a file lands in the worktree right AFTER pass 2's whole verdict and the `ls-files -oi` prune_apply takes for the approved
+# ignored files (the 3rd such call: pass 1's verdict, pass 2's verdict, then this one) -- the window before the forced
+# remove; the re-check right before `--force` must see it, where the plain remove would have refused on its own
+case " $* " in *" ls-files -oi "*)
+  n=$(cat {cnt} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {cnt}
+  {git} "$@"; rc=$?
+  [ "$n" != 3 ] || echo "written in the window" > {wt}/late.txt
+  exit $rc;;
+esac
+exec {git} "$@"
+"""
+
+    def test_prune_rechecks_an_unborn_worktree_right_before_the_forced_remove(self):
+        wt, br = self.merged_and_done()
+        self.unborn(wt, br)
+        d = os.path.join(self.tmp, "latebin"); os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "git")
+        with open(path, "w") as fh:
+            fh.write(self.LATE_FILE_GIT.format(cnt=os.path.join(self.tmp, "latecnt"), wt=wt, git=REAL_GIT))
+        os.chmod(path, 0o755)
+        p = self.ts("prune", "T-0001", env=dict(self.env, PATH=d + os.pathsep + self.env["PATH"]))
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (backend): worktree %s changed since the check (untracked: late.txt) -- left alone" % wt, p.out)
+        self.assertTrue(os.path.isdir(wt)); self.assertTrue(self.worktree_registered(wt))
+        self.assertEqual(open(os.path.join(wt, "late.txt")).read(), "written in the window\n", "the file written in the window survives")
+        self.assert_main_sane()
+
+    def test_prune_keeps_a_worktree_holding_its_own_claude_settings(self):
+        """review: a worktree's .claude/settings.local.json (and .ops/state/) are ignored files that may matter -- kept, named"""
+        wt, br = self.merged_and_done()
+        os.makedirs(os.path.join(wt, ".claude"), exist_ok=True)
+        with open(os.path.join(wt, ".claude", "settings.local.json"), "w") as fh: fh.write("{}\n")
+        p = self.ts("prune", "T-0001", env=self.env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("T-0001 (backend): worktree %s holds ignored files that may matter -- left alone" % wt, p.out)
+        self.assertIn("    .claude/settings.local.json", p.out)
+        self.assertTrue(os.path.isdir(wt)); self.assertTrue(self.local_has_branch(br))
+        os.remove(os.path.join(wt, ".claude", "settings.local.json"))
+        p = self.ts("prune", "T-0001", env=self.env)
+        self.assertEqual(p.returncode, 0, p.out); self.assertFalse(os.path.isdir(wt))
+        self.assert_main_sane()
+
     def test_merge_refuses_a_two_repo_ticket_whole_when_the_frontend_half_has_no_trailered_commit(self):
         """R3 (probe_c): the frontend branch is already on its trunk without a trailered commit -> refused BEFORE the backend moves"""
         fe_origin, fe_main, env = self.fe_world()
@@ -1933,6 +2205,24 @@ class TestBoardJson(TicketShWorld):
             p = self.ts("board", *args, env=self.env_without_who())
             self.assertEqual(p.returncode, 1, p.out); self.assertIn("usage: board [--json [--slow]]", p.out)
         self.assertEqual(self.main_head(), before, "board commits nothing"); self.assert_main_sane()
+
+    def test_board_stats_look_only_at_a_named_worktree(self):
+        """T-0228: with no worktree named, "$repo/" is a directory, so dirty was the main checkout's own status count (0 on a
+        clean main, as if a clean worktree sat there) -- now null, worktree_missing false; the text board says "no worktree"."""
+        p = self.ts("claim", "T-0001", "qa"); self.assertEqual(p.returncode, 0, p.out)
+        wt = os.path.join(self.main, ".claude", "worktrees", "t0001-alpha-ticket")
+        with open(os.path.join(wt, "scratch.txt"), "w") as fh:
+            fh.write("dirty\n")
+        self.write_ticket("T-0003", "no-worktree", "in-review", "branch, no worktree named", fields={"owner": "qa", "branch": "side"})
+        self.git("-C", self.main, "add", "-A"); self.git("-C", self.main, "commit", "-q", "-m", "tickets: T-0003"); self.git("-C", self.main, "push", "-q", "origin", TRUNK)
+        self.git("-C", self.main, "branch", "side", TRUNK)   # at trunk's tip: behind 0, ahead 0
+        b, _ = self.board_json("--slow"); by = {t["id"]: t for t in b["tickets"]}
+        self.assertEqual(by["T-0001"]["stats"]["dirty"], 1, "a named, present worktree is still counted")
+        self.assertEqual(by["T-0003"]["stats"], {"behind": 0, "ahead": 0, "dirty": None, "branch_missing": False, "worktree_missing": False}, "nothing to count, nothing missing")
+        text = self.ts("board", env=self.env_without_who()).out   # the text board always measures
+        self.assertIn("behind 0  ahead 0  no worktree", text)
+        self.assertNotIn("behind 0  ahead 0  dirty 0", text)
+        self.assertIn("dirty 1 !", text)
 
     def test_board_json_freeze_warnings_and_slow_stats_and_orphans_keep_the_text_board(self):
         p = self.ts("claim", "T-0001", "qa"); self.assertEqual(p.returncode, 0, p.out)   # a real branch + worktree, in-dev
