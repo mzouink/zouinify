@@ -77,8 +77,10 @@ class TermServer(ThreadingHTTPServer):
         self.unlocks: dict = {}         # unlock id -> {ip, ua, at, last}
         self.attachments: dict = {}     # tid -> {unlock, target, at, last}
         self.lock = threading.Lock()
-        # the one clock behind every idle, maximum and lockout time (unix seconds): the wall clock in production, a fake the
-        # tests advance by hand, so no test waits on real seconds and a slow run cannot cross a timer by itself (T-0225)
+        # the one clock behind the idle, maximum and lockout times (unix seconds): the wall clock in production, a fake the
+        # tests advance by hand, so no test waits on real seconds and a slow run cannot cross a timer by itself (T-0225).
+        # The two rate limiters (webauth.RateLimiter: wrong passphrases, requests without a cookie) keep their own wall
+        # clock: rate windows, not the timers under test
         self.clock = time.time
 
     @property

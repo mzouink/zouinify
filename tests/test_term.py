@@ -14,6 +14,7 @@ clock frozen at setup, so no request in any test can cross a timer by itself how
 advance that clock by hand instead of sleeping (the world's 2 s / 3 s timers were real seconds before, and a loaded run made
 a 400 into a 410)."""
 import http.client
+import io
 import json
 import signal
 import os
@@ -23,6 +24,7 @@ import select
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -865,21 +867,84 @@ class TestTermControl(World):
         self.ok("term", "start")
         with open(os.path.join(self.root, ".ops", "state", "term.json")) as fh:
             pid = int(json.load(fh)["pid"])
+        self.addCleanup(conftest._signal, pid, self.root, signal.SIGTERM)   # on any failure below, the server does not outlive the test
         self.assertTrue(conftest._alive(pid))
+        self.assertTrue(conftest.same_server(pid, self.root), "the kill target is re-read from /proc: this user's server for this path")
+        self.assertFalse(conftest.same_server(pid, self.root + "x"), "another path: not the same server")
+        self.assertFalse(conftest.same_server(os.getpid(), self.root), "another process: not a server")
         marker = os.path.join(self.tmp, ".test-runner")
         self.assertEqual(open(marker).read().strip(), str(os.getpid()), "the world names the pytest that owns it")
-        self.assertEqual([p for p, _, _ in conftest.leftover_test_servers() if p == pid], [], "a live runner's server is not a leftover")
-        self.assertEqual(conftest.reap_leftovers(), 0)
+        mine = [row for row in conftest.test_servers() if row[0] == pid]
+        self.assertEqual([(v, w) for _, _, w, v, _ in mine], [("keep", os.path.realpath(self.tmp))], "a live runner's server is kept")
+        self.assertIn("is alive", mine[0][4])
+        reaped = f"reaped a leftover test server from a dead run: pid {pid}"     # the checks name this pid: other sessions' servers may be reaped alongside
+        buf = io.StringIO()
+        conftest.reap_leftovers(buf)
+        self.assertNotIn(reaped, buf.getvalue())
         self.assertTrue(conftest._alive(pid), "left alone")
+        # no marker at all (test code older than the marker, maybe another session's run): kept, and said so -- never reaped
+        os.unlink(marker)
+        mine = [row for row in conftest.test_servers() if row[0] == pid]
+        self.assertEqual([v for _, _, _, v, _ in mine], ["keep"])
+        self.assertIn("no readable runner marker", mine[0][4])
+        buf = io.StringIO()
+        conftest.reap_leftovers(buf)
+        self.assertIn(f"kept a zouinify test server: pid {pid}", buf.getvalue())
+        self.assertNotIn(reaped, buf.getvalue())
+        self.assertTrue(conftest._alive(pid))
+        self.assertTrue(os.path.isdir(self.root), "the world is untouched")
+        for garbled in ("not a pid\n", "-1\n", "0\n", "100000000000000000000\n"):   # unreadable or impossible: kept too, no error
+            with open(marker, "w") as fh:
+                fh.write(garbled)
+            self.assertEqual(conftest.runner_of(self.tmp), ("none", None), garbled)
+            buf = io.StringIO()
+            conftest.reap_leftovers(buf)
+            self.assertIn(f"kept a zouinify test server: pid {pid}", buf.getvalue(), garbled)
+            self.assertTrue(conftest._alive(pid), garbled)
         gone = subprocess.Popen(["true"])                             # a pid that has exited: the runner died
         gone.wait()
         with open(marker, "w") as fh:
             fh.write(f"{gone.pid}\n")
-        self.assertEqual([p for p, _, _ in conftest.leftover_test_servers() if p == pid], [pid], "its runner is dead: a leftover")
-        self.assertEqual(conftest.reap_leftovers(), 1)
+        self.assertEqual([p for p, _, _ in conftest.leftover_test_servers() if p == pid], [pid], "its runner is provably dead: a leftover")
+        buf = io.StringIO()
+        self.assertGreaterEqual(conftest.reap_leftovers(buf), 1)
+        self.assertIn(reaped, buf.getvalue())
         self.assertFalse(conftest._alive(pid), "stopped")
         self.assertFalse(os.path.exists(self.tmp), "and the world directory is gone")
         os.makedirs(self.root, exist_ok=True)                         # tearDown wants a tree to remove
+
+    def test_the_reaper_refuses_any_project_path_that_is_not_a_plain_test_world(self):
+        """T-0225 review: the path that gates an rm -rf is refused on the given string (`..`, a symlinked world) and acted on only
+        through its real path, which must be exactly one zouinify-(test|init)-* directory directly under the temp dir; anything else
+        is kept, never resolved into something deletable."""
+        import conftest
+        tmp = conftest.TMP
+        world = os.path.realpath(self.tmp)
+        self.assertEqual(conftest.world_of(self.root), (world, ""), "this test's own world: real, one level under the temp dir")
+        self.assertEqual(conftest.world_of(os.path.join(self.tmp, "other"))[0], world, "any project name inside the world")
+        init = tempfile.mkdtemp(prefix="zouinify-init-", dir=tmp)
+        self.addCleanup(os.rmdir, init)
+        self.assertEqual(conftest.world_of(f"{init}/proj"), (init, ""), "an init world too")
+        other = os.path.join(os.path.dirname(tmp.rstrip("/")) or "/", "another-tmp")   # a sibling of the temp dir
+        for bad, reason in ((f"{tmp}/zouinify-test-x/../../home/someone/proj", "`..`"),
+                            (f"{tmp}/zouinify-test-x/../{os.path.basename(self.tmp)}/proj", "`..`"),      # resolves to a real world: still refused
+                            (f"{tmp}/zouinify-test-X", f"exactly one directory under {tmp}"),             # the bare world: no child to be the project
+                            (f"{tmp}/zouinify-test-X/deeper/proj", f"exactly one directory under {tmp}"),
+                            (f"{other}/zouinify-test-x/proj", f"exactly one directory under {tmp}"),      # under another temp dir
+                            (f"{tmp}/other-dir/proj", "not a zouinify test world name"),
+                            (f"{tmp}//zouinify-test-x/proj", "redundant separators"),
+                            ("zouinify-test-x/proj", "not an absolute path"), ("", "not an absolute path")):
+            world, why = conftest.world_of(bad)
+            self.assertIsNone(world, bad)
+            self.assertIn(reason, why, bad)
+        link = os.path.join(tmp, "zouinify-test-link" + os.path.basename(self.tmp)[-6:])
+        os.symlink(self.tmp, link)
+        self.addCleanup(os.unlink, link)
+        world, why = conftest.world_of(f"{link}/proj")
+        self.assertIsNone(world, "a symlinked world is refused even though it resolves to a real one")
+        self.assertIn("symlink", why)
+        self.assertEqual(conftest.world_of(f"{tmp}/zouinify-test-nosuchworld-{os.getpid()}/proj"), (None, "the world is not a plain directory"))
+        self.assertTrue(os.path.isdir(self.root), "nothing was deleted along the way")
 
     def test_start_needs_the_flag_and_the_secret(self):
         r = self.nz("term", "start")
