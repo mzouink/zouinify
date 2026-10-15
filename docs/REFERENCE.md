@@ -320,7 +320,8 @@ desk's tmux window.
   binary is called, and the tty's foreground process group the worker agent's own; a split, a respawned or swapped pane
   and a nested client all close the attachment with nothing sent. A tmux server that does not answer within 2 s (3 s for
   all of them: a hung or a planted socket) fails the request closed with 503 and nothing sent; the attachment stays and
-  the page retries.
+  the page retries. The one exception is a `send-keys` that is not answered: that op may or may not have reached the
+  pane, so the answer is 502 with how many ops went before it and the advice to read the screen before retyping.
   Keys are an allowlist: printable text and Enter, Esc, arrows, Tab, Backspace, Home, End, PageUp, PageDown, Space, Ctrl-C,
   Ctrl-U; never Ctrl-D; at most 8 ops per batch.
 - **The residual, stated plainly.** Every Claude session on the workstation runs as your user. A worker can already run

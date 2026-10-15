@@ -135,7 +135,12 @@ def list_targets(cfg) -> list:
     pat = worker_pattern(cfg)
     roots = _roots(cfg)
     rows_a = live_agents(cfg)
-    panes = tmux.list_panes() if rows_a else []
+    try:
+        panes = tmux.list_panes(timeout=tmux.PANE_TIMEOUT_S) if rows_a else []
+    except tmux.TmuxError as e:                                              # the default server does not answer (T-0194)
+        if not getattr(e, "timed_out", False):
+            raise
+        raise NoAnswer(str(e)) from e
     for a in rows_a:
         name = str(a.get("name") or "")
         m = pat.match(name)
@@ -154,13 +159,19 @@ def inspect(cfg, target: dict, expect_pane: str | None = None) -> tuple:
     """(ok, reason, pane): the one concrete pane of the target, right now. Refused when: a role name or window; no tmux
     session; more than one pane across the session's windows; the pane is not `expect_pane` (the %id seen at open); the
     pane's command is not claude; no live agent of that name; the agent's cwd is outside the project; the agent's process
-    does not descend from the pane's. `pane` = {pane_id, pane_pid, agent_pid, command}."""
+    does not descend from the pane's. `pane` = {pane_id, pane_pid, agent_pid, command}. Raises NoAnswer when a tmux
+    server does not answer within its short timeout (T-0183, T-0194): nothing is decided, the caller answers 503."""
     roles = role_names(cfg)
     if target["tmux"] in roles or target["name"] in roles:
         return False, ROLE_REFUSED, None
-    if not tmux.has_session(target["tmux"]):
-        return False, "no tmux session of that name", None
-    panes = tmux.panes_of(target["tmux"])
+    try:
+        if not tmux.has_session(target["tmux"], timeout=tmux.PANE_TIMEOUT_S):
+            return False, "no tmux session of that name", None
+        panes = tmux.panes_of(target["tmux"], timeout=tmux.PANE_TIMEOUT_S)
+    except tmux.TmuxError as e:                                              # the default server does not answer (T-0194)
+        if not getattr(e, "timed_out", False):
+            raise
+        raise NoAnswer(str(e)) from e
     if not panes:
         return False, "no pane in that session", None
     if len(panes) != 1:

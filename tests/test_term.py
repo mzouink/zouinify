@@ -620,6 +620,137 @@ class TestTermApi(TermWorld):
         self.assertTrue(any(a["event"] == "refused" and "no answer" in a.get("reason", "") for a in self.audit()))
         self.assertFalse(any(a["event"] == "close" for a in self.audit()), "a server that does not answer closes nothing")
 
+    def test_a_hung_default_tmux_server_fails_the_pane_calls_closed_within_the_short_timeout(self):
+        """T-0194: has-session, list-panes, capture-pane and send-keys in the pane inspection get the same short per-call
+        timeout as list-clients (they used _run's 20 s default): a default server that accepts and never answers fails the
+        request closed on the 503 path with nothing sent and the attachment kept; a send-keys that times out mid-batch is
+        audited partial like a refusal and says the op's fate is unknown. The clock is frozen (TermWorld), so no timer
+        expires meanwhile; the timeouts themselves are real seconds, made short."""
+        from zouinify import tmux as tmuxmod
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        tid = d["tid"]
+
+        def hang(cmd):
+            marker = os.path.join(self.state, f"hang-{cmd}")
+            open(marker, "w").close()
+            return marker
+
+        # 1.5 s, not less: the patched timeout also binds the calls that must answer, and the fake tmux (a Python script)
+        # spawns with a heavy tail under load (p99 ~0.9 s beside another suite); the wall bounds follow from it
+        t = 1.5
+        one = 2 * t + 2.0                                              # one hung call, with slack
+        with mock.patch.object(tmuxmod, "PANE_TIMEOUT_S", t, create=True):         # create: on the base the stall itself shows
+            # list-panes hangs: the inspection cannot finish -> 503 wherever it is needed, nothing sent, nothing closed
+            marker = hang("list-panes")
+            t0 = time.monotonic()
+            st, hdr, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+            self.assertEqual(st, 503, k)
+            self.assertLess(time.monotonic() - t0, one, "bounded by the short timeout, not tmux's 20 s default")
+            self.assertIn("did not answer", k["error"])
+            self.assertIn(f"list-panes timed out after {t:g} s", k["error"])
+            self.assertEqual(hdr.get("Retry-After"), "2")
+            self.assertEqual(self.sent(), [], "nothing typed while the server does not answer")
+            st, _, sc = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+            self.assertEqual(st, 503, sc)
+            st, _, o = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+            self.assertEqual(st, 503, o)
+            t0 = time.monotonic()                                     # the listing enumerates with list-panes -a: 503 too, bounded
+            st, hdr, l = self.req("GET", "/term/targets", cookie=cookie)
+            self.assertEqual(st, 503, l)
+            self.assertLess(time.monotonic() - t0, one)
+            self.assertEqual(hdr.get("Retry-After"), "2")
+            os.remove(marker)
+            # has-session hangs: the same path; the listing answers, each row "not checked" within the bound
+            marker = hang("has-session")
+            t0 = time.monotonic()
+            st, hdr, sc = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+            self.assertEqual(st, 503, sc)
+            self.assertLess(time.monotonic() - t0, one)
+            self.assertIn("has-session timed out", sc["error"])
+            self.assertEqual(hdr.get("Retry-After"), "2")
+            t0 = time.monotonic()
+            st, _, l = self.req("GET", "/term/targets", cookie=cookie)
+            self.assertEqual(st, 200, l)
+            self.assertLess(time.monotonic() - t0, len(l["targets"]) * t + 3.0, "every row bounded by the short timeout")
+            row = next(r for r in l["targets"] if r["name"] == "t0001-first-ready-ticket")
+            self.assertFalse(row["live"])
+            self.assertIn("has-session timed out", row["reason"])
+            os.remove(marker)
+            # capture-pane hangs: the inspection passes, the read does not -> 503, the attachment kept
+            marker = hang("capture-pane")
+            t0 = time.monotonic()
+            st, hdr, sc = self.req("GET", f"/term/{tid}/screen", cookie=cookie)
+            self.assertEqual(st, 503, sc)
+            self.assertLess(time.monotonic() - t0, one)
+            self.assertIn("capture-pane timed out", sc["error"])
+            self.assertEqual(hdr.get("Retry-After"), "2")
+            os.remove(marker)
+            # send-keys hangs: the first op times out -> 502 like a refusal mid-batch, audited partial; the op's fate is unknown
+            marker = hang("send-keys")
+            t0 = time.monotonic()
+            st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+            self.assertEqual(st, 502, k)
+            self.assertLess(time.monotonic() - t0, one)
+            self.assertEqual(k["sent"], 0)
+            self.assertIn(f"did not answer within {t:g} s on op 1 of 2", k["error"])
+            self.assertIn("whether op 1 arrived is unknown", k["error"])
+            last = self.audit()[-1]
+            self.assertEqual((last["event"], last["n"], last["m"], last["partial"]), ("keys", 0, 2, True))
+            self.assertIn("send-keys timed out", last["reason"])
+            self.assertNotIn("text", last)
+            os.remove(marker)
+            # everything answers again: the attachment survived all four
+            st, _, k = self.req("POST", f"/term/{tid}/keys", {"ops": [{"t": "y"}, {"k": "Enter"}]}, cookie=cookie)
+            self.assertEqual(st, 200, k)
+            self.assertEqual(k["sent"], 2)
+        self.assertFalse(any(a["event"] == "close" for a in self.audit()), "a server that does not answer closes nothing")
+        self.assertTrue(any(a["event"] == "refused" and "no answer" in a.get("reason", "") for a in self.audit()))
+
+    def test_the_pane_calls_take_a_timeout_and_the_launcher_keeps_the_default(self):
+        """T-0194: has_session, panes_of, capture_pane_id and send_keys accept a timeout; without one, _run's 20 s default
+        (the launcher's calls) stays; a call that times out raises TmuxError marked timed_out, send_keys's with .sent."""
+        from zouinify import tmux as tmuxmod
+        self.assertEqual(tmuxmod.DEFAULT_TIMEOUT_S, 20.0)
+        self.assertEqual(tmuxmod.PANE_TIMEOUT_S, 2.0)
+        cookie, _ = self.unlock()
+        st, _, d = self.req("POST", "/term/open", {"target": "t0001-first-ready-ticket"}, cookie=cookie)
+        self.assertEqual(st, 200, d)
+        pane = d["pane"]
+        seen = []
+        real_run = tmuxmod.subprocess.run
+
+        def spy(argv, **kw):
+            seen.append((argv[1], kw.get("timeout")))
+            return real_run(argv, **kw)
+
+        with mock.patch.object(tmuxmod.subprocess, "run", spy):
+            self.assertTrue(tmuxmod.has_session("tp-desk"))
+            self.assertEqual(len(tmuxmod.panes_of("tp-desk")), 1)
+            self.assertTrue(tmuxmod.has_session("tp-desk", timeout=7.0))            # generous: these must answer under load
+            self.assertEqual(len(tmuxmod.panes_of("tp-desk", timeout=7.0)), 1)
+            self.assertIn("proceed", tmuxmod.capture_pane_id(pane, timeout=7.0))      # the screen the world plants for t0001
+            self.assertEqual(len(tmuxmod.list_panes(timeout=7.0)), len(tmuxmod.list_panes()))
+            self.assertEqual(tmuxmod.send_keys(pane, [("t", "a")], timeout=7.0), 1)
+        self.assertEqual(seen, [("has-session", 20.0), ("list-panes", 20.0), ("has-session", 7.0), ("list-panes", 7.0),
+                                ("capture-pane", 7.0), ("list-panes", 7.0), ("list-panes", 20.0), ("send-keys", 7.0)])
+        marker = os.path.join(self.state, "hang-has-session")
+        open(marker, "w").close()
+        t0 = time.monotonic()
+        with self.assertRaises(tmuxmod.TmuxError) as cm:
+            tmuxmod.has_session("tp-desk", timeout=0.3)
+        self.assertLess(time.monotonic() - t0, 5.0)
+        self.assertTrue(getattr(cm.exception, "timed_out", False))
+        self.assertEqual(str(cm.exception), "tmux has-session timed out after 0.3 s")
+        os.remove(marker)
+        marker = os.path.join(self.state, "hang-send-keys")
+        open(marker, "w").close()
+        with self.assertRaises(tmuxmod.TmuxError) as cm:
+            tmuxmod.send_keys(pane, [("t", "a"), ("k", "Enter")], timeout=0.3)
+        self.assertEqual((cm.exception.sent, cm.exception.timed_out), (0, True))
+        os.remove(marker)
+
     def test_a_respawned_pane_keeps_its_id_but_is_refused(self):
         """Review L5: respawn-pane keeps the %id and changes the pane pid; the agent no longer descends from it."""
         cookie, _ = self.unlock()

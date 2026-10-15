@@ -118,6 +118,8 @@ def main(argv):
     if not argv:
         return 1
     cmd, args = argv[0], argv[1:]
+    if os.path.exists(os.path.join(STATE, f"hang-{cmd}")):
+        time.sleep(60)                                            # the default server accepts this command and never answers (T-0194)
     d = load()
     if cmd == "-V":
         print("tmux 3.4")

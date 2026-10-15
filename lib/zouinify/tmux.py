@@ -31,18 +31,29 @@ class DuplicateSession(TmuxError):
     """`new-session` found the name already taken: somebody won the race between the check and the launch."""
 
 
-def _run(args: list, timeout: float = 20) -> subprocess.CompletedProcess:
+DEFAULT_TIMEOUT_S = 20.0            # per tmux call when the caller names none: the launcher and everything in no hurry
+
+
+def _run(args: list, timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Run one tmux command; past `timeout` seconds (DEFAULT_TIMEOUT_S when None) the client is killed and TmuxError is
+    raised with `.timed_out = True`, so a caller can tell a server that does not answer from one that refuses."""
+    t = DEFAULT_TIMEOUT_S if timeout is None else timeout
     try:
-        return subprocess.run([TMUX, *args], capture_output=True, text=True, errors="replace", timeout=timeout)
+        return subprocess.run([TMUX, *args], capture_output=True, text=True, errors="replace", timeout=t)
     except FileNotFoundError as e:
         raise TmuxError(f"{TMUX}: not found on PATH") from e
     except subprocess.TimeoutExpired as e:
-        raise TmuxError(f"tmux {args[0]} timed out after {timeout} s") from e
+        i = 0
+        while i + 1 < len(args) and args[i] in ("-S", "-L"):      # the verb, past a socket choice
+            i += 2
+        err = TmuxError(f"tmux {args[i] if i < len(args) else args[0]} timed out after {t:g} s")
+        err.timed_out = True
+        raise err from e
 
 
-def has_session(name: str) -> bool:
+def has_session(name: str, timeout: float | None = None) -> bool:
     """Exact-name test (`=name`: tmux's -t matching is a prefix/fuzzy match otherwise)."""
-    return _run(["has-session", "-t", f"={name}"]).returncode == 0
+    return _run(["has-session", "-t", f"={name}"], timeout=timeout).returncode == 0
 
 
 def new_session(name: str, cwd: str, env: dict, argv: list) -> None:
@@ -77,11 +88,11 @@ PANE_FIELDS = ("pane_id", "pane_active", "window_active", "pane_current_command"
 PANE_ID_RE = re.compile(r"^%\d+$")
 
 
-def panes_of(name: str) -> list:
+def panes_of(name: str, timeout: float | None = None) -> list:
     """EVERY pane of the session across all its windows (`list-panes -s`), as [{pane_id, active, window_active, command,
     pane_pid, window, index}]; [] when no such session. The terminal page (T-0181) refuses a session with more than
     one pane: a check on "the" pane and a send to "the" pane must name the same %pane_id."""
-    r = _run(["list-panes", "-s", "-t", f"={name}", "-F", "\t".join("#{%s}" % f for f in PANE_FIELDS)])
+    r = _run(["list-panes", "-s", "-t", f"={name}", "-F", "\t".join("#{%s}" % f for f in PANE_FIELDS)], timeout=timeout)
     if r.returncode != 0:
         return []
     rows = []
@@ -109,24 +120,29 @@ def _pane_target(pane_id: str) -> str:
     return str(pane_id)
 
 
-def capture_pane_id(pane_id: str) -> str:
+def capture_pane_id(pane_id: str, timeout: float | None = None) -> str:
     """The visible screen of ONE pane, by its server-wide %id (never a session or window name)."""
-    r = _run(["capture-pane", "-p", "-t", _pane_target(pane_id)])
+    r = _run(["capture-pane", "-p", "-t", _pane_target(pane_id)], timeout=timeout)
     return r.stdout if r.returncode == 0 else ""
 
 
-def send_keys(pane_id: str, ops: list) -> int:
+def send_keys(pane_id: str, ops: list, timeout: float | None = None) -> int:
     """Type into ONE pane by its %id: the terminal page's one write (T-0181), the human's own keystrokes after the
     unlock, into the pane zouinify.term.targets inspected a moment ago. Each op is ("t", text) -- sent literally with -l,
     after `--` so a leading dash is text -- or ("k", KeyName) from zouinify.term.keys's allowlist. One tmux call per op,
-    in order; returns the number sent; a failure mid-batch raises TmuxError with .sent = how many went before it."""
+    in order; returns the number sent; a failure mid-batch raises TmuxError with .sent = how many went before it (a
+    call that times out too, marked .timed_out: whether that op reached the pane is unknown)."""
     target = _pane_target(pane_id)
     n = 0
     for kind, value in ops:
-        if kind == "t":
-            r = _run(["send-keys", "-t", target, "-l", "--", value])
-        else:
-            r = _run(["send-keys", "-t", target, value])
+        try:
+            if kind == "t":
+                r = _run(["send-keys", "-t", target, "-l", "--", value], timeout=timeout)
+            else:
+                r = _run(["send-keys", "-t", target, value], timeout=timeout)
+        except TmuxError as e:
+            e.sent = n
+            raise
         if r.returncode != 0:
             err = TmuxError(f"tmux send-keys into {target} failed after {n} op(s): {(r.stderr or r.stdout).strip()}")
             err.sent = n
@@ -139,6 +155,9 @@ CLIENT_FIELDS = ("client_pid", "client_tty", "session_name")
 SOCKETS_MAX = 8
 LIST_CLIENTS_TIMEOUT_S = 2.0        # per server; a socket that accepts and never answers must not stall the page (T-0183 review)
 CLIENTS_BUDGET_S = 3.0              # for the whole walk over the servers
+PANE_TIMEOUT_S = 2.0                # per call of the pane inspection the terminal page makes (has-session, list-panes, capture-pane,
+                                    # send-keys): a default server that stops answering fails the request closed instead of
+                                    # holding it for DEFAULT_TIMEOUT_S per call (T-0194); the launcher keeps the default
 
 
 def list_clients(socket_path: str | None = None, timeout: float | None = None) -> list:
@@ -212,8 +231,9 @@ def attached_clients(budget_s: float | None = None) -> list:
     return rows
 
 
-def list_panes() -> list:
-    r = _run(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_command}"])
+def list_panes(timeout: float | None = None) -> list:
+    """Every pane of every session of the default server (`list-panes -a`), one row each: [{session, pane_pid, command}]."""
+    r = _run(["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_command}"], timeout=timeout)
     rows = []
     for line in r.stdout.splitlines():
         parts = line.split("\t")

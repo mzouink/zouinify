@@ -344,7 +344,11 @@ class Handler(BaseHTTPRequestHandler):
                                                           "project": srv.cfg.name}, head)
                 if path == "/term/targets":
                     rows = []
-                    for t in targetsmod.list_targets(srv.cfg):
+                    try:
+                        candidates = targetsmod.list_targets(srv.cfg)
+                    except targetsmod.NoAnswer as e:                 # the default server does not answer (T-0194)
+                        return self.unavailable(e, uid, head=head)
+                    for t in candidates:
                         try:
                             ok, why = targetsmod.live(srv.cfg, t)
                         except targetsmod.NoAnswer as e:
@@ -481,7 +485,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.unavailable(e, uid, tid, head=head)
         if err:
             return self.send_json(HTTPStatus.GONE, {"error": err}, head)
-        text = redact(tmux.capture_pane_id(a["target"]["pane_id"]))
+        try:
+            text = redact(tmux.capture_pane_id(a["target"]["pane_id"], timeout=tmux.PANE_TIMEOUT_S))
+        except TmuxError as e:                  # the server stopped answering between the inspection and the read (T-0194)
+            if not getattr(e, "timed_out", False):
+                raise
+            return self.unavailable(e, uid, tid, head=head)
         srv.touch(uid)                          # a screen poll keeps the unlock alive, not the attachment: idle means no keystroke
         return self.send_json(HTTPStatus.OK, {"text": text, "at": panelstate.now_iso(), "tid8": tid[:8], "target": a["target"]["name"],
                                               "tmux": a["target"]["tmux"], "pane": a["target"]["pane_id"], "closes_in_s": srv.closes_in(tid)}, head)
@@ -522,12 +531,17 @@ class Handler(BaseHTTPRequestHandler):
                                text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops), partial=True, reason=err[:200])
                     return self.send_json(HTTPStatus.GONE, {"error": f"{err}; {n} of {len(ops)} ops were sent before", "sent": n})
             try:
-                tmux.send_keys(tgt["pane_id"], [op])
+                tmux.send_keys(tgt["pane_id"], [op], timeout=tmux.PANE_TIMEOUT_S)
             except TmuxError as e:
                 srv.touch(uid, tid)
                 self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
                            text_len=len(text), text_hmac=self.text_digest(text), keys=names, n=n, m=len(ops), partial=True, reason=str(e)[:200])
-                return self.send_json(HTTPStatus.BAD_GATEWAY, {"error": f"tmux refused mid-batch after {n} of {len(ops)} ops: {e}"[:300], "sent": n})
+                if getattr(e, "timed_out", False):     # the server did not answer the send (T-0194): the op's fate is unknown, say so
+                    msg = (f"tmux did not answer within {tmux.PANE_TIMEOUT_S:g} s on op {n + 1} of {len(ops)}; {n} sent before it; "
+                           f"whether op {n + 1} arrived is unknown: read the screen before retyping")
+                else:
+                    msg = f"tmux refused mid-batch after {n} of {len(ops)} ops: {e}"[:300]
+                return self.send_json(HTTPStatus.BAD_GATEWAY, {"error": msg, "sent": n})
             n += 1
         srv.touch(uid, tid)
         self.audit("keys", tid8=tid[:8], unlock8=uid[:8], target=tgt["name"], tmux=tgt["tmux"], pane=tgt["pane_id"],
