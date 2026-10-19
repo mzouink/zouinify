@@ -231,7 +231,8 @@ class TestApi(PanelWorld):
         self.assertEqual(items[1]["tier"], 2)            # APPROVE is always tier 2
         self.assertIn("type in the", items[1]["hint"])
         self.assertEqual(items[2]["tier"], 1)
-        self.assertEqual(items[2]["options"], ["T-0006 delete", "T-0006 keep"])
+        self.assertEqual(items[2]["options"], [{"value": "delete", "label": "delete"}, {"value": "keep", "label": "keep"}],
+                         "the reply form: the answers with the ticket id stripped, each a {value, label} (T-0233)")
         self.assertEqual(items[3]["tier"], 1)            # RUN: ok after the human ran it (after T-0162)
         from zouinify.panel.sources import classify_item
         for verb in ("APPLY", "DEPLOY", "PUSH"):
@@ -264,6 +265,173 @@ class TestApi(PanelWorld):
             with self.subTest(cmd=cmd):
                 self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": cmd, "expect": "y"})["tier"], 1, cmd)
         self.assertEqual(s["kpis"]["inbox"], 4)          # the items of human --json
+
+    # ---- T-0233: a DECIDE item's choices and the own-answer box ----------------------------------------------
+    # The two shapes the core writes for one blocked ticket, in generic words: the ticket's own `blocked_on:` question (one
+    # double-quoted sentence that enumerates its choices; the rule before T-0233 made it ONE radio holding the whole sentence)
+    # and the desk's ask (the reply form in single quotes, the choices described in its expect; before T-0233: no radio at all).
+    DECIDE_QUESTION = {"verb": "DECIDE", "tickets": "T-0007", "priority": "P2", "title": "two copies of every report", "since": "2026-10-19 09:00",
+                       "command": 'question: human decision: "The nightly job writes two copies of every report (each about 2 MB). Which fix: '
+                                  '(a) write one copy and link it, (b) keep both and dedupe weekly, (c) keep as is and document it?"',
+                       "expect": 'your answer, one line, in the tickets window: "T-0007 <answer>"', "if_nothing": "T-0007 stays blocked",
+                       "note": "ticket is blocked, the question is in its blocked_on:", "plain": ""}
+    DECIDE_REPLY = {"verb": "DECIDE", "tickets": "T-0007", "priority": "P2", "title": "how the nightly job should keep its reports", "since": "2026-10-19 09:05",
+                    "command": "reply 'T-0007 a', 'T-0007 b' or 'T-0007 c'",
+                    "expect": "(a) one copy, the second a link (desk recommends); (b) both kept, a weekly dedupe; (c) as is, documented",
+                    "if_nothing": "T-0007 waits", "note": "asked by tp-desk", "plain": ""}
+    QUESTION_CHOICES = [{"value": "a", "label": "write one copy and link it"}, {"value": "b", "label": "keep both and dedupe weekly"},
+                        {"value": "c", "label": "keep as is and document it"}]
+    REPLY_CHOICES = [{"value": "a", "label": "one copy, the second a link (desk recommends)"}, {"value": "b", "label": "both kept, a weekly dedupe"},
+                     {"value": "c", "label": "as is, documented"}]
+
+    def test_decide_options_come_from_the_enumeration_or_the_reply_form(self):
+        """T-0233: one radio per choice, from the first shape that fits: the desk's reply form (either quote, the ticket id
+        stripped, labels from an enumeration in the expect), an `(a) ... (b) ... (c)` enumeration (letters or digits; in the
+        command, else in the expect), or two or more double-quoted answers; one quoted sentence is the question, not a choice."""
+        from zouinify.panel.sources import classify_item
+        self.assertEqual(classify_item(self.DECIDE_QUESTION)["options"], self.QUESTION_CHOICES,
+                         "the question's (a)/(b)/(c): the letter is the value, the description the label; never one radio holding the whole question")
+        self.assertEqual(classify_item(self.DECIDE_REPLY)["options"], self.REPLY_CHOICES,
+                         "the reply form in single quotes: the answers with the ticket id stripped, labelled from the expect's enumeration")
+        self.assertEqual(classify_item(dict(self.DECIDE_REPLY, command='reply "T-0007 a", "T-0007 b" or "T-0007 c"'))["options"], self.REPLY_CHOICES, "double quotes too")
+        self.assertEqual(classify_item(dict(self.DECIDE_REPLY, command="reply 'T-0007 a', \"T-0007 b\" or 'T-0007 c'"))["options"], self.REPLY_CHOICES, "mixed quotes too")
+        same = lambda *xs: [{"value": x, "label": x} for x in xs]  # noqa: E731
+        cases = [
+            ('reply "T-0006 delete" or "T-0006 keep"', "T-0006 delete", same("delete", "keep"), "the reply form without an enumeration: the answer is its own label"),
+            ("reply 'T-0300 yes' or 'T-0300 no'", "(a) yes means X; (b) no means Y", same("yes", "no"),
+             "the reply form wins over an enumeration whose keys differ: what the desk asked to reply is what the receipt carries"),
+            ("reply 'T-0300 a' or 'T-0300 b': (a) alpha, (b) beta", "", [{"value": "a", "label": "alpha"}, {"value": "b", "label": "beta"}],
+             "labels from an enumeration in the command when the expect has none"),
+            ("reply 'T-0300 a' or 'T-0300 b': (a) alpha, (b) beta", "(a) from the expect; (b) and this", [{"value": "a", "label": "from the expect"}, {"value": "b", "label": "and this"}],
+             "the expect's entry wins over the command's"),
+            ("reply 'T-0300 a', 'T-0300 a' or 'T-0300 b'", "", same("a", "b"), "a repeated answer is one radio"),
+            ('(a) "x", (b) "y"', "", [{"value": "a", "label": "x"}, {"value": "b", "label": "y"}], "quotes around an entry are not part of it"),
+            ("(a) x etc., (b) y.", "", [{"value": "a", "label": "x etc."}, {"value": "b", "label": "y"}], "only the last entry carries the question's own closing mark"),
+            ("(a) alpha, and/or (b) beta Or (c) gamma", "", [{"value": "a", "label": "alpha"}, {"value": "b", "label": "beta"}, {"value": "c", "label": "gamma"}],
+             "the conjunction before the next entry, however written"),
+            ("question: choose (1) fast, (2) safe or (3) both", "", [{"value": "1", "label": "fast"}, {"value": "2", "label": "safe"}, {"value": "3", "label": "both"}],
+             "digits; the conjunction before the last entry is not part of the one before it"),
+            ("(A) Alpha; (B) Beta.", "", [{"value": "A", "label": "Alpha"}, {"value": "B", "label": "Beta"}], "capitals; a closing period dropped"),
+            ("(a) do step (1) first, (b) do step (2) first", "", [{"value": "a", "label": "do step (1) first"}, {"value": "b", "label": "do step (2) first"}],
+             "a key of another kind inside a description is text"),
+            ("question: which?", "(a) x; (b) y", [{"value": "a", "label": "x"}, {"value": "b", "label": "y"}], "the enumeration in the expect when the command has none"),
+            ('pick "red" or "blue"', "", same("red", "blue"), "the rule before T-0233: two or more double-quoted answers in the command"),
+            ('question: "Which one?"', "x", [], "one quoted sentence is the question, not an answer: the own-answer box alone"),
+            ('"T-0001 go"', "", [], "one quoted string that is the whole command"),
+            ('reply in the tickets window: "T-0222 ok"', "", [], "the core's default reply line: nothing to pick"),
+            ("(b) x, (c) y", "", [], "an enumeration starts at (a) or (1)"),
+            ("(a) x (x) y (b) z", "", [], "a stray key breaks the sequence: nothing guessed"),
+            ("(a) , (b) y", "", [], "an entry without a description is no enumeration"),
+            ("reply 'T-0222 a' if it's fine or 'T-0222 b'", "", [], "an apostrophe in prose: not the reply form, nothing guessed"),
+            ("(each about 5 structures) (a) only one entry", "", [], "one entry is no enumeration; a parenthesis of words is never a key"),
+        ]
+        for command, expect, want, why in cases:
+            with self.subTest(command=command):
+                self.assertEqual(classify_item({"verb": "DECIDE", "tickets": "T-0001", "command": command, "expect": expect})["options"], want, why)
+        self.assertEqual(classify_item({"verb": "RUN", "tickets": "T-0001", "command": 'pick "red" or "blue"', "expect": ""})["options"], [], "options are a DECIDE item's")
+        self.assertEqual(classify_item(dict(self.DECIDE_QUESTION, command=self.DECIDE_QUESTION["command"] + " (settings.json)"))["tier"], 2,
+                         "a question that names settings stays tier 2 whatever its shape")
+
+    def _inbox_items_in_node(self, items, typed=None, picked=None, can_write=True):
+        """Run the page's own inboxItem(it, i) in node from its source (decideAct, esc, badge and sev from the page, the rest
+        stubbed, the receipt button rendered as its data-rc JSON) on items classified as the snapshot classifies them. Returns
+        ([html], [classified item])."""
+        import shutil
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed here (CI has it)")
+        from zouinify.panel.sources import classify_item, item_id
+        js = self.req("GET", "/static/app.js")[2].decode()
+        fns = "".join(self._js_def(js, n) for n in ("esc", "badge", "sev", "decideAct", "inboxItem"))
+        classified = [{**it, **classify_item(it), "id": item_id(it)} for it in items]
+        stubs = """
+const NO_TOKEN = 'no token';
+const CSS = { escape: (x) => x };
+const document = { querySelector: () => null };
+const state = { sent: {}, typed: %s, picked: %s, snap: { header: { desk: { name: 'tp-desk' } } } };
+function canWrite() { return %s; }
+function rc(label, data, cls = '') { return `<button type="button" class="btn" data-rc='${JSON.stringify(data)}'>${label}</button>`; }
+function sentBadge(key, pred) { return `<span class="badge sent">badge:${key}</span>`; }
+function sinceLabel(x) { return 'since ' + x; }
+function plainLine(x) { return ''; }
+function copyBtn(x, t) { return '<button class="copy"></button>'; }
+function noteFor(it) { return it.note || ''; }
+""" % (json.dumps(typed or {}), json.dumps(picked or {}), "true" if can_write else "false")
+        script = stubs + fns + "\nconst items = " + json.dumps(classified) + ";\nconsole.log(JSON.stringify(items.map(inboxItem)));"
+        r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout), classified
+
+    def test_a_decide_item_offers_its_choices_as_radios_and_an_own_answer_box(self):
+        """T-0233: three radios (the letter the value, the description the label) AND a one-line box for an own answer, always;
+        one Send answer button for both; the box and the button share a parent so Enter in the box clicks it."""
+        (hq, hr), (q, r) = self._inbox_items_in_node([self.DECIDE_QUESTION, self.DECIDE_REPLY])
+        for html, it, choices in ((hq, q, self.QUESTION_CHOICES), (hr, r, self.REPLY_CHOICES)):
+            key = "item:" + it["id"]
+            radios = re.findall(r'<label><input type="radio" name="d-' + it["id"] + r'" data-rc-pick="' + re.escape(key) + r'" value="([a-c])"> <span class="key">\1</span> ([^<]*)</label>', html)
+            self.assertEqual(radios, [(o["value"], o["label"]) for o in choices], "three radios in the choices' order, the letter shown before its description")
+            self.assertEqual(html.count('type="radio"'), 3)
+            self.assertIn('<span class="options" role="radiogroup" aria-label="the choices"><label>', html)
+            self.assertIn('<span class="answer"><input class="input" title="Enter sends; Escape keeps a draft in the box" data-rc-input="' + key + '" maxlength="500" '
+                          'placeholder="or your own answer, one line" aria-label="your own answer"><button type="button" class="btn" data-rc=\''
+                          + json.dumps({"item_id": it["id"], "from": "decide", "key": key}, separators=(",", ":")) + "'>Send answer</button></span>", html,
+                          "the own-answer box beside the radios, the one button next to it taking the picked radio, else the text")
+            self.assertEqual(html.count("data-rc='"), 1, "one receipt button")
+            self.assertIn(f"badge:{key}", html, "the receipt badge under the item's key")
+            self.assertNotIn(" checked", html)
+            self.assertNotIn(" value=\"own", html)
+            self.assertNotIn("tier 2", html)
+        key = "item:" + q["id"]
+        picked = self._inbox_items_in_node([self.DECIDE_QUESTION], picked={key: "b"})[0][0]
+        self.assertEqual(re.findall(r'value="([a-c])" checked>', picked), ["b"], "a picked radio survives a repaint under the item's key")
+        self.assertNotIn(" value=\"", picked.split('<span class="answer">')[1].split(">")[0], "the box stays empty while a radio is picked")
+        drafted = self._inbox_items_in_node([self.DECIDE_QUESTION], typed={key: 'own <answer> & "x"'})[0][0]
+        self.assertIn('aria-label="your own answer" value="own &lt;answer&gt; &amp; &quot;x&quot;">', drafted, "a draft survives a repaint, escaped")
+        self.assertNotIn(" checked", drafted)
+        other = self._inbox_items_in_node([self.DECIDE_QUESTION], typed={"item:other": "x"}, picked={"item:other": "a"})[0][0]
+        self.assertNotIn(" checked", other)
+        self.assertNotIn(' value="x"', other, "a draft or a pick belongs to its own item")
+        none = self._inbox_items_in_node([dict(self.DECIDE_QUESTION, command='question: "Which one?"')])[0][0]
+        self.assertNotIn('class="options"', none)
+        self.assertNotIn('type="radio"', none)
+        self.assertIn('placeholder="your answer, one line" aria-label="your own answer"><button type="button" class="btn" data-rc=\'', none,
+                      "no choice parsed: the box alone, the same button")
+        off = self._inbox_items_in_node([self.DECIDE_QUESTION], can_write=False)[0][0]
+        self.assertEqual(off.count(' disabled> <span class="key">'), 3, "without a token the radios are disabled")
+        self.assertIn('<input class="input" disabled placeholder="or your own answer, one line" title="no token" aria-label="your own answer">', off)
+        self.assertNotIn("data-rc-input", off)
+        tier2 = self._inbox_items_in_node([dict(self.DECIDE_QUESTION, command=self.DECIDE_QUESTION["command"] + " (settings.json)")])[0][0]
+        self.assertIn("tier 2: never clickable", tier2)
+        self.assertNotIn('type="radio"', tier2)
+        self.assertNotIn("data-rc-input", tier2)
+        self.assertNotIn("data-rc='", tier2)
+
+    def test_one_answer_per_decide_item_the_pick_or_the_text_and_both_survive_a_repaint(self):
+        """T-0233: Send answer takes the checked radio, else the typed text; picking a radio empties the box, typing clears the
+        radio; the pick lives in state.picked and the text in state.typed under the item's key (the page repaints on every
+        refresh, T-0214), and both go when the answer is sent."""
+        js = self.req("GET", "/static/app.js")[2].decode()
+        css = self.req("GET", "/static/app.css")[2].decode()
+        self.assertIn("else if (it.verb === 'DECIDE') act = decideAct(it, key) + badgeSent;", js)
+        self.assertNotIn("'radio'", js, "the radios-only path is gone: one `decide` source for the answer")
+        self.assertIn("""if (data.from === 'decide') { const item = button.closest('.inbox-item'); const r = item && item.querySelector('input[type=radio]:checked'); if (r) return r.value; const inp = document.querySelector(`[data-rc-input="${CSS.escape(data.key)}"]`); return inp ? inp.value.trim() : ''; }""",
+                      js, "Send answer takes the checked radio, else the typed text")
+        self.assertIn("data.from === 'decide' ? 'pick an answer or type your own first'", js, "neither: it says so and posts nothing")
+        self.assertIn("if (data.from === 'decide') { delete state.typed[data.key]; delete state.picked[data.key]; }", js, "a sent answer is neither a draft nor a pick any more")
+        self.assertIn("sent: {}, typed: {}, picked: {},", js)
+        self.assertRegex(js, r"document\.addEventListener\('change', \(ev\) => \{\n\s*if \(ev\.target\.matches\('\[data-rc-pick\]'\) && ev\.target\.checked\) \{ const k = ev\.target\.getAttribute\('data-rc-pick'\); "
+                             r"state\.picked\[k\] = ev\.target\.value; delete state\.typed\[k\]; const inp = document\.querySelector\(`\[data-rc-input=\"\$\{CSS\.escape\(k\)\}\"\]`\); if \(inp\) inp\.value = ''; \}\n\s*\}\);",
+                         "picking a radio keeps the pick under the item's key and empties the box")
+        self.assertIn("if (ev.target.matches('[data-rc-input]') && ev.target.value && ev.target.getAttribute('data-rc-input') in state.picked) unpick(ev.target.getAttribute('data-rc-input'));", js,
+                      "typing clears the pick (only where there is one: the other composers have no radios)")
+        self.assertIn("""function unpick(k) { delete state.picked[k]; document.querySelectorAll(`[data-rc-pick="${CSS.escape(k)}"]`).forEach((r) => { r.checked = false; }); }""", js)
+        keep = "if (ev.target.matches('[data-rc-input]')) { const k = ev.target.getAttribute('data-rc-input'); if (ev.target.value) state.typed[k] = ev.target.value; else delete state.typed[k]; }"
+        self.assertLess(js.index(keep), js.index("unpick(ev.target.getAttribute('data-rc-input'))"), "the draft is kept first (T-0214), then the pick cleared")
+        self.assertIn(".inbox-item .act .answer { display: flex;", css, "the box and the button share a row")
+        self.assertIn(".inbox-item .act .answer .input { flex: 1; min-width: 0; }", css)
+        self.assertIn(".inbox-item .options { display: flex; flex-direction: column;", css, "long descriptions: one choice per line")
+        self.assertNotIn("opacity: .6", css[css.index(".inbox-item .options label"):].split("\n")[0], "the choices are live controls, not dimmed")
+        self.assertNotIn(".inbox-item .options label { opacity: 1; }", css, "and the old un-dimming override is gone with it")
 
     def test_snapshot_board_lanes_and_chips(self):
         s = self.get_json("/api/snapshot")

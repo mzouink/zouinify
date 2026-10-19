@@ -185,7 +185,7 @@ Per-verb action, after T-0162 (all disabled in v1):
 |---|---|---|
 | APPLY, DEPLOY, PUSH, RUN, SSO | copy the command; after the human ran it in their terminal, **[OK]** queues `{kind: ok}`; the desk verifies read-only and moves the ticket | 1 (the command itself is always typed by the human) |
 | CHECK | **[OK]** after the human did the browser/email check | 1 |
-| DECIDE | the offered replies (`reply "T-0140 delete" or "T-0140 keep"`) parsed into radios + **[Send answer]**; a free-text answer box when none are offered | 1, except when the question names `CLAUDE.md`/settings: then tier 2 |
+| DECIDE | the choices parsed into radios, one per choice (the letter or number shown before its description), from the first shape that fits: the desk's reply form `reply 'T-0140 a', 'T-0140 b' or 'T-0140 c'` (either quote; the ticket id stripped; labels from an `(a) … (b) …` enumeration in the expect, else in the command), an enumeration `(a) … (b) … (c) …` in the question itself, else in the expect, or two or more double-quoted answers (`reply "T-0140 delete" or "T-0140 keep"`); one quoted sentence is the question, not a choice. Beside them, ALWAYS, a one-line box for an own answer ("or your own answer, one line"); **[Send answer]** sends the picked radio, else the typed text; picking empties the box, typing clears the radio; both survive a repaint (T-0233) | 1, except when the question names `CLAUDE.md`/settings: then tier 2 |
 | APPROVE | no button; "type in the tickets window: `T-0115 budget ok`" with copy | 2, always |
 
 Never "Acknowledge all", never a generic OK, never an OK that executes anything. The "do NOT run (void plans)" group renders
