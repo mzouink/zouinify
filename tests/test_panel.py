@@ -283,6 +283,11 @@ class TestApi(PanelWorld):
                         {"value": "c", "label": "keep as is and document it"}]
     REPLY_CHOICES = [{"value": "a", "label": "one copy, the second a link (desk recommends)"}, {"value": "b", "label": "both kept, a weekly dedupe"},
                      {"value": "c", "label": "as is, documented"}]
+    # a numbered enumeration of SUB-QUESTIONS, not of answers (the owner's review): its keys answer nothing, so no radio
+    DECIDE_SUBQUESTIONS = dict(DECIDE_QUESTION, title="three choices of the export page",
+                               command="question: human decision: (1) who sees the archive: everyone [recommended] or the owners only; "
+                                       "(2) an exported report comes with the raw data [recommended], without it, or as a link; "
+                                       "(3) may the nightly job delete stale exports [recommended yes]")
 
     def test_decide_options_come_from_the_enumeration_or_the_reply_form(self):
         """T-0233: one radio per choice, from the first shape that fits: the desk's reply form (either quote, the ticket id
@@ -297,14 +302,14 @@ class TestApi(PanelWorld):
         self.assertEqual(classify_item(dict(self.DECIDE_REPLY, command="reply 'T-0007 a', \"T-0007 b\" or 'T-0007 c'"))["options"], self.REPLY_CHOICES, "mixed quotes too")
         same = lambda *xs: [{"value": x, "label": x} for x in xs]  # noqa: E731
         cases = [
-            ('reply "T-0006 delete" or "T-0006 keep"', "T-0006 delete", same("delete", "keep"), "the reply form without an enumeration: the answer is its own label"),
-            ("reply 'T-0300 yes' or 'T-0300 no'", "(a) yes means X; (b) no means Y", same("yes", "no"),
+            ('reply "T-0001 delete" or "T-0001 keep"', "T-0001 delete", same("delete", "keep"), "the reply form without an enumeration: the answer is its own label"),
+            ("reply 'T-0001 yes' or 'T-0001 no'", "(a) yes means X; (b) no means Y", same("yes", "no"),
              "the reply form wins over an enumeration whose keys differ: what the desk asked to reply is what the receipt carries"),
-            ("reply 'T-0300 a' or 'T-0300 b': (a) alpha, (b) beta", "", [{"value": "a", "label": "alpha"}, {"value": "b", "label": "beta"}],
+            ("reply 'T-0001 a' or 'T-0001 b': (a) alpha, (b) beta", "", [{"value": "a", "label": "alpha"}, {"value": "b", "label": "beta"}],
              "labels from an enumeration in the command when the expect has none"),
-            ("reply 'T-0300 a' or 'T-0300 b': (a) alpha, (b) beta", "(a) from the expect; (b) and this", [{"value": "a", "label": "from the expect"}, {"value": "b", "label": "and this"}],
+            ("reply 'T-0001 a' or 'T-0001 b': (a) alpha, (b) beta", "(a) from the expect; (b) and this", [{"value": "a", "label": "from the expect"}, {"value": "b", "label": "and this"}],
              "the expect's entry wins over the command's"),
-            ("reply 'T-0300 a', 'T-0300 a' or 'T-0300 b'", "", same("a", "b"), "a repeated answer is one radio"),
+            ("reply 'T-0001 a', 'T-0001 a' or 'T-0001 b'", "", same("a", "b"), "a repeated answer is one radio"),
             ('(a) "x", (b) "y"', "", [{"value": "a", "label": "x"}, {"value": "b", "label": "y"}], "quotes around an entry are not part of it"),
             ("(a) x etc., (b) y.", "", [{"value": "a", "label": "x etc."}, {"value": "b", "label": "y"}], "only the last entry carries the question's own closing mark"),
             ("(a) alpha, and/or (b) beta Or (c) gamma", "", [{"value": "a", "label": "alpha"}, {"value": "b", "label": "beta"}, {"value": "c", "label": "gamma"}],
@@ -324,6 +329,22 @@ class TestApi(PanelWorld):
             ("(a) , (b) y", "", [], "an entry without a description is no enumeration"),
             ("reply 'T-0222 a' if it's fine or 'T-0222 b'", "", [], "an apostrophe in prose: not the reply form, nothing guessed"),
             ("(each about 5 structures) (a) only one entry", "", [], "one entry is no enumeration; a parenthesis of words is never a key"),
+            # the desk's review
+            ("after retry (2): (a) x, (b) y", "", [{"value": "a", "label": "x"}, {"value": "b", "label": "y"}], "a stray key of another kind before the enumeration is text"),
+            ("see (a) and (b) above", "", [], "prose that cites entries: the conjunction is the whole description, no enumeration"),
+            ('reply "T-0006 delete" or "T-0006 keep"', "T-0006 delete", same("T-0006 delete", "T-0006 keep"),
+             "another ticket's id is not this item's: not the reply form, the old rule keeps the strings whole (what the desk wrote is what it wants typed)"),
+            ("reply 'T-0006 a' or 'T-0006 b'", "(a) x; (b) y", [{"value": "a", "label": "x"}, {"value": "b", "label": "y"}],
+             "another ticket's id in single quotes: not the reply form; the expect's enumeration stands"),
+            # the owner's review: an enumeration of sub-questions is not a list of answers; the reply form is exempt
+            (self.DECIDE_SUBQUESTIONS["command"], self.DECIDE_SUBQUESTIONS["expect"], [], "numbered sub-questions with inner alternatives: no radio answers them"),
+            ("(1) red or blue; (2) big or small", "", [], "an inner `or` in an entry"),
+            ("(a) keep it?, (b) drop it", "", [], "a `?` in an entry"),
+            ("(a) keep it, (b) drop it?", "", [{"value": "a", "label": "keep it"}, {"value": "b", "label": "drop it"}],
+             "the question's own closing `?` on the last entry is not an inner one"),
+            ("reply 'T-0001 a' or 'T-0001 b'", "(a) yes or no is fine (manager recommends); (b) maybe?",
+             [{"value": "a", "label": "yes or no is fine (manager recommends)"}, {"value": "b", "label": "maybe"}],
+             "the reply form keeps its labels whatever they say: its values are the desk's literal answers"),
         ]
         for command, expect, want, why in cases:
             with self.subTest(command=command):
@@ -396,6 +417,9 @@ function noteFor(it) { return it.note || ''; }
         self.assertNotIn('type="radio"', none)
         self.assertIn('placeholder="your answer, one line" aria-label="your own answer"><button type="button" class="btn" data-rc=\'', none,
                       "no choice parsed: the box alone, the same button")
+        subq = self._inbox_items_in_node([self.DECIDE_SUBQUESTIONS])[0][0]
+        self.assertNotIn('type="radio"', subq, "numbered sub-questions: no radio `1`/`2`/`3` that would answer nothing (the owner's review)")
+        self.assertIn('placeholder="your answer, one line" aria-label="your own answer"><button type="button" class="btn" data-rc=\'', subq, "the box alone")
         off = self._inbox_items_in_node([self.DECIDE_QUESTION], can_write=False)[0][0]
         self.assertEqual(off.count(' disabled> <span class="key">'), 3, "without a token the radios are disabled")
         self.assertIn('<input class="input" disabled placeholder="or your own answer, one line" title="no token" aria-label="your own answer">', off)

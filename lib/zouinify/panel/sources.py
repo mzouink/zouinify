@@ -123,8 +123,8 @@ def item_id(it: dict) -> str:
 # alone made one quoted question a single radio holding the whole sentence and single-quoted replies no radio at all).
 ENUM_KEY_RE = re.compile(r"\(([a-z]|[A-Z]|[1-9][0-9]?)\)")
 QUOTED_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"")
-REPLY_ANSWER_RE = re.compile(r"^T-\d{4,}\s+(\S.*)$")
 TRAILING_CONJUNCTION_RE = re.compile(r"[\s,;:]*\b((and/)?or|and|nor)\s*$", re.I)
+QUESTION_LIKE_RE = re.compile(r"\bor\b|\?", re.I)      # an inner alternative or a question mark: the entry is a question, not an answer
 
 
 def _description(raw: str, last: bool) -> str:
@@ -141,27 +141,36 @@ def _description(raw: str, last: bool) -> str:
 
 def enumeration(text: str) -> list:
     """[(key, description)] of an enumeration `(a) ... (b) ... (c) ...` in the text: single letters from a (or A) or numbers from
-    1, in order with none missing, two or more, every description non-empty; a description runs to the next key. The first
-    key's kind (lower, upper, number) is the enumeration's; a key of another kind inside a description is text ("(a) do step (1)
-    first"). [] otherwise (a parenthesis such as "(5 structures)" is never a key)."""
+    1, in order with none missing, two or more, every description non-empty; a description runs to the next key of its kind.
+    The kinds (lower, upper, number) are tried in the order they first appear and the first valid one is the enumeration, so
+    a stray key of another kind before it ("after retry (2): (a) x, (b) y") or inside a description ("(a) do step (1) first")
+    is text. [] otherwise (a parenthesis such as "(5 structures)" is never a key)."""
     text = str(text or "")
     found = [(m.group(1), m.start(), m.end()) for m in ENUM_KEY_RE.finditer(text)]
-    if not found:
-        return []
-    kind = "n" if found[0][0].isdigit() else "u" if found[0][0].isupper() else "l"
-    found = [f for f in found if ("n" if f[0].isdigit() else "u" if f[0].isupper() else "l") == kind]
-    expected = [str(i + 1) for i in range(len(found))] if kind == "n" else [chr(ord("A" if kind == "u" else "a") + i) for i in range(len(found))]
-    if len(found) < 2 or [f[0] for f in found] != expected:
-        return []
-    out = [(key, _description(text[end:(found[i + 1][1] if i + 1 < len(found) else len(text))], i + 1 == len(found))) for i, (key, _, end) in enumerate(found)]
-    return out if all(d for _, d in out) else []
+    for kind in dict.fromkeys(_kind(k) for k, _, _ in found):
+        keys = [f for f in found if _kind(f[0]) == kind]
+        expected = [str(i + 1) for i in range(len(keys))] if kind == "n" else [chr(ord("A" if kind == "u" else "a") + i) for i in range(len(keys))]
+        if len(keys) < 2 or [k for k, _, _ in keys] != expected:
+            continue
+        out = [(key, _description(text[end:(keys[i + 1][1] if i + 1 < len(keys) else len(text))], i + 1 == len(keys))) for i, (key, _, end) in enumerate(keys)]
+        if all(d for _, d in out):
+            return out
+    return []
 
 
-def reply_answers(command: str) -> list:
+def _kind(key: str) -> str:
+    return "n" if key.isdigit() else "u" if key.isupper() else "l"
+
+
+def reply_answers(command: str, tickets: str) -> list:
     """The answers of the reply form `reply 'T-xxxx a', 'T-xxxx b' or 'T-xxxx c'` (single or double quotes): every quoted string
-    is a ticket id and an answer, two or more of them, and the answers come back with the id stripped, a repeated one once; []
-    otherwise."""
-    matched = [REPLY_ANSWER_RE.match((m.group(1) or m.group(2) or "").strip()) for m in QUOTED_RE.finditer(str(command or ""))]
+    is one of the ITEM's ticket ids and an answer, two or more of them, and the answers come back with the id stripped, a
+    repeated one once; [] otherwise (another ticket's id is not stripped: what the desk wrote is what it wants typed)."""
+    ids = re.findall(r"T-\d{4,}", str(tickets or ""))
+    if not ids:
+        return []
+    own = re.compile(r"^(?:" + "|".join(re.escape(i) for i in ids) + r")\s+(\S.*)$")
+    matched = [own.match((m.group(1) or m.group(2) or "").strip()) for m in QUOTED_RE.finditer(str(command or ""))]
     if len(matched) < 2 or not all(matched):
         return []
     return list(dict.fromkeys(m.group(1).strip() for m in matched))
@@ -178,27 +187,31 @@ def quoted_options(command: str) -> list:
     return quoted
 
 
-def decision_options(command: str, expect: str) -> list:
+def decision_options(command: str, expect: str, tickets: str) -> list:
     """[{value, label}] a DECIDE item offers, from the first shape that fits: the reply form in the command (the value is the
-    answer with the ticket id stripped; the label is the description of the entry with that key in an enumeration of the
+    answer with the item's own ticket id stripped; the label is the description of the entry with that key in an enumeration of the
     expect, else of the command, else the answer itself: the desk's literal "reply ..." says what the receipt must carry, so
     it wins over an enumeration whose keys differ); an enumeration in the command, else in the expect (value the letter or
-    number, label its description); two or more double-quoted strings in the command (value and label the string). [] when
-    none fits: the page then offers the own-answer box alone."""
-    answers = reply_answers(command)
+    number, label its description), unless its entries read as questions -- one with an inner alternative (`or` as a word,
+    after the trailing conjunction is gone) or a `?` makes it an enumeration of sub-questions ("(1) who may open it: X or Y;
+    (2) ..."), whose keys answer nothing, so it gives no option at all (the reply form is exempt: its values are the desk's
+    literal answers and its labels may say "X or Y is fine"); two or more double-quoted strings in the command (value and
+    label the string). [] when none fits: the page then offers the own-answer box alone (a false negative costs nothing
+    there; a false positive sends a meaningless receipt)."""
+    answers = reply_answers(command, tickets)
     if answers:
         by_key = {k.lower(): d for k, d in enumeration(command) + enumeration(expect)}      # the expect's entry wins
         return [{"value": a, "label": by_key.get(a.lower(), a)} for a in answers]
     enum = enumeration(command) or enumeration(expect)
     if enum:
-        return [{"value": k, "label": d} for k, d in enum]
+        return [] if any(QUESTION_LIKE_RE.search(d) for _, d in enum) else [{"value": k, "label": d} for k, d in enum]
     return [{"value": q, "label": q} for q in quoted_options(command)]
 
 
 def classify_item(it: dict) -> dict:
     verb = str(it.get("verb", "")).upper()
     text = " ".join(str(it.get(k, "")) for k in ("title", "command", "expect"))
-    options = decision_options(str(it.get("command", "")), str(it.get("expect", ""))) if verb == "DECIDE" else []
+    options = decision_options(str(it.get("command", "")), str(it.get("expect", "")), str(it.get("tickets", ""))) if verb == "DECIDE" else []
     if verb == "APPROVE" or tier2_text(text):
         tier, hint = 2, f"type in the desk's tmux window: {it.get('expect') or it.get('command') or ''}".strip()
     elif verb in ("APPLY", "DEPLOY", "PUSH") or TIER2_COMMAND_RE.search(str(it.get("command", ""))) or aws_mutating(str(it.get("command", ""))):

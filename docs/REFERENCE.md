@@ -103,10 +103,11 @@ from the markdown here; T-0215), `GET /api/sessions/<name>`, `GET /api/logs?labe
 `127.0.0.1:<port>` / `localhost:<port>`, or whose `Origin` is foreign, is 403 (DNS rebinding). Inbox tiers: `APPROVE`, `APPLY`,
 `DEPLOY`, `PUSH` and a `DECIDE` that names `CLAUDE.md`/settings are tier 2 and never get a button, in any version. A tier-1
 `DECIDE` item carries `options`, `[{value, label}]`, parsed by the panel from the first shape that fits (T-0233): the desk's reply
-form `reply 'T-0140 a', 'T-0140 b' or 'T-0140 c'` (single or double quotes; the value is the answer with the ticket id stripped,
+form `reply 'T-0140 a', 'T-0140 b' or 'T-0140 c'` (single or double quotes; the value is the answer with the item's own ticket id stripped,
 the label the matching entry of an `(a) … (b) …` enumeration in the expect, else in the command, else the answer), an enumeration `(a) … (b) … (c) …`
 (letters or numbers, from a or 1 with none missing; in the command, else in the expect; the value is the key, the label its
-description), or two or more double-quoted answers in the command; one quoted sentence is the question and gives no option. The
+description; an enumeration whose entries read as questions, with an inner `or` or a `?`, is a list of sub-questions whose keys
+answer nothing and gives no option), or two or more double-quoted answers in the command; one quoted sentence is the question and gives no option. The
 page shows the options as radios and, always, a one-line box for an own answer; **Send answer** posts the picked radio, else the
 typed text, as the receipt's `text`. The look, tiers and acceptance criteria are in [`UX_SPEC.md`](UX_SPEC.md).
 
