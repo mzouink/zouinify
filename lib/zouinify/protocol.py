@@ -75,6 +75,7 @@ PREAMBLE_RE = re.compile(r"^## Preamble\s*$")
 FENCE_RE = re.compile(r"^(```|~~~)")
 RULE_RE = re.compile(r"^-{3,}\s*$")
 PROJECT_README_REL = os.path.join(".ops", "README.project.md")
+WORKER_NOTES_ROLE = "worker"                        # .ops/briefs.project/worker.md: the project's own rules for its worker sessions (T-0354)
 
 
 def plugin_docs_dir(cfg, given: str | None, out=None) -> str:
@@ -279,8 +280,21 @@ def verbs_line(cfg, fragments: dict) -> str:
     return "Verbs: " + ", ".join(parts) + "."
 
 
+def worker_notes(cfg) -> str:
+    """The project's own rules for its worker sessions, `.ops/briefs.project/worker.md`, as the text WORKER_BRIEF.md.tmpl splices
+    after its last rule and before the desk's launch line: "" when the project has not written the file (the brief then reads
+    as before), else the file's text with one blank line on each side. Read exactly like the role notes (briefs.notes_file +
+    generated.read_project_text: a symlinked directory or file, a non-file, anything resolving outside the root, is refused).
+    `briefs render` skips the worker on purpose (sessions.worker has no brief); this is where its notes land (T-0354)."""
+    if briefsmod.notes_file(cfg.root, WORKER_NOTES_ROLE) is None:
+        return ""
+    text = generated.read_project_text(cfg.root, briefsmod.notes_rel(WORKER_NOTES_ROLE), "project worker notes")
+    return "\n" + (text or "").strip("\n") + "\n" if (text or "").strip() else ""
+
+
 def context(cfg, fragments: dict, sections: dict, main_root: str | None = None) -> dict:
     ctx = briefsmod.context(cfg)
+    ctx["project.worker_notes"] = worker_notes(cfg)
     names = [str(r["name"]) for r in cfg.repos]
     dirs = repo_dirs(cfg, main_root)
     default = next((r for r in cfg.repos if r.get("default")), cfg.repos[0])
@@ -373,6 +387,8 @@ def sources_of(cfg, name: str) -> str:
     plugin = "the deploy plugin's docs"
     if name == "README.md":
         return f"`templates/protocol/tickets/README.md.tmpl`, {plugin} and `.ops/README.project.md`"
+    if name == "WORKER_BRIEF.md":
+        return f"`templates/protocol/tickets/WORKER_BRIEF.md.tmpl`, {plugin} and `{briefsmod.notes_rel(WORKER_NOTES_ROLE)}`"
     return f"`templates/protocol/tickets/{name}.tmpl` and {plugin}"
 
 
@@ -414,6 +430,8 @@ def cmd_list(cfg, out=None) -> int:
     pr = cfg.path(PROJECT_README_REL)
     print(f"project sections {pr}  ({'present' if os.path.isfile(pr) else 'absent: sections 0 and 7 get a stub'}; any `## N.` section "
           f"there replaces the template's section N, `## Preamble` the intro)", file=out)
+    wn = cfg.path(briefsmod.notes_rel(WORKER_NOTES_ROLE))
+    print(f"worker notes     {wn}  ({'present; spliced into WORKER_BRIEF.md after rule 8, before the launch line' if os.path.isfile(wn) else 'absent: the brief ends with the launch line'})", file=out)
     return 0
 
 
