@@ -64,7 +64,8 @@ class TestProtocol(World):
             fh.write("typed-by-hand marker\n")
         r = self.nz("protocol", "render", "--out", self.out)
         self.assertIn("use --force", r.stderr)
-        self.assertIn("fold it into the template, the plugin docs or .ops/README.project.md", r.stderr)
+        self.assertIn("fold it into the template, the plugin docs, .ops/README.project.md or .ops/briefs.project/worker.md", r.stderr)
+        self.assertIn("a file rendered before its header named a new source is refused too: use --force once", r.stderr)
         self.assertIn("typed-by-hand marker", self.read_out("README.md"))
         r = self.render("--force")
         self.assertIn("overwrote", r.stdout)
@@ -305,9 +306,10 @@ class TestProtocol(World):
         notes = "## This project's working rules\n\n1. **Push gate.** Run it from your worktree.\n2. **Trailer.** Every commit.\n"
         self.write(".ops/briefs.project/worker.md", notes + "\n\n")   # trailing blank lines are the author's, not the brief's
         r = self.ok("protocol", "list")
-        self.assertIn("worker notes     ", r.stdout); self.assertIn("(present; spliced into WORKER_BRIEF.md after rule 8", r.stdout)
+        self.assertIn("worker notes     ", r.stdout); self.assertIn("(present; spliced into WORKER_BRIEF.md after its last rule", r.stdout)
         out2 = os.path.join(self.tmp, "out2")
-        self.ok("protocol", "render", "--out", out2)
+        r = self.ok("protocol", "render", "--out", out2)
+        self.assertIn("worker notes present (", r.stdout, "the render reports the notes like the README's sections")
         brief = open(os.path.join(out2, "WORKER_BRIEF.md"), encoding="utf-8").read()
         self.assertIn("   `done`).\n\n" + notes + "\nThe desk's launch line:", brief, "verbatim, one blank line each side")
         self.assertEqual(brief.count("working rules"), 1)

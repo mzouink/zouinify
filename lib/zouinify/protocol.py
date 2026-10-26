@@ -1,5 +1,5 @@
 """The ticket protocol files rendered from templates (T-0188, for T-0185's `init --protocol`): `tickets/README.md`,
-`tickets/_TEMPLATE.md` and `tickets/WORKER_BRIEF.md` from `templates/protocol/tickets/*.md.tmpl`, with three kinds of input:
+`tickets/_TEMPLATE.md` and `tickets/WORKER_BRIEF.md` from `templates/protocol/tickets/*.md.tmpl`, with four kinds of input:
 
 - the project's config (names, repos, trunk, prod, verbs, types, deploy kinds, the desk and debug sessions);
 - the deploy plugin's doc fragments, `tickets/plugins/<name>/docs/*.md`, vendored byte-identical from the upstream core under
@@ -12,6 +12,8 @@
   rule M of the template's section N as an indented continuation while the rest of the section keeps following the
   template (T-0224), and a `## Preamble` block replaces the intro paragraph under the H1 (T-0219). A replaced section
   stops receiving template updates; `protocol render` prints per section where it came from.
+- the project's own rules for its worker sessions from `<root>/.ops/briefs.project/worker.md`, spliced into WORKER_BRIEF.md after
+  its last rule (T-0354)
 
 Optional plugin docs fragments (OPTIONAL_FRAGMENTS) carry the deploy wording that differs between plugins -- how the inbox
 names what waits for the human, the human's deploy step in the life line and the board table, the in-review evidence row,
@@ -285,7 +287,8 @@ def worker_notes(cfg) -> str:
     after its last rule and before the desk's launch line: "" when the project has not written the file (the brief then reads
     as before), else the file's text with one blank line on each side. Read exactly like the role notes (briefs.notes_file +
     generated.read_project_text: a symlinked directory or file, a non-file, anything resolving outside the root, is refused).
-    `briefs render` skips the worker on purpose (sessions.worker has no brief); this is where its notes land (T-0354)."""
+    `briefs render` renders no worker brief unless sessions.worker names one (the worker reads WORKER_BRIEF.md), so this is where
+    the worker's notes land; a project that does configure a worker role brief gets the same file spliced into both (T-0354)."""
     if briefsmod.notes_file(cfg.root, WORKER_NOTES_ROLE) is None:
         return ""
     text = generated.read_project_text(cfg.root, briefsmod.notes_rel(WORKER_NOTES_ROLE), "project worker notes")
@@ -431,7 +434,7 @@ def cmd_list(cfg, out=None) -> int:
     print(f"project sections {pr}  ({'present' if os.path.isfile(pr) else 'absent: sections 0 and 7 get a stub'}; any `## N.` section "
           f"there replaces the template's section N, `## Preamble` the intro)", file=out)
     wn = cfg.path(briefsmod.notes_rel(WORKER_NOTES_ROLE))
-    print(f"worker notes     {wn}  ({'present; spliced into WORKER_BRIEF.md after rule 8, before the launch line' if os.path.isfile(wn) else 'absent: the brief ends with the launch line'})", file=out)
+    print(f"worker notes     {wn}  ({'present; spliced into WORKER_BRIEF.md after its last rule, before the launch line' if os.path.isfile(wn) else 'absent: the brief ends with the launch line'})", file=out)
     return 0
 
 
@@ -458,7 +461,8 @@ def cmd_render(cfg, out_dir: str, plugin_docs: str | None = None, project_readme
                 conflicts.append(target)
     if conflicts:
         raise ZouinifyError("refusing to overwrite files that differ from the render and were not left as rendered (a hand edit: fold it "
-                            "into the template, the plugin docs or .ops/README.project.md, then render; use --force to overwrite "
+                            "into the template, the plugin docs, .ops/README.project.md or .ops/briefs.project/worker.md, then render; "
+                            "a file rendered before its header named a new source is refused too: use --force once; use --force to overwrite "
                             "them anyway):\n  " + "\n  ".join(conflicts))
     os.makedirs(out_dir, exist_ok=True)
     for name, text in rendered.items():
@@ -470,6 +474,8 @@ def cmd_render(cfg, out_dir: str, plugin_docs: str | None = None, project_readme
         if verb != "unchanged":
             ticketenv.write_atomic(target, text)
         print(f"{verb:<10} {target}", file=out)
+    wn = cfg.path(briefsmod.notes_rel(WORKER_NOTES_ROLE))
+    print(f"{'worker notes':<10} {'present (' + wn + ', spliced into WORKER_BRIEF.md)' if os.path.isfile(wn) else 'absent (' + wn + ': WORKER_BRIEF.md ends with the launch line)'}", file=out)
     for key in ["preamble"] + sorted(k for k in prov if k != "preamble"):
         label = "preamble" if key == "preamble" else f"section {key}"
         src = prov[key]
