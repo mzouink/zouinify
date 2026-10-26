@@ -172,6 +172,38 @@ class TestThreeRepos(ThreeRepoWorld):
             self.assertFalse(self.has_branch(repo, br if repo == self.main else "t0003-three"), repo)
         self.assertIn("T-0003 (auth): removed worktree", p.out)
 
+    def test_merge_labels_every_sha_of_a_second_repo(self):
+        """T-0252: a non-default repo that merges several commits gets one label per sha -- `frontend a, frontend b` -- the
+        shape deploy-check (one entry per comma; a bare sha = the default repo) and board --json read. RED on core 1.2.5:
+        `frontend a, b` (label once), so b was then taken for a default-repo sha and the apply gate FAILed on it."""
+        self.write_ticket("T-0003", "three", "ready", "three", fields={"repos": "[backend, frontend, auth]"})
+        self.commit_main("tickets: three")
+        wt_be = self.claim("T-0003")
+        self.branch_commit(wt_be, "be.txt", "be change", "Ticket: T-0003"); br = self.push_branch(wt_be)
+        shas = {}
+        for repo, tr, lbl in ((self.fe_main, "dev", "frontend"), (self.auth_main, "trunk", "auth")):
+            w = os.path.join(repo, ".claude", "worktrees", "t0003-three")
+            self.git("-C", repo, "worktree", "add", "-q", w, "-b", "t0003-three", tr)
+            shas[lbl] = [self.branch_commit(w, lbl + "1.txt", lbl + " change 1", "Ticket: T-0003"),
+                         self.branch_commit(w, lbl + "2.txt", lbl + " change 2", "Ticket: T-0003")]
+            self.push_branch(w)
+        self.set_front("T-0003-three.md", "branch", "{backend: %s, frontend: t0003-three, auth: t0003-three}" % br)
+        self.commit_main("tickets: maps")
+        self.to_ready_to_merge("T-0003")
+        self.git("-C", wt_be, "fetch", "-q", "origin", TRUNK); self.git("-C", wt_be, "rebase", "-q", "origin/" + TRUNK)
+        self.git("-C", wt_be, "push", "-q", "--force-with-lease", "origin", br)
+        sha_be = self.git("-C", wt_be, "rev-parse", "--short=7", "HEAD")
+        p = self.ts("merge", "T-0003", env=self.who3)
+        self.assertEqual(p.returncode, 0, p.out)
+        fe1, fe2 = shas["frontend"]; au1, au2 = shas["auth"]
+        want = "%s, frontend %s, frontend %s, auth %s, auth %s" % (sha_be, fe1, fe2, au1, au2)
+        self.assertEqual(self.front("T-0003-three.md", "closed_by"), "[%s]" % want)
+        self.assertIn("closed_by [%s]" % want, self.log_of("T-0003-three.md"))
+        p = self.ts("board", "--json", env=self.env3)
+        self.assertEqual(p.returncode, 0, p.out)
+        t = next(t for t in json.loads(p.stdout)["tickets"] if t["id"] == "T-0003")
+        self.assertEqual(t["closed_by"], want.split(", "), "every entry carries its repo, as the readers expect")
+
     def test_a_failure_in_the_third_repo_after_two_landed_is_logged_as_partial(self):
         self.write_ticket("T-0003", "three", "ready", "three", fields={"repos": "[backend, frontend, auth]"})
         self.commit_main("tickets: three")

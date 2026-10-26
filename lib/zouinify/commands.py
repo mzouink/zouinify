@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 
@@ -50,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
                    "<tickets.deploy_plugin>/docs, falling back to none)")
     s.add_argument("--project-readme", metavar="FILE", help="render: the project-owned README sections (default <root>/.ops/README.project.md)")
     s.add_argument("--force", action="store_true", help="render: overwrite files under --out that differ")
+    s.add_argument("--main-root", metavar="DIR", help="render: the main checkout whose absolute path and directory name the files embed "
+                   "(rule 1, the README title, the brief's opening, every repo path); default --project. From a ticket worktree name the "
+                   "main checkout here, so the render matches one made from it. Env: ZOUINIFY_MAIN_ROOT")
 
     s = sub.add_parser("up", help="start the standard session set (always: true) or the named roles, idempotently")
     s.add_argument("roles", nargs="*", metavar="role")
@@ -155,7 +159,8 @@ def main(argv=None) -> int:
                 return protocol.cmd_list(cfg)
             if not args.out:
                 p.error("protocol render needs --out DIR (it writes nowhere else)")
-            return protocol.cmd_render(cfg, args.out, plugin_docs=args.plugin_docs, project_readme=args.project_readme, force=args.force)
+            return protocol.cmd_render(cfg, args.out, plugin_docs=args.plugin_docs, project_readme=args.project_readme, force=args.force,
+                                       main_root=args.main_root or os.environ.get("ZOUINIFY_MAIN_ROOT") or None)
         if args.cmd == "up":
             from zouinify import launch
             return launch.cmd_up(cfg, args.roles, dry_run=args.dry_run, wait_s=args.wait, panel=not args.no_panel)

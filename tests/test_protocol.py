@@ -22,7 +22,9 @@ BRIEF = ("export TICKET_AS=", "scripts/ticket.sh board", ".claude/worktrees/", "
          "expect: <last line>", "if you do nothing:", "`backlog -> ready`", "Never claim a `backlog` ticket",
          "Read tickets/WORKER_BRIEF.md, then claim T-xxxx", "6. **", "7. **New bugs or ideas:**", "8. **Finish the loop.**",
          "your ask is on the human's list at once", "and only a `P0` -- a live regression", "so mark one only for that", "`dev`",
-         "`main` is production")
+         "`main` is production",
+         # T-0317 (core 1.2.7, upstream T-0321): a mutating command is never piped
+         "never through `| tail` or `| grep`", "a lost lock exits 75 with NOTHING WRITTEN")
 
 
 def section(text, n):
@@ -113,6 +115,12 @@ class TestProtocol(World):
         self.assertIn("Verbs: `RUN` (any other command), `DECIDE`, `CHECK` (browser or email).", s1,
                       "none ships no verbs.md: the sentence is generated from the project's ask_verbs")
         self.assertIn("**`main`'s HEAD is always a release**", readme)
+        # T-0317 (core 1.2.7): merge replays a branch behind only by ticket-record commits (upstream T-0330) and a lost lock
+        # exits 75 with NOTHING WRITTEN (upstream T-0321) -- the pages say what the script does
+        self.assertIn("A branch behind trunk only by ticket-record commits is replayed onto\n#    trunk by merge itself; behind by code it is "
+                      "refused (\"rebase first\", with the commands). Also refused: a\n#    trunk or protected branch name", readme)
+        self.assertIn("never through a pipe (`| tail`, `| grep`): when another ticket.sh holds the lock it exits 75 with\n"
+                      "`NOTHING WRITTEN -- lock held by <holder>`, and a pipeline hides that exit -- capture the output to a file and read it.", readme)
         self.assertIn("- `releases/R-YYYY-MM-DD-N.md`", section(readme, 8))
         self.assertTrue(readme.endswith("and why.\n"), repr(readme[-60:]))
         brief = self.read_out("WORKER_BRIEF.md")
@@ -141,6 +149,9 @@ class TestProtocol(World):
         self.assertIn("repos: [backend]               # backend\n", tmpl, "one repo: no 'may list several'")
         self.assertIn("deploy: none                   # none\n", tmpl)
         self.assertIn("## Deploy handoff -- YYYY-MM-DD (T-xxxx)\nTrunk:   <trunk> @ <sha> (pushed).", tmpl)
+        self.assertIn("<!-- Filled at ready-to-deploy, one block per batch (every ticket in the batch points `plan:` at it):\n"
+                      "     the block may replace this example; the inbox reads any comment shape (core 1.2.5).", tmpl,
+                      "T-0317 (upstream T-0303): the handoff comment says the batch block may replace the example")
 
     def test_project_sections_are_stubbed_then_spliced_verbatim(self):
         self.render()
@@ -233,6 +244,51 @@ class TestProtocol(World):
         self.assertIn("(`dev`; there is no separate production branch)", brief)
         tmpl = self.read_out("_TEMPLATE.md")
         self.assertIn("# backend | web (one ticket may list several)", tmpl)
+
+    def test_main_root_embeds_another_checkouts_path_and_names(self):
+        """T-0317: the rendered files embed the project's absolute path (rule 1) and its directory name (the title, the brief's
+        opening, the repo list), taken from --project -- so a render from a ticket worktree wrote the worktree's own path and
+        name and never matched a render from the main checkout, where nobody writes. `--main-root DIR` (or ZOUINIFY_MAIN_ROOT)
+        names the checkout those come from; the config, the plugin docs and the project README still come from --project."""
+        main = os.path.join(self.tmp, "elsewhere", "proj-main"); os.makedirs(main)
+        plain = self.render(); readme0 = self.read_out("README.md"); brief0 = self.read_out("WORKER_BRIEF.md"); tmpl0 = self.read_out("_TEMPLATE.md")
+        self.assertIn("the work queue for proj\n", readme0)
+        out2 = os.path.join(self.tmp, "out2")
+        r = self.ok("protocol", "render", "--out", out2, "--main-root", main)
+        self.assertIn(f"main root  {os.path.realpath(main)}", r.stdout)
+        readme = open(os.path.join(out2, "README.md"), encoding="utf-8").read()
+        brief = open(os.path.join(out2, "WORKER_BRIEF.md"), encoding="utf-8").read()
+        self.assertIn("the work queue for proj-main\n", readme)
+        self.assertIn(f"(`{os.path.realpath(main)}`)", section(readme, 4), "rule 1 names the main checkout, not --project")
+        self.assertNotIn(self.root, readme, "nothing of the worktree's own path is embedded")
+        self.assertIn("working in `proj-main`\n", brief)
+        self.assertNotIn(self.root, brief)
+        self.assertEqual(open(os.path.join(out2, "_TEMPLATE.md"), encoding="utf-8").read(), tmpl0, "the ticket template embeds no path: identical")
+        # only the name and the path differ: the rest of both files is the same render
+        same = lambda t: t.replace(os.path.realpath(main), self.root).replace("proj-main", "proj")   # noqa: E731  (path first: it contains the name)
+        self.assertEqual(same(readme).splitlines()[1:], readme0.splitlines()[1:])   # [0] = the header, whose body digest differs
+        self.assertEqual(same(brief).splitlines()[1:], brief0.splitlines()[1:])
+        # the env alias stands in for the flag; the flag wins over it
+        out3 = os.path.join(self.tmp, "out3")
+        self.ok("protocol", "render", "--out", out3, env=dict(self.env, ZOUINIFY_MAIN_ROOT=main))
+        self.assertEqual(open(os.path.join(out3, "README.md"), encoding="utf-8").read(), readme)
+        out4 = os.path.join(self.tmp, "out4")
+        self.ok("protocol", "render", "--out", out4, "--main-root", self.root, env=dict(self.env, ZOUINIFY_MAIN_ROOT=main))
+        self.assertEqual(open(os.path.join(out4, "README.md"), encoding="utf-8").read(), readme0)
+        # several repos: every relative repo path resolves against the main checkout, not --project
+        cfg = open(os.path.join(self.root, ".ops", "config.yaml")).read()
+        self.write(".ops/config.yaml", cfg.replace("  - {name: backend, path: ., trunk: dev, prod: main, default: true}",
+                                                   "  - {name: backend, path: ., trunk: dev, prod: main, default: true}\n  - {name: web, path: ../web, trunk: dev, prod: main}"))
+        os.makedirs(os.path.join(self.tmp, "elsewhere", "web"))
+        out5 = os.path.join(self.tmp, "out5")
+        self.ok("protocol", "render", "--out", out5, "--main-root", main)
+        readme = open(os.path.join(out5, "README.md"), encoding="utf-8").read()
+        self.assertIn("the work queue for proj-main + web\n", readme)
+        self.assertIn(f"(`{os.path.realpath(main)}` and `{os.path.realpath(os.path.join(self.tmp, 'elsewhere', 'web'))}`)", section(readme, 4))
+        # a main root that is not a directory is refused before anything is written
+        r = self.nz("protocol", "render", "--out", os.path.join(self.tmp, "out6"), "--main-root", os.path.join(self.tmp, "nowhere"))
+        self.assertIn("--main-root", r.stderr); self.assertIn("is not a directory", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out6")))
 
     # ---- T-0219: README.md stops being a hand-edited render --------------------------------------------------
     def test_any_numbered_section_and_the_preamble_override_the_template_verbatim(self):

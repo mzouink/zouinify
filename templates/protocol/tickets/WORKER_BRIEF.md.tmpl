@@ -15,7 +15,9 @@ only voice to the human. The protocol is `{{tickets_dir}}/README.md`; this page 
    ticket at every state change with real evidence: the test that is RED on base and GREEN on your branch
    (assertion pasted), the sha, the key, the HTTP status. `move` refuses bare claims. An independent
    reviewer gets your diff, never your summary. Keep the ticket's `## In plain words` section true when the
-   scope changes (`put` on a copy): it is what the human reads first.
+   scope changes (`put` on a copy): it is what the human reads first. Run every mutating `{{tickets_script}}`
+   command on its own, never through `| tail` or `| grep`: a lost lock exits 75 with NOTHING WRITTEN, and a
+   pipeline hides that exit -- capture the output to a file and read it.
 4. **One voice.** You never address the human in your own window; only your own permission prompts appear
    there. Anything that needs the human -- {{plugin.human_asks}} -- goes to the desk as one block:
    `<VERB> <T-xxxx>: <what and why>`, the exact command, `expect: <last line>`, `if you do nothing:

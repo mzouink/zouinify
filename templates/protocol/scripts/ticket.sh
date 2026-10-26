@@ -16,11 +16,12 @@
 # nothing. While tickets/FREEZE exists on trunk, `claim` takes only the ids listed in it.
 set -euo pipefail
 
-TICKET_SH_VERSION="1.2.4"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready), T-0220 (1.2.2: the JSON-producing awks run under LC_ALL=C, so every awk counts bytes -- under gawk in a UTF-8 locale the 1200 cap was 1200 characters and %c wrote two bytes; same keys, hooks and JSON schemas), T-0203 (1.2.3: a plain worktree: next to a map branch: is the default repo's; prune reads the worktree list whole and keeps a branch a registered worktree holds, or one whose list it cannot read, in both passes; a worktree whose branch was deleted under it (HEAD unborn) goes, with --force, only when nothing in it is unsaved; same contract), T-0228 (1.2.4: the board's per-repo stats look only at a NAMED worktree -- with none named, dirty is null (text board: "no worktree") and worktree_missing false, where the repo's own directory was counted before; same keys): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
+TICKET_SH_VERSION="1.2.7"   # T-0186 (1.0.0), T-0187 (1.1.0: N repos from ticket.env), T-0189 (1.1.1: two repos sharing a path refused), T-0192 (1.1.2: that check resolves symlinks and slashes; no terraform prefix in the inbox), T-0196 (1.1.3: prune finishes or keeps a failed remove's leftovers, prune --orphans, WORKTREES validated in load_config), T-0217 (1.2.0: `plain` -- the ## In plain words section as one line -- in every board --json ticket and human --json item; backlog|skipped -> ready needs that section), T-0218 (1.2.1: plain = the FIRST ## In plain words section before ## Log, HTML comments stripped whatever they hold, only a whole-line <placeholder> dropped, capped at 1200 bytes on a UTF-8 boundary; blocked -> ready gated like backlog -> ready), T-0220 (1.2.2: the JSON-producing awks run under LC_ALL=C, so every awk counts bytes -- under gawk in a UTF-8 locale the 1200 cap was 1200 characters and %c wrote two bytes; same keys, hooks and JSON schemas), T-0203 (1.2.3: a plain worktree: next to a map branch: is the default repo's; prune reads the worktree list whole and keeps a branch a registered worktree holds, or one whose list it cannot read, in both passes; a worktree whose branch was deleted under it (HEAD unborn) goes, with --force, only when nothing in it is unsaved; same contract), T-0228 (1.2.4: the board's per-repo stats look only at a NAMED worktree -- with none named, dirty is null (text board: "no worktree") and worktree_missing false, where the repo's own directory was counted before; same keys), T-0303 (1.2.5: `human` finds a Deploy handoff block whose owner replaced the template's commented example -- HTML comments are removed wherever they open and close, an unclosed <!-- keeps its text -- and a step key is the verb alone or the verb + " <words>", so a "Deploy-check (... 16:57 EDT):" note is not a step; same keys, hooks and JSON schemas), T-0252 (1.2.6: merge writes one label per sha for every non-default repo -- `frontend a, frontend b` -- the shape deploy-check and board --json read one entry per comma, where `frontend a, b` made b a default-repo sha; same keys, hooks and JSON schemas), T-0330 + T-0321 (1.2.7: merge replays a branch that is behind trunk only by ticket-record commits (tickets/T-xxxx-*.md) onto trunk with plumbing and ff-merges the copies, records a branch whose every patch is already on trunk (git cherry) instead of replaying it twice, and keeps refusing when code landed behind; a mutating command that cannot take the lock exits 75 with "NOTHING WRITTEN -- lock held by <holder>"; same keys, hooks and JSON schemas): the core's contract -- the hook list, ticket.env's keys and the JSON schemas (board --json carries it first; `ticket.sh version` prints it). Bump on any change to those.
 MAIN="$(cd "$(git -C "$(dirname "$(readlink -f "$0")")" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)"  # from the script's own repo, not $PWD: the tickets live in the MAIN checkout
 HERE="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"   # the checkout this copy runs from: its tickets/ticket.env and tickets/plugins/ apply (configuration and code travel with the script)
 WHO="${TICKET_AS:-}"
 LOCK_WAIT="${TICKET_LOCK_WAIT:-120}"   # seconds to wait for the ticket.sh lock
+CMDLINE="$*"   # the whole command line, recorded beside the lock while this run holds it (T-0321)
 FREEZE_FILE_NAME="FREEZE"  # tickets/FREEZE: one T-id per line, '#' comments; manager-owned (tickets/README.md rule 12)
 STATES="backlog ready in-dev in-review ready-to-merge merged ready-to-deploy deployed done blocked dropped skipped"
 # The project's values: filled from $HERE/tickets/ticket.env by read_ticket_env (end of the file). The defaults below are
@@ -42,7 +43,7 @@ usage() { # the commands, on stdout: an unknown or missing subcommand prints the
 #   scripts/ticket.sh log   T-xxxx "<line>"                      -> append a log line, no state change
 #   scripts/ticket.sh put   T-xxxx <file> "<what changed>"       -> replace a ticket with a copy you edited ELSEWHERE (preferred)
 #   scripts/ticket.sh sync  T-xxxx "<what changed>"              -> commit hand edits to that one ticket file (main gets dirty: avoid)
-#   scripts/ticket.sh merge T-xxxx [--allow-trailers T-yyyy,..] -> the ONLY merge path: ff-only, trailers checked, closed_by after the merge
+#   scripts/ticket.sh merge T-xxxx [--allow-trailers T-yyyy,..] -> the ONLY merge path: ff-only, trailers checked, closed_by after the merge; a branch behind only by ticket-record commits is replayed onto trunk first (T-0330)
 #   scripts/ticket.sh prune [T-xxxx ...|--done] [--orphans] [--dry-run]   -> remove the worktree + branch (local and origin) of done/dropped tickets; refuses anything unmerged;
 #                                                                    --orphans: the dirs under .claude/worktrees/ that no worktree registers, when nothing in them is unique (T-0196)
 #   scripts/ticket.sh ask   T-xxxx "<VERB> <what> | <cmd> | <expected> | <if nothing>" -> one-line ask for the human (human: field; "" clears; a move clears)
@@ -62,7 +63,7 @@ g() { git -C "$MAIN" "$@"; }
 # another's half-written ticket, and a commit can sweep up another's edit. So every mutating
 # command holds one lock for its whole run, commits only its own file, and puts that file back
 # if it dies before committing it.
-EDITED=""; EDITED_NEW=""; LOCKED=""
+EDITED=""; EDITED_NEW=""; LOCKED=""; LOCK_HOLDER_FILE=""
 restore_edit() {
   # a run killed mid pull --rebase must not leave main mid-rebase -- but only a run holding the lock
   # owns that rebase, and only if main was not already mid-rebase when it took the lock (board takes
@@ -70,7 +71,7 @@ restore_edit() {
   if [ -n "$LOCKED" ] && rebasing; then
     g rebase --abort 2>/dev/null || true; echo "ticket.sh: aborted an interrupted rebase in $MAIN" >&2
   fi
-  [ -n "$EDITED" ] || return 0
+  [ -n "$EDITED" ] || { [ -z "$LOCK_HOLDER_FILE" ] || rm -f "$LOCK_HOLDER_FILE"; return 0; }   # T-0321: the holder record goes with the run, last
   local e left="" st
   for e in $EDITED; do  # one or more ticket paths (no spaces in them), space-separated
     # From HEAD, not from the index: commit_push stages the file before it commits, and a commit that dies (git's
@@ -87,13 +88,27 @@ restore_edit() {
   else
     echo "ticket.sh: aborted -- NOT clean: a git lock blocked the restore of$left. Once no other git runs in $MAIN:  git -C \"$MAIN\" restore --staged --worktree --$left" >&2
   fi
+  [ -z "$LOCK_HOLDER_FILE" ] || rm -f "$LOCK_HOLDER_FILE"
 }
 trap restore_edit EXIT
 trap 'exit 130' INT TERM  # a killed run still goes through the EXIT trap above
 
+take_lock() { # fd 9 holds .git/ticket.sh.lock for the rest of the run and the holder is recorded beside it. A lost lock exits 75 (EX_TEMPFAIL),
+  # first line "NOTHING WRITTEN": nothing was touched yet, the caller may retry. Never pipe a mutating command through tail/grep -- a
+  # pipeline reports the LAST command's status and hides this one (T-0321, 2026-10-26: every "exit 0" seen that day was a pipe)
+  local lock holder; lock="$(g rev-parse --path-format=absolute --git-common-dir)/ticket.sh.lock"
+  exec 9>"$lock"
+  if ! flock -w "$LOCK_WAIT" 9; then
+    holder=$(cat "$lock.holder" 2>/dev/null || true)
+    echo "ticket.sh: NOTHING WRITTEN -- lock held by ${holder:-another process (no ticket.sh holder recorded)}; another ticket.sh has held the lock for $LOCK_WAIT s (TICKET_LOCK_WAIT). Retry later. A pipeline (| tail, | grep) hides this exit 75: capture the output to a file and read it." >&2
+    exit 75
+  fi
+  rebasing || LOCKED=1  # a rebase found already in progress is not ours to abort
+  LOCK_HOLDER_FILE="$lock.holder"
+  printf '%s %s: scripts/ticket.sh %s (since %s)\n' "$$" "${WHO:-?}" "$(tr '\n' ' ' <<<"$CMDLINE" | head -c 300)" "$(now)" >"$LOCK_HOLDER_FILE" 2>/dev/null || LOCK_HOLDER_FILE=""
+}
 require_clean_main() {
-  exec 9>"$(g rev-parse --path-format=absolute --git-common-dir)/ticket.sh.lock"
-  flock -w "$LOCK_WAIT" 9 || die "another ticket.sh has held the lock for $LOCK_WAIT s"; rebasing || LOCKED=1  # a rebase found already in progress is not ours to abort
+  take_lock
   [ "$(g rev-parse --abbrev-ref HEAD)" = "$TRUNK" ] || die "main worktree $MAIN is not on $TRUNK"
   if [ -n "$(g status --porcelain)" ]; then
     g status --short >&2
@@ -419,8 +434,7 @@ cmd_sync() { # commit hand edits to ticket body/front matter (Problem, Investiga
   [ $# -eq 2 ] && [ -n "$2" ] || die 'usage: sync T-xxxx "<what changed>"   (after editing the ticket file in the main worktree)'
   local f other err
   require_who
-  exec 9>"$(g rev-parse --path-format=absolute --git-common-dir)/ticket.sh.lock"
-  flock -w "$LOCK_WAIT" 9 || die "another ticket.sh has held the lock for $LOCK_WAIT s"; rebasing || LOCKED=1  # a rebase found already in progress is not ours to abort
+  take_lock
   [ "$(g rev-parse --abbrev-ref HEAD)" = "$TRUNK" ] || die "main worktree $MAIN is not on $TRUNK"
   push_pending  # no require_clean_main here (the tree is dirty by design), so push leftovers ourselves
   f=$(file_of "$1")
@@ -463,7 +477,22 @@ cmd_log() {
 # repo's push then fails, the first half stays merged on trunk, the ticket logs the partial merge, and
 # a re-run records that half as already merged and finishes the other.
 MERGED_SHAS=""; MERGED_RANGE=""; ALREADY_MERGED=""; MERGE_ERR=""; MOVED=""
-declare -A AM_SHAS=() AM_RANGE=()   # per repo label, set by merge_check for an already-merged branch
+declare -A AM_SHAS=() AM_RANGE=() REPLAY=()   # per repo label, set by merge_check: an already-merged branch; a branch to replay over N ticket-record commits (T-0330)
+REPLAY_TIP=""; REPLAY_ERR=""
+replay_available() { { git -C "$1" merge-tree -h 2>&1 || true; } | grep -q -- '--write-tree'; }   # git >= 2.38 (--merge-base: 2.40)
+replay_onto() { # repo newparent branch-ref -> REPLAY_TIP: the branch's commits replayed onto newparent, oldest first, by plumbing alone (no
+  # worktree, no checkout): each commit's tree is merge-tree's three-way result against its own parent, message (trailers) and author kept,
+  # the committer this run -- what `git rebase` would produce. Returns 1 with REPLAY_ERR on any conflict or plumbing failure (T-0330).
+  local repo=$1 parent=$2 ref=$3 c out tree
+  REPLAY_TIP=""; REPLAY_ERR=""
+  for c in $(git -C "$repo" rev-list --reverse "$parent..$ref"); do
+    if ! out=$(git -C "$repo" merge-tree --write-tree --merge-base="$c^" "$parent" "$c" 2>&1); then REPLAY_ERR="merge-tree on $(cut -c1-7 <<<"$c"): $(head -n 3 <<<"$out" | tr '\n' ' ')"; return 1; fi
+    tree=$(head -n 1 <<<"$out")
+    if ! parent=$(GIT_AUTHOR_NAME="$(git -C "$repo" log -1 --format=%an "$c")" GIT_AUTHOR_EMAIL="$(git -C "$repo" log -1 --format=%ae "$c")" GIT_AUTHOR_DATE="$(git -C "$repo" log -1 --format=%aD "$c")" \
+         git -C "$repo" commit-tree "$tree" -p "$parent" -m "$(git -C "$repo" log -1 --format=%B "$c")" 2>&1); then REPLAY_ERR="commit-tree on $(cut -c1-7 <<<"$c"): $parent"; return 1; fi
+  done
+  REPLAY_TIP=$parent
+}
 # KNOWN_REPOS (= ticket.env's REPOS, set by load_config): the repos: values ticket.sh can merge and prune.
 # Names ticket.sh never merges from and never deletes: main/master and the usual trunk names, release and archive
 # namespaces, odd names, plus every trunk/prod branch of REPOS and ticket.env's PROTECTED_BRANCHES_EXTRA (load_config
@@ -527,7 +556,7 @@ commit_ticket_ids() { # repo sha -> every T-id on its "Ticket:" trailer lines (o
   git -C "$1" show -s --format=%B "$2" | sed -n 's/^Ticket:[ ]*//p' | grep -oE 'T-[0-9]{4}' | sort -u | tr '\n' ' ' || true
 }
 merge_check() { # repo trunk branch id allowed-ids: every refusal, before anything is touched
-  local repo=$1 tr=$2 br=$3 id=$4 allow=$5 lbl tip remote n bad="" sha ids t why code
+  local repo=$1 tr=$2 br=$3 id=$4 allow=$5 lbl tip remote n bad="" sha ids t why code recs ch rec_glob
   lbl=$(repo_label "$repo")
   why=$(branch_problem "$br" "$tr"); [ -z "$why" ] || die "$id ($lbl): refusing to merge from '$br': $why"
   if [ "$repo" != "$MAIN" ]; then  # main's trunk was pulled by require_clean_main; the other repo's main must be on its trunk, clean, in sync
@@ -550,13 +579,38 @@ merge_check() { # repo trunk branch id allowed-ids: every refusal, before anythi
     already_merged_record "$repo" "$tr" "$remote" "$id" "$lbl" || die "$MERGE_ERR"
     ALREADY_MERGED="${ALREADY_MERGED:+$ALREADY_MERGED }$lbl"; return 0
   fi
+  ch=$(git -C "$repo" cherry "$tr" "$remote" 2>&1) || die "$id ($lbl): git cherry $tr $remote failed: $(head -n 1 <<<"$ch")"
+  if [ -n "$ch" ] && ! grep -q '^+' <<<"$ch"; then
+    # every patch of the branch is already on trunk under another sha (a replayed merge whose other repo then failed, or the owner's own
+    # extra rebase): recorded like a branch already on trunk, never replayed a second time (T-0330)
+    already_merged_record "$repo" "$tr" "$(git -C "$repo" rev-parse "$tr")" "$id" "$lbl" || die "$id ($lbl): every patch of $br is already on $tr (git cherry), but ${MERGE_ERR#"$id ($lbl): "}"
+    AM_RANGE[$lbl]="${AM_RANGE[$lbl]} -- patch-equivalent copies of $br"
+    ALREADY_MERGED="${ALREADY_MERGED:+$ALREADY_MERGED }$lbl"; return 0
+  fi
   n=$(git -C "$repo" rev-list --count "$remote..$tr")
-  if [ "$n" != 0 ]; then  # ff-only needs the branch to contain trunk; until T-0131 every ticket move adds a tickets/ commit there
-    code=$(git -C "$repo" log --format= --name-only "$remote..$tr" | grep -c -v "^$TICKETS_DIR/\|^$" || true)
-    die "$id ($lbl): $br is $n commit(s) behind $tr ($code of them touch files outside tickets/) -- rebase first:
+  if [ "$n" != 0 ]; then
+    # ff-only needs the branch to contain trunk, and trunk takes a ticket-record commit every few seconds (every move, log, set). A branch
+    # behind ONLY by ticket records (tickets/T-xxxx-*.md -- not ticket.env, plugins/ or a README, those are code or test inputs) is replayed
+    # onto trunk by merge_one with plumbing, no worktree (T-0330), provided the branch itself touches no record, so the sides cannot overlap.
+    # A code commit behind means a re-test only the owner can run: refused, as before.
+    rec_glob="$TICKETS_DIR/T-[0-9][0-9][0-9][0-9]-*.md"   # a pathspec glob: * stops at /
+    code=$(git -C "$repo" rev-list --count "$remote..$tr" -- . ":(exclude,glob)$rec_glob")   # commits behind that touch anything but a record
+    recs=$(git -C "$repo" rev-list --count "$tr..$remote" -- ":(glob)$rec_glob")             # branch commits that touch a record
+    why=""
+    if [ "$code" = 0 ]; then
+      if [ "$recs" != 0 ]; then why=" (the branch edits ticket records in $recs commit(s), so it was not replayed)"
+      elif [ -n "$(git -C "$repo" rev-list --merges -n 1 "$tr..$remote")" ]; then why=" (the branch holds a merge commit, so it was not replayed)"
+      elif [ -n "$(git -C "$repo" rev-list --merges -n 1 "$remote..$tr")" ]; then why=" (trunk took a merge commit, so it was not replayed)"
+      elif ! replay_available "$repo"; then why=" (git $(git --version | cut -d' ' -f3) has no merge-tree --write-tree, so it was not replayed)"; fi
+    fi
+    if [ "$code" = 0 ] && [ -z "$why" ]; then
+      REPLAY[$lbl]=$n
+    else
+      die "$id ($lbl): $br is $n commit(s) behind $tr ($code of them touch files outside the ticket records $TICKETS_DIR/T-xxxx-*.md)$why -- rebase first:
     git -C <worktree> fetch origin $tr && git -C <worktree> rebase origin/$tr   # then re-run the suites if any of those $code commits is code
     git -C <worktree> push --force-with-lease origin $br
     scripts/ticket.sh merge $id"
+    fi
   fi
   for sha in $(git -C "$repo" rev-list --reverse "$tr..$remote"); do
     ids=$(commit_ticket_ids "$repo" "$sha")
@@ -603,13 +657,18 @@ push_trunk_no_rebase() { # repo trunk: like commit_push's retries, but NEVER reb
   return 1
 }
 merge_one() { # repo trunk branch id -> MERGED_SHAS (short, oldest first), MERGED_RANGE "old..new", MOVED=1 when trunk moved; trunk pushed. Returns 1 with MERGE_ERR.
-  local repo=$1 tr=$2 br=$3 id=$4 pre new lbl; lbl=$(repo_label "$repo"); MOVED=""; MERGE_ERR=""
+  local repo=$1 tr=$2 br=$3 id=$4 pre new lbl target note=""; lbl=$(repo_label "$repo"); MOVED=""; MERGE_ERR=""
   case " $ALREADY_MERGED " in *" $lbl "*)  # see merge_check / already_merged_record: nothing to move, record what is already on trunk
     MERGED_SHAS=${AM_SHAS[$lbl]-}; MERGED_RANGE=${AM_RANGE[$lbl]-}
     echo "merged ($lbl): $br was already on $tr -- recorded, nothing moved"; return 0 ;;
   esac
-  pre=$(git -C "$repo" rev-parse HEAD)
-  if ! git -C "$repo" merge -q --ff-only "refs/remotes/origin/$br" >/dev/null 2>&1; then
+  pre=$(git -C "$repo" rev-parse HEAD); target="refs/remotes/origin/$br"
+  if [ -n "${REPLAY[$lbl]-}" ]; then   # T-0330: behind only by ticket records -> the branch's commits replayed onto trunk, plumbing only, before the ff
+    replay_onto "$repo" "$pre" "$target" || { MERGE_ERR="$id ($lbl): replay of $br onto $tr failed: $REPLAY_ERR -- rebase by hand and retry"; return 1; }
+    note=" (replayed over ${REPLAY[$lbl]} ticket-record commit(s): $(git -C "$repo" rev-parse --short=7 "$target") -> $(cut -c1-7 <<<"$REPLAY_TIP"))"
+    target=$REPLAY_TIP
+  fi
+  if ! git -C "$repo" merge -q --ff-only "$target" >/dev/null 2>&1; then
     MERGE_ERR="$id ($lbl): ff-only merge of $br into $tr failed (did $tr move?) -- rebase and retry"; return 1
   fi
   new=$(git -C "$repo" rev-parse HEAD)
@@ -617,11 +676,11 @@ merge_one() { # repo trunk branch id -> MERGED_SHAS (short, oldest first), MERGE
   if ! push_trunk_no_rebase "$repo" "$tr"; then
     git -C "$repo" reset -q --keep "$pre"
     MERGE_ERR="$id ($lbl): push of $tr failed after the merge; the local merge was undone ($tr back at $(cut -c1-7 <<<"$pre")): $PUSH_ERR
-ticket.sh: if origin/$tr moved, rebase $br onto it, push, and run merge again"; return 1
+ticket.sh: if origin/$tr moved, ${note:+run merge again (the branch is replayed onto the new trunk by itself)}${note:-rebase $br onto it, push, and run merge again}"; return 1
   fi
   MOVED=1
   MERGED_SHAS=$(git -C "$repo" rev-list --reverse --abbrev-commit --abbrev=7 "$pre..$new" | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
-  MERGED_RANGE="$(cut -c1-7 <<<"$pre")..$(cut -c1-7 <<<"$new")"
+  MERGED_RANGE="$(cut -c1-7 <<<"$pre")..$(cut -c1-7 <<<"$new")$note"
   echo "merged ($lbl): $br -> $tr $MERGED_RANGE, pushed"
 }
 cmd_merge() {
@@ -661,7 +720,7 @@ cmd_merge() {
     fi
     [ -z "$MOVED" ] || moved_any=1
     if [ "$r" = "$REPO0" ]; then closed=$MERGED_SHAS; summary=$MERGED_RANGE
-    else closed="${closed:+$closed, }$r $MERGED_SHAS"; summary="${summary:+$summary; }$r $MERGED_RANGE"; fi
+    else closed="${closed:+$closed, }$r ${MERGED_SHAS//, /, $r }"; summary="${summary:+$summary; }$r $MERGED_RANGE"; fi   # one label per sha (T-0252): deploy-check and board --json read closed_by one entry per comma
     landed="${landed:+$landed+}$r"
   done
   EDITED=$f
@@ -1114,19 +1173,35 @@ log_stamp() { # file "pattern" -> the "YYYY-MM-DD HH:MM" of the LAST log line ma
 raw_ask() { # file -> "text<US>who<US>stamp" from the human: line (field() hides the stamp, a comment)
   sed -n 's/^human:[ ]*//p' "$1" | head -n 1 | sed "s/[ ]*# \([^ ]*\) \([0-9-]* [0-9:]*\)[ ]*\$/${US}\1${US}\2/"
 }
-handoff_blocks() { # file -> every non-empty block under a "## Deploy handoff..." heading (any suffix; the template's commented example dropped), RSEP-separated
-  sed '/^<!--/,/^-->/d' "$1" | awk -v rs="$RSEP" '
+handoff_blocks() { # file -> every non-empty block under a "## Deploy handoff..." heading (any suffix), RSEP-separated
+  # HTML comments (the template's commented example, the one-line `## Log` comment, the `## In plain words` comment that
+  # closes at the end of a text line) are removed wherever they open and close, like plain_line does for the plain words;
+  # the old `sed '/^<!--/,/^-->/d'` matched line STARTS, so a ticket whose owner replaced the example with the real block
+  # had no line starting with --> and was stripped to its end (T-0303). An UNCLOSED <!-- keeps its text: a half-edited
+  # example then surfaces as a visible not-copy-paste item instead of a silently empty block.
+  awk -v rs="$RSEP" '
     function flush() { if (on && body != "") printf "%s%s%s\n", head, body, rs; head=""; body=""; on=0 }
-    /^## Deploy handoff/ { flush(); on=1; head=$0 "\n"; next }
-    /^## / { flush(); next }
-    on { if ($0 !~ /^[ \t]*$/) body=body $0 "\n" }
-    END { flush() }'
+    { s = s $0 "\n" }
+    END {
+      while ((i = index(s, "<!--")) > 0) { rest = substr(s, i + 4); j = index(rest, "-->"); if (!j) break; s = substr(s, 1, i - 1) substr(rest, j + 3) }
+      n = split(s, L, "\n")
+      for (k = 1; k <= n; k++) {
+        l = L[k]
+        if (l ~ /^## Deploy handoff/) { flush(); on=1; head=l "\n"; continue }
+        if (l ~ /^## /) { flush(); continue }
+        if (on && l !~ /^[ \t]*$/) body=body l "\n"
+      }
+      flush()
+    }' "$1"
 }
 plan_key() { # ticket-file -> the plugin's "<kind>:<plan as written>" (aws-terraform: "tfplan:terraform/x.tfplan"), else "ticket:<id>"
   local k; k=$(plugin_plan_key "$1"); [ -n "$k" ] && echo "$k" || echo "ticket:$(field "$1" id)"
 }
 apply_lines() { # block -> the human-run command lines of a handoff block (key stripped, trailing notes cut)
-  grep -E '^(APPLY|Apply|DEPLOY|Deploy|RUN|Run|STEP [0-9]+)[^:]*:' <<<"$1" | grep -v 'BLOCKER' | sed -E 's/^[^:]*:[ ]*//; s/   .*//; s/[ ]+#.*//' || true
+  # a step key is the verb alone ("Apply:") or the verb + " <words>" ("Apply (human):", "STEP 1 (human; frontend dev 3376bdb):");
+  # "Deploy-check (read-only, 16:57 EDT): ..." is a note -- the old `[^:]*:` took it as step 1 with the command "57 EDT): ..." --
+  # and so is "Deploy check (...)" / "DEPLOY CHECK (...)" written with a space (T-0303; `ticket.sh apply` runs deploy-check itself)
+  grep -E '^(APPLY|Apply|DEPLOY|Deploy|RUN|Run|STEP [0-9]+)( [^:]*)?:' <<<"$1" | grep -Ev 'BLOCKER|^(APPLY|Apply|DEPLOY|Deploy)[- ][Cc](heck|HECK)' | sed -E 's/^[^:]*:[ ]*//; s/   .*//; s/[ ]+#.*//' || true
 }
 pick_block() { # basename-or-empty file... -> the block that names the plan (Apply line > heading > any line; latest wins on ties), or the last block
   local want=$1 blk best="" bestscore=-1 score f; shift

@@ -253,8 +253,20 @@ def _join_words(items: list) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def repo_dirs(cfg) -> list:
-    return [os.path.basename(os.path.realpath(cfg.path(r["path"]))) or r["name"] for r in cfg.repos]
+def repo_paths(cfg, main_root: str | None = None) -> list:
+    """Every repo's checkout, realpath'd. A relative `path:` resolves against the main checkout the render speaks for:
+    --main-root when given (a render from a ticket worktree names the main checkout, so the embedded paths and names are
+    main's, not the worktree's), else the project root."""
+    base = os.path.realpath(os.path.expanduser(main_root)) if main_root else cfg.root
+    out = []
+    for r in cfg.repos:
+        rel = os.path.expanduser(str(r["path"]))
+        out.append(os.path.realpath(rel if os.path.isabs(rel) else os.path.join(base, rel)))
+    return out
+
+
+def repo_dirs(cfg, main_root: str | None = None) -> list:
+    return [os.path.basename(p) or r["name"] for p, r in zip(repo_paths(cfg, main_root), cfg.repos)]
 
 
 def verbs_line(cfg, fragments: dict) -> str:
@@ -267,10 +279,10 @@ def verbs_line(cfg, fragments: dict) -> str:
     return "Verbs: " + ", ".join(parts) + "."
 
 
-def context(cfg, fragments: dict, sections: dict) -> dict:
+def context(cfg, fragments: dict, sections: dict, main_root: str | None = None) -> dict:
     ctx = briefsmod.context(cfg)
     names = [str(r["name"]) for r in cfg.repos]
-    dirs = repo_dirs(cfg)
+    dirs = repo_dirs(cfg, main_root)
     default = next((r for r in cfg.repos if r.get("default")), cfg.repos[0])
     n = len(cfg.repos)
     trunks = {str(r["trunk"]) for r in cfg.repos}
@@ -286,7 +298,7 @@ def context(cfg, fragments: dict, sections: dict) -> dict:
                        f"a release -- never push to `{prod}` by hand, never merge a ticket branch into it." if prod else
                        "There is no separate production branch: trunk is what runs, so every merge is a release."),
         "prod_clause_brief": f"`{prod}` is production and nobody commits to it" if prod else "there is no separate production branch",
-        "main_paths": _join_words([f"`{os.path.realpath(cfg.path(r['path']))}`" for r in cfg.repos]),
+        "main_paths": _join_words([f"`{p}`" for p in repo_paths(cfg, main_root)]),
         "verbs_line": verbs_line(cfg, fragments),
         "types_bar": " | ".join(cfg.ticket_types),
         "default_type": cfg.ticket_types[0] if cfg.ticket_types else "bug",
@@ -364,13 +376,14 @@ def sources_of(cfg, name: str) -> str:
     return f"`templates/protocol/tickets/{name}.tmpl` and {plugin}"
 
 
-def render_detail(cfg, plugin_docs: str | None = None, project_readme: str | None = None, out=None) -> tuple:
+def render_detail(cfg, plugin_docs: str | None = None, project_readme: str | None = None, out=None,
+                  main_root: str | None = None) -> tuple:
     """({file name: text as written, header included}, {template section: provenance} for README.md)."""
     if not os.path.isdir(TEMPLATES):
         raise ZouinifyError(f"no templates under {TEMPLATES}")
     fragments = load_fragments(plugin_docs_dir(cfg, plugin_docs, out))
     sections = read_project_readme(cfg, project_readme)
-    ctx = context(cfg, fragments, sections)
+    ctx = context(cfg, fragments, sections, main_root)
     texts, prov = {}, {}
     for name in FILES:
         with open(os.path.join(TEMPLATES, name + SUFFIX), encoding="utf-8") as fh:
@@ -405,9 +418,13 @@ def cmd_list(cfg, out=None) -> int:
 
 
 def cmd_render(cfg, out_dir: str, plugin_docs: str | None = None, project_readme: str | None = None, force: bool = False,
-               out=None) -> int:
+               out=None, main_root: str | None = None) -> int:
     out = out or sys.stdout
-    rendered, prov = render_detail(cfg, plugin_docs, project_readme, out)
+    if main_root is not None:
+        if not os.path.isdir(os.path.expanduser(main_root)):
+            raise ZouinifyError(f"--main-root {main_root} is not a directory (the main checkout whose path and name the files embed)")
+        print(f"main root  {os.path.realpath(os.path.expanduser(main_root))}", file=out)
+    rendered, prov = render_detail(cfg, plugin_docs, project_readme, out, main_root=main_root)
     out_dir = os.path.realpath(os.path.expanduser(out_dir))
     conflicts = []
     for name, text in rendered.items():

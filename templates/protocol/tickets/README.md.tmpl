@@ -104,7 +104,8 @@ export TICKET_AS=<your ListAgents name>     # required: every mutating ticket.sh
 {{tickets_script}} move T-0034 ready-to-merge "reviewer <name> (saw the diff): <verdict>; rebased, behind 0; suites re-run"   # 4.
 {{tickets_script}} merge T-0034                                 # 5. THE merge path (`move ... merged` refuses): ff-only under the
 #    lock, every commit trailered "Ticket: T-0034", trunk pushed at once (a failed push undoes that repo's merge),
-#    closed_by = the shas read AFTER the merge. Refuses a branch behind trunk ("rebase first", with the commands), a
+#    closed_by = the shas read AFTER the merge. A branch behind trunk only by ticket-record commits is replayed onto
+#    trunk by merge itself; behind by code it is refused ("rebase first", with the commands). Also refused: a
 #    trunk or protected branch name, a multi-repo ticket without a branch for every repo it names, and a commit that
 #    carries another ticket's trailer (a shared branch: --allow-trailers T-yyyy, agreed by both owners, logged in
 #    both tickets). Several repos: every one is checked before any is merged; if a later push then fails, the repos
@@ -117,7 +118,9 @@ export TICKET_AS=<your ListAgents name>     # required: every mutating ticket.sh
 
 Every mutating command needs `TICKET_AS` (your `ListAgents` name) in the environment: each log line is
 signed with it, and there is no `$USER` fallback (a line signed with the shell user tells nobody which
-session wrote it). `board` is read-only and needs nothing.
+session wrote it). `board` is read-only and needs nothing. Run a mutating command on its own,
+never through a pipe (`| tail`, `| grep`): when another ticket.sh holds the lock it exits 75 with
+`NOTHING WRITTEN -- lock held by <holder>`, and a pipeline hides that exit -- capture the output to a file and read it.
 
 Other commands: `new <{{types_angle}}> <P0-P3> "<title>"` (files to backlog -- then tell
 the desk), `log T-xxxx "<line>"` (a log line of the form `waits-on: aws-sso -- resume: <exact step>` marks the

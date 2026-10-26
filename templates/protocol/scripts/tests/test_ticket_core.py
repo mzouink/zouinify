@@ -786,13 +786,12 @@ class TestMergeAndPrune(MergeAndPruneHelpers):
         self.assert_main_sane()
 
     def test_merge_refuses_behind_trunk(self):
+        """a CODE commit behind means a re-test only the owner can run: refused as before (T-0330 replays ticket records only)"""
         wt, br, shas = self.ready_branch()
-        self.git("-C", self.other, "pull", "-q", "--rebase", "origin", TRUNK)
-        self.other_commit_ticket("T-0010", "o", "other", "tickets: other moved trunk")
-        self.git("-C", self.other, "push", "-q", "origin", TRUNK)
+        self.other_code_commit()
         p = self.ts("merge", "T-0001")
         self.assertNotEqual(p.returncode, 0, p.out)
-        self.assertIn("1 commit(s) behind %s (0 of them touch files outside tickets/)" % TRUNK, p.out)
+        self.assertIn("1 commit(s) behind %s (1 of them touch files outside the ticket records tickets/T-xxxx-*.md)" % TRUNK, p.out)
         self.assertIn("rebase first", p.out)
         self.assertIn("push --force-with-lease origin " + br, p.out)
         self.assertFalse(os.path.exists(os.path.join(self.main, "f0.txt")), "nothing merged")
@@ -909,6 +908,191 @@ class TestMergeAndPrune(MergeAndPruneHelpers):
         self.assertEqual(self.front("T-0001-alpha-ticket.md", "closed_by"), "[%s, %s]" % tuple(shas))  # from the ticket's base: field
         self.assertIn("already on %s" % TRUNK, self.log_of("T-0001-alpha-ticket.md"))
         self.assert_main_sane()
+
+    # ---- T-0330: a branch behind trunk only by ticket-record commits is replayed, not refused; T-0321: a lost lock ----
+    def other_record_commits(self, n=1, msg="tickets: other moved trunk"):
+        """n ticket-record commits on trunk from the other clone (what every move/log/set does), pushed"""
+        self.git("-C", self.other, "pull", "-q", "--rebase", "origin", TRUNK)
+        for i in range(n):
+            self.other_commit_ticket("T-00%d0" % (i + 1), "o%d" % i, "other %d" % i, "%s %d" % (msg, i))
+        self.git("-C", self.other, "push", "-q", "origin", TRUNK)
+
+    def other_code_commit(self, name="other_code.txt", msg="code: other landed code"):
+        self.git("-C", self.other, "pull", "-q", "--rebase", "origin", TRUNK)
+        with open(os.path.join(self.other, name), "w") as fh:
+            fh.write("code\n")
+        self.git("-C", self.other, "add", name); self.git("-C", self.other, "commit", "-q", "-m", msg)
+        self.git("-C", self.other, "push", "-q", "origin", TRUNK)
+
+    def test_merge_replays_a_branch_behind_only_by_ticket_records(self):
+        """T-0330: trunk took two ticket-record commits after the owner's rebase (the real trunk takes one every ~13 s): merge
+        replays the branch onto trunk with plumbing (no worktree) and ff-merges the copies -- trailers, authors and the tree a
+        real rebase gives; closed_by = the new shas; the owner's worktree is untouched. RED on core 1.2.6: '2 commit(s) behind
+        dev (0 of them touch files outside tickets/) -- rebase first'."""
+        wt, br, shas = self.ready_branch(n=2)
+        self.git("-C", wt, "commit", "-q", "--amend", "--no-edit", "--author=Owner Session <owner@example.invalid>")   # author != the desk's committer
+        self.git("-C", wt, "push", "-q", "--force-with-lease", "origin", br)
+        shas[-1] = self.git("-C", wt, "rev-parse", "--short=7", "HEAD"); old_tip = self.git("-C", wt, "rev-parse", "HEAD")
+        self.other_record_commits(2)
+        p = self.ts("merge", "T-0001")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("replayed over 2 ticket-record commit(s)", p.out)
+        # HEAD is the ticket commit the merge wrote (-> merged); the two replayed copies sit right below it, then trunk's ticket commits
+        new = self.git("-C", self.main, "log", "-2", "--format=%h", "HEAD~1").splitlines()[::-1]   # oldest first, as closed_by lists them
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "closed_by"), "[%s, %s]" % tuple(new))
+        self.assertFalse(set(new) & set(shas), "the replayed copies have new shas")
+        self.assertEqual(self.git("-C", self.main, "log", "-3", "--format=%s", "HEAD~1").splitlines(), ["change 1", "change 0", "tickets: other moved trunk 1"], "linear: the copies sit on top of trunk's ticket commits")
+        self.assertEqual(self.git("-C", self.main, "log", "-2", "--format=%(trailers:key=Ticket,valueonly)", "HEAD~1").split(), ["T-0001", "T-0001"], "trailers kept")
+        self.assertEqual(self.git("-C", self.main, "log", "-1", "--format=%an <%ae>|%ad", "HEAD~1"), self.git("-C", wt, "log", "-1", "--format=%an <%ae>|%ad"), "author and date kept")
+        self.assertNotEqual(self.git("-C", self.main, "log", "-1", "--format=%cn", "HEAD~1"), "Owner Session", "the committer is this run, as after a rebase")
+        for f in ("f0.txt", "f1.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.main, f)), f)
+        self.assertTrue(os.path.exists(os.path.join(self.main, "tickets", "T-0020-o1.md")), "trunk's ticket edits kept")
+        self.assertEqual(self.git("-C", wt, "rev-parse", "HEAD"), old_tip, "the owner's worktree is untouched")
+        # the copies' tree is exactly what a real rebase onto trunk's last record commit gives
+        self.git("-C", wt, "rebase", "-q", self.git("-C", self.main, "rev-parse", "HEAD~3"))
+        self.assertEqual(self.git("-C", wt, "rev-parse", "HEAD^{tree}"), self.git("-C", self.main, "rev-parse", "HEAD~1^{tree}"), "tree == a real rebase's tree")
+        self.git("-C", wt, "reset", "-q", "--hard", old_tip)
+        self.assertEqual(self.origin_head(), self.main_head())
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "merged")
+        self.assertIn("replayed over 2 ticket-record commit(s)", self.log_of("T-0001-alpha-ticket.md"))
+        self.assert_main_sane()
+        # prune judges by patch (git cherry): the branch at its old tip goes
+        p = self.ts("move", "T-0001", "done", "deploy: none, merged as %s" % new[0]); self.assertEqual(p.returncode, 0, p.out)
+        p = self.ts("prune", "T-0001"); self.assertEqual(p.returncode, 0, p.out)
+        self.assertFalse(os.path.isdir(wt)); self.assertFalse(self.local_has_branch(br)); self.assertFalse(self.origin_has_branch(br))
+
+    def test_merge_does_not_replay_over_other_files_under_tickets(self):
+        """tickets/ticket.env, tickets/plugins/ and a README are code or test inputs, not ticket records: a commit to them behind
+        the branch keeps the refusal (core 1.2.6 counted every tickets/ path as non-code)"""
+        wt, br, shas = self.ready_branch()
+        self.other_code_commit(name=os.path.join("tickets", "notes.md"), msg="tickets: a note that is not a record")
+        p = self.ts("merge", "T-0001")
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("(1 of them touch files outside the ticket records", p.out); self.assertIn("rebase first", p.out)
+        self.assertFalse(os.path.exists(os.path.join(self.main, "f0.txt")), "nothing merged")
+        self.assert_main_sane()
+
+    def test_merge_does_not_replay_a_branch_that_edits_a_ticket_record(self):
+        """the sides could overlap: a branch commit touching tickets/T-xxxx-*.md keeps today's refusal when behind, and says why"""
+        wt, br, shas = self.ready_branch()
+        with open(os.path.join(wt, "tickets", "T-0001-alpha-ticket.md"), "a", encoding="utf-8") as fh:
+            fh.write("\nedited on the branch\n")
+        self.git("-C", wt, "commit", "-q", "-am", "edit the record\n\nTicket: T-0001"); self.git("-C", wt, "push", "-q", "origin", br)
+        self.other_record_commits(1)
+        p = self.ts("merge", "T-0001")
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("rebase first", p.out); self.assertIn("the branch edits ticket records in 1 commit(s), so it was not replayed", p.out)
+        self.assertFalse(os.path.exists(os.path.join(self.main, "f0.txt")), "nothing merged")
+        self.assert_main_sane()
+
+    def test_merge_does_not_replay_over_a_merge_commit_on_either_side(self):
+        """review round 1: a merge commit on the branch would be flattened into an empty copy, and a merge on trunk hides its resolution
+        from --name-only: both keep today's refusal and say why"""
+        wt, br, shas = self.ready_branch()
+        self.git("-C", wt, "checkout", "-q", "-b", "side"); self.branch_commit(wt, "side.txt", "side work")
+        self.git("-C", wt, "checkout", "-q", br); self.git("-C", wt, "merge", "-q", "--no-ff", "side", "-m", "merge side\n\nTicket: T-0001")
+        self.git("-C", wt, "push", "-q", "origin", br)
+        self.other_record_commits(1)
+        p = self.ts("merge", "T-0001")
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("rebase first", p.out); self.assertIn("the branch holds a merge commit, so it was not replayed", p.out)
+        self.assertFalse(os.path.exists(os.path.join(self.main, "f0.txt")), "nothing merged")
+        # a merge commit on trunk behind the branch
+        self.git("-C", wt, "reset", "-q", "--hard", shas[0]); self.git("-C", wt, "push", "-q", "--force", "origin", br)
+        self.git("-C", self.other, "pull", "-q", "--rebase", "origin", TRUNK)
+        self.git("-C", self.other, "checkout", "-q", "-b", "oside"); self.other_commit_ticket("T-0030", "o3", "other 3", "tickets: on a side branch")
+        self.git("-C", self.other, "checkout", "-q", TRUNK); self.git("-C", self.other, "merge", "-q", "--no-ff", "oside", "-m", "tickets: merged a side branch")
+        self.git("-C", self.other, "push", "-q", "origin", TRUNK)
+        p = self.ts("merge", "T-0001")
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("trunk took a merge commit, so it was not replayed", p.out)
+        self.assertFalse(os.path.exists(os.path.join(self.main, "f0.txt")), "nothing merged")
+        self.assert_main_sane()
+
+    MERGE_TREE_GIT = """#!/usr/bin/env bash
+case " $* " in
+  *" merge-tree -h "*) {help};;
+  *" merge-tree "*) echo "fatal: simulated merge-tree failure" >&2; exit 1;;
+esac
+exec {git} "$@"
+"""
+
+    def merge_tree_env(self, available=True):
+        d = os.path.join(self.tmp, "mtbin"); os.makedirs(d, exist_ok=True)
+        helps = {True: 'echo "usage: git merge-tree [--write-tree] [<options>] <branch1> <branch2>"; exit 129',
+                 False: 'echo "usage: git merge-tree <base-tree> <branch1> <branch2>"; exit 129'}
+        with open(os.path.join(d, "git"), "w") as fh:
+            fh.write(self.MERGE_TREE_GIT.format(git=REAL_GIT, help=helps[available]))
+        os.chmod(os.path.join(d, "git"), 0o755)
+        return dict(self.env, PATH=d + os.pathsep + self.env["PATH"])
+
+    def test_merge_replay_failure_or_an_old_git_moves_nothing(self):
+        """a git without `merge-tree --write-tree` (< 2.38) keeps today's refusal and says so; a merge-tree that fails on the
+        branch dies before anything moves"""
+        wt, br, shas = self.ready_branch()
+        self.other_record_commits(1)
+        p = self.ts("merge", "T-0001", env=self.merge_tree_env(available=False))
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("rebase first", p.out); self.assertIn("has no merge-tree --write-tree, so it was not replayed", p.out)
+        p = self.ts("merge", "T-0001", env=self.merge_tree_env(available=True))
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("replay of %s onto %s failed" % (br, TRUNK), p.out); self.assertIn("simulated merge-tree failure", p.out)
+        self.assertFalse(os.path.exists(os.path.join(self.main, "f0.txt")), "nothing merged")
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "ready-to-merge")
+        self.assertEqual(self.origin_head(), self.main_head()); self.assert_main_sane()
+
+    def test_merge_second_run_records_the_replayed_copies_instead_of_replaying_twice(self):
+        """a two-repo ticket: the backend half was replayed and pushed, the frontend push failed (PARTIAL). On the retry the backend
+        branch is NOT an ancestor of trunk (new shas); `git cherry` finds every patch there, so it is recorded, not replayed again"""
+        fe_origin, fe_main, env = self.fe_world()
+        self.write_ticket("T-0004", "two", "ready", "two repos", fields={"repos": "[backend, frontend]"})
+        self.commit_tickets("tickets: T-0004")
+        wt = self.claim("T-0004", env=env)
+        self.branch_commit(wt, "be.txt", "be change", "Ticket: T-0004"); br = self.push_branch(wt)
+        fwt = os.path.join(fe_main, ".claude", "worktrees", "t0004-two")
+        self.git("-C", fe_main, "worktree", "add", "-q", fwt, "-b", "t0004-two", TRUNK)
+        fe_sha = self.branch_commit(fwt, "fe.txt", "fe change", "Ticket: T-0004"); self.push_branch(fwt)
+        self.set_front("T-0004-two.md", "branch", "{backend: %s, frontend: t0004-two}" % br)
+        self.commit_tickets("tickets: T-0004 map")
+        self.to_ready_to_merge("T-0004", env=env)
+        self.git("-C", wt, "fetch", "-q", "origin", TRUNK); self.git("-C", wt, "rebase", "-q", "origin/" + TRUNK)
+        self.git("-C", wt, "push", "-q", "--force-with-lease", "origin", br)
+        self.other_record_commits(1)                                   # backend behind by one record commit -> replayed
+        hook = os.path.join(fe_origin, "hooks", "pre-receive")
+        with open(hook, "w") as fh:
+            fh.write("#!/usr/bin/env bash\necho 'fe origin is down' >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+        p = self.ts("merge", "T-0004", env=env)
+        self.assertEqual(p.returncode, 1, p.out)
+        self.assertIn("replayed over 1 ticket-record commit(s)", p.out); self.assertIn("(frontend): push of %s failed" % TRUNK, p.out)
+        self.assertIn("PARTIAL merge", self.log_of("T-0004-two.md")); self.assertEqual(self.front("T-0004-two.md", "status"), "ready-to-merge")
+        os.remove(hook)
+        p = self.ts("merge", "T-0004", env=env)
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("merged (backend): %s was already on %s -- recorded, nothing moved" % (br, TRUNK), p.out)
+        self.assertIn("merged (frontend): t0004-two -> %s" % TRUNK, p.out)
+        self.assertEqual(self.git("-C", self.main, "rev-list", "--count", "--grep=^Ticket: T-0004", TRUNK), "1", "the backend change is on trunk exactly once")
+        new = self.git("-C", self.main, "log", "-1", "--format=%h", "--grep=^Ticket: T-0004", TRUNK)
+        self.assertEqual(self.front("T-0004-two.md", "closed_by"), "[%s, frontend %s]" % (new, fe_sha))
+        self.assert_main_sane()
+
+    def test_lost_lock_exits_75_names_the_holder_and_writes_nothing(self):
+        """T-0321: a mutating command that cannot take the lock exits 75 (EX_TEMPFAIL); its first line says NOTHING WRITTEN and
+        names the holder (a running ticket.sh writes .git/ticket.sh.lock.holder, removed when it exits); the ticket stays as it was"""
+        lock = os.path.join(self.main, ".git", "ticket.sh.lock")
+        with open(lock + ".holder", "w") as fh:
+            fh.write("4242 qa: scripts/ticket.sh merge T-0106 (since 2026-10-26 12:28)\n")
+        holder = subprocess.Popen(["flock", "-o", lock, "sleep", "30"]); self.addCleanup(holder.kill); time.sleep(0.5)
+        before = self.main_head()
+        p = self.ts("move", "T-0001", "in-dev", "qa: forced", env=dict(self.env, TICKET_LOCK_WAIT="1"))
+        self.assertEqual(p.returncode, 75, p.out)
+        self.assertIn("NOTHING WRITTEN -- lock held by 4242 qa: scripts/ticket.sh merge T-0106", p.out.strip().splitlines()[0])
+        self.assertIn("held the lock for 1 s", p.out); self.assertIn("capture the output to a file", p.out)
+        self.assertEqual(self.front("T-0001-alpha-ticket.md", "status"), "ready"); self.assertEqual(self.main_head(), before); self.assert_main_clean()
+        holder.kill(); holder.wait()
+        p = self.ts("log", "T-0001", "a line"); self.assertEqual(p.returncode, 0, p.out)
+        self.assertFalse(os.path.exists(lock + ".holder"), "the holder file goes with the run")
 
     # ---- prune -------------------------------------------------------------------------
     def test_prune_dry_run_then_real_removes_worktree_branch_and_remote(self):
@@ -1190,13 +1374,13 @@ class TestMergeAndPrune(MergeAndPruneHelpers):
     def test_prune_checks_before_taking_the_lock(self):
         """should-fix 11: the slow pass (fetches, cherry) runs without the lock; only the removals wait for it"""
         wt, br = self.merged_and_done()
-        holder = subprocess.Popen(["flock", os.path.join(self.main, ".git", "ticket.sh.lock"), "sleep", "30"])
+        holder = subprocess.Popen(["flock", "-o", os.path.join(self.main, ".git", "ticket.sh.lock"), "sleep", "30"])   # -o: the lock dies with flock, not with the orphaned sleep
         self.addCleanup(holder.kill)
         time.sleep(0.5)
         p = self.ts("prune", "T-0001", env=dict(self.env, TICKET_LOCK_WAIT="1"))
-        self.assertEqual(p.returncode, 1, p.out)
+        self.assertEqual(p.returncode, 75, p.out)   # T-0321: EX_TEMPFAIL, nothing written
         self.assertIn("would remove worktree", p.out, "the checks ran first, without the lock")
-        self.assertIn("held the lock for 1 s", p.out)
+        self.assertIn("held the lock for 1 s", p.out); self.assertIn("NOTHING WRITTEN", p.out)
         self.assertTrue(os.path.isdir(wt)); self.assertTrue(self.origin_has_branch(br))
         holder.kill(); holder.wait()
         p = self.ts("prune", "T-0001")
@@ -1851,6 +2035,32 @@ class HumanInboxHelpers(TicketShWorld):
             fh.write(text)
         return path
 
+    # T-0303: a ticket in the shape that lost its handoff -- the template's front matter, then sections whose only comments
+    # close at the end of a text line or on one line, and the real block right under `## Deploy handoff`, so no line of
+    # the file starts with `-->` (fixture(handoff=...) appends BELOW the template's example and never hits that shape)
+    SHAPED_BODY = ("## In plain words\n"
+                   "<!-- 2-4 sentences for the human. As in the template, this comment closes at the end of a text line, so once\n"
+                   "     the owner replaces the Deploy handoff example below no line of the ticket starts with \"-->\". -->\n"
+                   "The human reads the command here.\n\n"
+                   "## Problem\nfacts\n\n## Fix\n- [ ] the thing\n\n## Investigation\nnothing yet\n\n"
+                   "## Log\n<!-- append-only; one line per transition: \"- YYYY-MM-DD HH:MM <session>: <old> -> <new>. <evidence>\" -->\n"
+                   "{log}\n\n## Deploy handoff\n\n{block}")
+
+    def shaped(self, tid, slug, status, title, fields, log, block):
+        path = self.fixture(tid, slug, status, title, fields=fields)
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        text = text[:text.index("\n## ") + 1] + self.SHAPED_BODY.format(log="\n".join("- %s" % l for l in log), block=block)
+        self.assertIsNone(re.search(r"(?m)^-->", text), "the shape under test must have no line starting with -->")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def plan_file(self):
+        os.makedirs(os.path.join(self.main, "terraform"), exist_ok=True)
+        with open(os.path.join(self.main, "terraform", "x.tfplan"), "w") as fh:
+            fh.write("plan\n")
+
     def world(self):
         os.makedirs(os.path.join(self.main, "terraform"), exist_ok=True)
         with open(os.path.join(self.main, "terraform", "x.tfplan"), "w") as fh:
@@ -2048,6 +2258,109 @@ class TestHumanInbox(HumanInboxHelpers):
         self.assertEqual(self.ts("human", "--count", env=self.env_without_who()).out.strip(), "1")
         self.assertNotIn(c[0]["id"], self.ts("human", env=self.env_without_who()).out, "the id is for tools, not for the human's text")
         self.assert_main_sane()
+
+
+class TestHandoffComments(HumanInboxHelpers):
+    """T-0303: `human` finds the Deploy handoff block however the owner wrote the ticket. The template's `## In plain
+    words` comment closes at the END of a text line and its `## Log` comment is one line, so the old
+    `sed '/^<!--/,/^-->/d'` (ranges by line START) only ever closed on the Deploy handoff example's own `-->` line: an
+    owner who replaced that example with the real block (T-0268, T-0278) had the ticket stripped to its end and the inbox
+    said "(no human-run line ...; ask its owner)" for over an hour on 2026-10-23. And `apply_lines` took any
+    "Deploy...:" as a step, so "Deploy-check (read-only, 16:57 EDT): ..." became step 1 with the command "57 EDT): ...".
+    Now HTML comments are removed wherever they open and close (an unclosed `<!--` keeps its text, so a half-edited
+    example is a visible not-copy-paste item, never a silently empty block), and a step key is the verb alone or the
+    verb + " <words>". RED on the base script: tests 1 and 5 print "(no human-run line", test 2 prints "57 EDT)", test 4
+    lists nothing (the CHECK item is absent), test 3 counts 4 steps. Plugin-neutral: the apply command is a RUN under both
+    plugins (no word the aws-terraform plugin maps to another verb); the project's own plan path (`plan:` -> the plugin's
+    tfplan key -> APPLY with the Summary counts) is test_ticket_sh.py::TestHumanInboxPlans's sibling test."""
+
+    APPLY = "scripts/ticket.sh apply x.tfplan --tickets T-0003 --at abc1234"
+
+    def human(self):
+        p = self.ts("human", env=self.env_without_who())
+        self.assertEqual(p.returncode, 0, p.out)
+        return p.out
+
+    def test_a_block_that_replaced_the_template_example_is_found(self):
+        self.plan_file()
+        self.shaped("T-0003", "batch-owner", "ready-to-deploy", "cached answers from the faster branch",
+                    fields={"severity": "P1", "deploy": "terraform", "owner": "qa"},
+                    log=["2026-10-12 17:55 qa: merged -> ready-to-deploy. handoff written"],
+                    block="## Deploy handoff -- batch 2026-10-12 (T-0003)\nTrunk:     dev @ abc1234 (pushed).\n"
+                          "Summary:   Plan: 0 to add, 2 to change, 0 to destroy.\n"
+                          "Apply:     %s   # deploy-check, then the saved plan\nVerify:    the state machine's definition\n" % self.APPLY)
+        self.commit_main("tickets: T-0278-shaped handoff")
+        out = self.human()
+        self.assertIn("RUN     T-0003  P1  cached answers from the faster branch", out)
+        self.assertIn("   cd %s && %s\n" % (self.main, self.APPLY), out)
+        self.assertNotIn("(no human-run line", out); self.assertIn("since 2026-10-12 17:55", out)
+        if self.plugin == "aws-terraform":
+            self.assertIn("expect: Apply complete! Resources: 0 added, 2 changed, 0 destroyed.", out)
+        self.assertEqual(self.ts("human", "--count", env=self.env_without_who()).out.strip(), "1")
+        item = json.loads(self.ts("human", "--json", env=self.env_without_who()).stdout)[0]
+        self.assertEqual(item["command"], "cd %s && %s" % (self.main, self.APPLY)); self.assertEqual(item["tickets"], "T-0003")
+
+    def test_a_deploy_check_note_is_not_a_step(self):
+        """the template's example kept above the block (the old workaround), and two deploy-check notes in it"""
+        self.plan_file()
+        self.fixture("T-0003", "batch-owner", "ready-to-deploy", "cached answers from the faster branch",
+                     fields={"severity": "P1", "deploy": "terraform", "owner": "qa"},
+                     log=["2026-10-12 17:55 qa: merged -> ready-to-deploy. handoff written"],
+                     handoff="## Deploy handoff -- batch 2026-10-12 (T-0003)\nSummary:   Plan: 0 to add, 2 to change, 0 to destroy.\n"
+                             "Deploy-check (read-only, 16:57 EDT): scripts/ticket.sh deploy-check x.tfplan --tickets T-0003 --at abc1234 -> 0 FAIL\n"
+                             "Deploy check (read-only, run by the owner 2026-10-22 12:09): scripts/ticket.sh deploy-check x.tfplan --at abc1234\n"
+                             "DEPLOY CHECK (read-only, 09:15 EDT): scripts/ticket.sh deploy-check x.tfplan\n"
+                             "Apply:     %s   # deploy-check, then the saved plan\n" % self.APPLY)
+        self.commit_main("tickets: deploy-check notes")
+        out = self.human()
+        self.assertIn("   cd %s && %s\n" % (self.main, self.APPLY), out)
+        self.assertNotIn("57 EDT", out); self.assertNotIn("15 EDT", out); self.assertNotIn("step 1 of", out); self.assertNotIn("deploy-check x.tfplan", out)
+        self.assertEqual(self.ts("human", "--count", env=self.env_without_who()).out.strip(), "1")
+
+    def test_real_step_keys_still_count_and_the_first_is_the_command(self):
+        """every key shape in use stays a step: the verb alone, verb + (words), STEP n + words; BLOCKER and -check lines are not"""
+        self.plan_file()
+        self.fixture("T-0003", "three-steps", "ready-to-deploy", "login page and the edge sign-out",
+                     fields={"severity": "P1", "deploy": "terraform", "owner": "qa"},
+                     handoff="## Deploy handoff -- 2026-10-12 (T-0003)\n"
+                             "DEPLOY BLOCKER (not this ticket, from another extract): wait for it\n"
+                             "Deploy-check (read-only, 13:5x EDT): scripts/ticket.sh deploy-check x.tfplan --tickets T-0003\n"
+                             "STEP 1 (human; frontend dev 3376bdb): scripts/one.sh\n"
+                             "STEP 2 -- edge 403 \"Sign out\" href (Lambda@Edge, terraform/edge): scripts/two.sh\n"
+                             "Apply (ONE for the batch, by the human): %s\n" % self.APPLY)
+        self.commit_main("tickets: three steps")
+        out = self.human()
+        self.assertIn("   cd %s && scripts/one.sh\n" % self.main, out)
+        self.assertIn("step 1 of 3 in the handoff: the ticket lists the rest", out)
+        self.assertNotIn("wait for it", out); self.assertNotIn("5x EDT", out)
+
+    def test_a_deployed_tickets_check_item_survives_the_shape(self):
+        """source (4): a deployed ticket's "Verify (human)" line is an item -- lost too when the block was stripped"""
+        self.shaped("T-0007", "live-check", "deployed", "invite email goes out",
+                    fields={"severity": "P2", "deploy": "terraform", "owner": "qa"},
+                    log=["2026-10-12 16:00 qa: ready-to-deploy -> deployed. serial 334 -> 335"],
+                    block="## Deploy handoff -- batch 2026-10-11 (T-0007)\nSummary:   Plan: 1 to add, 0 to change, 0 to destroy.\n"
+                          "APPLY (human):   scripts/release.sh w\nVerify (human):   send yourself an invite and open the mail\n")
+        self.commit_main("tickets: deployed, T-0278-shaped")
+        out = self.human()
+        self.assertIn("CHECK   T-0007  P2  invite email goes out", out)
+        self.assertIn("   send yourself an invite and open the mail\n", out)
+        self.assertEqual(self.ts("human", "--count", env=self.env_without_who()).out.strip(), "1")
+
+    def test_an_unclosed_comment_keeps_its_text_as_a_visible_item(self):
+        """an owner who deleted the example's closing `-->` but not its opening: the example's own Apply line surfaces as a
+        not-copy-paste item naming the owner (visible), where the old strip-to-end-of-file hid the whole section"""
+        self.shaped("T-0003", "half-edited", "ready-to-deploy", "a half-edited handoff",
+                    fields={"severity": "P2", "deploy": "terraform", "owner": "qa"},
+                    log=["2026-10-12 17:55 qa: merged -> ready-to-deploy. handoff half written"],
+                    block="<!-- Filled at ready-to-deploy, one block per batch (the closing marker was deleted with the example):\n\n"
+                          "## Deploy handoff -- batch YYYY-MM-DD (T-xxxx, T-yyyy)\nTrunk:     dev @ <sha> (pushed).\n"
+                          "Apply:     scripts/release.sh <batch>   # the human's step\nVerify:    <per ticket>\n")
+        self.commit_main("tickets: unclosed comment")
+        out = self.human()
+        self.assertIn("(not copy-paste: the handoff's command has a placeholder -- scripts/release.sh <batch> -- ask its owner, qa)", out)
+        self.assertNotIn("(no human-run line", out)
+        self.assertEqual(self.ts("human", "--count", env=self.env_without_who()).out.strip(), "1")
 
 
 class TestSkipped(TicketShWorld):
