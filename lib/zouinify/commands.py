@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import os
 import json
+import os
 import sys
 
 from zouinify import ZouinifyError, __version__
@@ -160,7 +160,7 @@ def main(argv=None) -> int:
             if not args.out:
                 p.error("protocol render needs --out DIR (it writes nowhere else)")
             return protocol.cmd_render(cfg, args.out, plugin_docs=args.plugin_docs, project_readme=args.project_readme, force=args.force,
-                                       main_root=args.main_root or os.environ.get("ZOUINIFY_MAIN_ROOT") or None)
+                                       main_root=args.main_root if args.main_root is not None else (os.environ.get("ZOUINIFY_MAIN_ROOT") or None))
         if args.cmd == "up":
             from zouinify import launch
             return launch.cmd_up(cfg, args.roles, dry_run=args.dry_run, wait_s=args.wait, panel=not args.no_panel)

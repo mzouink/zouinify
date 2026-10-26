@@ -285,9 +285,12 @@ class TestProtocol(World):
         readme = open(os.path.join(out5, "README.md"), encoding="utf-8").read()
         self.assertIn("the work queue for proj-main + web\n", readme)
         self.assertIn(f"(`{os.path.realpath(main)}` and `{os.path.realpath(os.path.join(self.tmp, 'elsewhere', 'web'))}`)", section(readme, 4))
-        # a main root that is not a directory is refused before anything is written
+        # a main root that is not a directory is refused before anything is written -- an explicit empty value too (it is not "unset")
         r = self.nz("protocol", "render", "--out", os.path.join(self.tmp, "out6"), "--main-root", os.path.join(self.tmp, "nowhere"))
         self.assertIn("--main-root", r.stderr); self.assertIn("is not a directory", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out6")))
+        r = self.nz("protocol", "render", "--out", os.path.join(self.tmp, "out6"), "--main-root", "", env=dict(self.env, ZOUINIFY_MAIN_ROOT=main))
+        self.assertIn("is not a directory", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "out6")))
 
     # ---- T-0219: README.md stops being a hand-edited render --------------------------------------------------
